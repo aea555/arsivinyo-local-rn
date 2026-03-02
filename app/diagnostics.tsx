@@ -11,8 +11,13 @@ import { useTheme } from '@/src/theme';
 
 type DiagnosticsState = {
   ytDlpVersion: string;
+  ytDlpAvailable: boolean;
+  pythonReady: boolean;
   ffmpegPath: string | null;
+  ffmpegAbi?: string | null;
+  ffmpegVersion?: string | null;
   ffmpegExists: boolean;
+  ffmpegExecutable?: boolean;
   activeTaskId: string | null;
   lastErrors: string[];
   cookieCounts: Record<string, number>;
@@ -20,8 +25,13 @@ type DiagnosticsState = {
 
 const initialState: DiagnosticsState = {
   ytDlpVersion: 'unknown',
+  ytDlpAvailable: false,
+  pythonReady: false,
   ffmpegPath: null,
+  ffmpegAbi: null,
+  ffmpegVersion: null,
   ffmpegExists: false,
+  ffmpegExecutable: false,
   activeTaskId: null,
   lastErrors: [],
   cookieCounts: {},
@@ -46,8 +56,13 @@ export default function DiagnosticsScreen() {
 
     setState({
       ytDlpVersion: diag.ytDlpVersion,
+      ytDlpAvailable: diag.ytDlpAvailable,
+      pythonReady: diag.pythonReady,
       ffmpegPath: diag.ffmpegPath,
+      ffmpegAbi: diag.ffmpegAbi,
+      ffmpegVersion: diag.ffmpegVersion,
       ffmpegExists: diag.ffmpegExists,
+      ffmpegExecutable: diag.ffmpegExecutable,
       activeTaskId: diag.activeTaskId,
       lastErrors: diag.lastErrors,
       cookieCounts: Object.fromEntries(cookieCounts),
@@ -77,9 +92,14 @@ export default function DiagnosticsScreen() {
       <ScrollView contentContainerStyle={styles.contentContainer}>
         <View style={[styles.card, { backgroundColor: colors.surface }]}> 
           <Text style={[styles.title, { color: colors.text }]}>Runtime</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Python ready: {state.pythonReady ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp: {state.ytDlpVersion}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp import: {state.ytDlpAvailable ? 'ok' : 'failed'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg path: {state.ffmpegPath ?? 'not bundled'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg ABI: {state.ffmpegAbi ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg version: {state.ffmpegVersion ?? 'unknown'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg available: {state.ffmpegExists ? 'yes' : 'no'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg executable: {state.ffmpegExecutable ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Active task: {state.activeTaskId ?? 'none'}</Text>
         </View>
 

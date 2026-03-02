@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     Alert,
+    Modal,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -14,14 +15,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { SettingsItem, ThemePicker } from '@/src/components';
 import { BUILD_CONFIG } from '@/src/config';
+import { getErrorMessage } from '@/src/api/errors';
 import {
+    type CookiePlatform,
+    type CookieProfile,
     getDefaultCookieProfile,
     importCookieProfile,
     listCookieProfiles,
     LOCAL_COOKIE_PLATFORMS,
     setDefaultCookieProfile,
 } from '@/src/services';
-import type { CookiePlatform } from '@/src/services';
 import { useTheme } from '@/src/theme';
 
 export default function SettingsScreen() {
@@ -36,21 +39,30 @@ export default function SettingsScreen() {
         twitter: { count: 0, defaultProfile: null },
         reddit: { count: 0, defaultProfile: null },
     });
+    const [selectorPlatform, setSelectorPlatform] = useState<CookiePlatform | null>(null);
+    const [selectorProfiles, setSelectorProfiles] = useState<CookieProfile[]>([]);
+    const [selectorDefaultProfile, setSelectorDefaultProfile] = useState<string | null>(null);
     const [diagnosticUnlockTaps, setDiagnosticUnlockTaps] = useState(0);
 
     const refreshCookieSummary = useCallback(async () => {
-        const summaryEntries = await Promise.all(
-            LOCAL_COOKIE_PLATFORMS.map(async (platform) => {
-                const [profiles, defaultProfile] = await Promise.all([
-                    listCookieProfiles(platform),
-                    getDefaultCookieProfile(platform),
-                ]);
+        try {
+            const summaryEntries = await Promise.all(
+                LOCAL_COOKIE_PLATFORMS.map(async (platform) => {
+                    const [profiles, defaultProfile] = await Promise.all([
+                        listCookieProfiles(platform),
+                        getDefaultCookieProfile(platform),
+                    ]);
 
-                return [platform, { count: profiles.length, defaultProfile }] as const;
-            })
-        );
+                    return [platform, { count: profiles.length, defaultProfile }] as const;
+                })
+            );
 
-        setCookieSummary(Object.fromEntries(summaryEntries) as Record<CookiePlatform, { count: number; defaultProfile: string | null }>);
+            setCookieSummary(Object.fromEntries(summaryEntries) as Record<CookiePlatform, { count: number; defaultProfile: string | null }>);
+        } catch (error) {
+            const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+            const message = getErrorMessage(code);
+            Alert.alert(t('common.error'), message);
+        }
     }, []);
 
     useEffect(() => {
@@ -71,7 +83,58 @@ export default function SettingsScreen() {
             await refreshCookieSummary();
             Alert.alert(t('common.success'), t('settings.cookieImportSuccess', { platform, profile: result.profileName ?? 'default' }));
         } catch (error) {
-            const message = error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR');
+            const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+            const message = getErrorMessage(code);
+            Alert.alert(t('common.error'), message);
+        }
+    }, [refreshCookieSummary, t]);
+
+    const openDefaultSelector = useCallback(async (platform: CookiePlatform) => {
+        const profiles = await listCookieProfiles(platform);
+        if (profiles.length === 0) {
+            Alert.alert(t('common.error'), t('settings.noCookieProfiles'));
+            return;
+        }
+
+        const defaultProfile = await getDefaultCookieProfile(platform);
+        setSelectorProfiles(profiles);
+        setSelectorDefaultProfile(defaultProfile);
+        setSelectorPlatform(platform);
+    }, [t]);
+
+    const handleCookiePlatformPress = useCallback((platform: CookiePlatform) => {
+        Alert.alert(
+            t(`settings.cookiePlatform.${platform}`),
+            t('settings.cookieActionPrompt'),
+            [
+                {
+                    text: t('settings.importCookieAction'),
+                    onPress: () => {
+                        void handleImportCookie(platform);
+                    },
+                },
+                {
+                    text: t('settings.selectDefaultCookieAction'),
+                    onPress: () => {
+                        void openDefaultSelector(platform);
+                    },
+                },
+                {
+                    text: t('common.cancel'),
+                    style: 'cancel',
+                },
+            ],
+        );
+    }, [handleImportCookie, openDefaultSelector, t]);
+
+    const handleSetDefaultProfile = useCallback(async (platform: CookiePlatform, profileName: string) => {
+        try {
+            await setDefaultCookieProfile(platform, profileName);
+            await refreshCookieSummary();
+            setSelectorDefaultProfile(profileName);
+        } catch (error) {
+            const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+            const message = getErrorMessage(code);
             Alert.alert(t('common.error'), message);
         }
     }, [refreshCookieSummary, t]);
@@ -87,6 +150,12 @@ export default function SettingsScreen() {
     const openDiagnostics = useCallback(() => {
         router.push('/diagnostics' as never);
     }, [router]);
+
+    const closeSelector = useCallback(() => {
+        setSelectorPlatform(null);
+        setSelectorProfiles([]);
+        setSelectorDefaultProfile(null);
+    }, []);
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
@@ -136,7 +205,7 @@ export default function SettingsScreen() {
                                     count: cookieSummary[platform].count,
                                     defaultProfile: cookieSummary[platform].defaultProfile ?? t('settings.noDefaultCookie'),
                                 })}
-                                onPress={() => handleImportCookie(platform)}
+                                onPress={() => handleCookiePlatformPress(platform)}
                             />
                         ))}
                     </View>
@@ -166,6 +235,54 @@ export default function SettingsScreen() {
                     </View>
                 </View>
             </ScrollView>
+
+            <Modal
+                visible={selectorPlatform !== null}
+                transparent
+                animationType="fade"
+                onRequestClose={closeSelector}
+            >
+                <View style={styles.modalBackdrop}>
+                    <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                        <Text style={[styles.modalTitle, { color: colors.text }]}>
+                            {selectorPlatform ? t('settings.selectDefaultForPlatform', { platform: t(`settings.cookiePlatform.${selectorPlatform}`) }) : ''}
+                        </Text>
+                        <ScrollView style={styles.modalList}>
+                            {selectorPlatform && selectorProfiles.map((profile) => {
+                                const selected = selectorDefaultProfile === profile.profileName;
+                                return (
+                                    <Pressable
+                                        key={`${selectorPlatform}-${profile.profileName}`}
+                                        onPress={() => {
+                                            void handleSetDefaultProfile(selectorPlatform, profile.profileName);
+                                        }}
+                                        style={({ pressed }) => [
+                                            styles.modalItem,
+                                            {
+                                                backgroundColor: pressed ? colors.surfaceHover : 'transparent',
+                                                borderColor: selected ? colors.accent : colors.border,
+                                            },
+                                        ]}
+                                    >
+                                        <Text style={[styles.modalItemTitle, { color: selected ? colors.accent : colors.text }]}>
+                                            {profile.profileName}
+                                        </Text>
+                                    </Pressable>
+                                );
+                            })}
+                        </ScrollView>
+                        <Pressable
+                            onPress={closeSelector}
+                            style={({ pressed }) => [
+                                styles.modalCloseButton,
+                                { backgroundColor: pressed ? colors.surfaceHover : colors.background },
+                            ]}
+                        >
+                            <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.cancel')}</Text>
+                        </Pressable>
+                    </View>
+                </View>
+            </Modal>
         </SafeAreaView>
     );
 }
@@ -216,5 +333,46 @@ const styles = StyleSheet.create({
         overflow: 'hidden',
         padding: 16,
         gap: 8,
+    },
+    modalBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.45)',
+        justifyContent: 'center',
+        padding: 20,
+    },
+    modalCard: {
+        borderRadius: 16,
+        borderWidth: 1,
+        maxHeight: '70%',
+        padding: 16,
+    },
+    modalTitle: {
+        fontSize: 16,
+        fontWeight: '700',
+        marginBottom: 12,
+    },
+    modalList: {
+        maxHeight: 260,
+    },
+    modalItem: {
+        borderWidth: 1,
+        borderRadius: 10,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        marginBottom: 8,
+    },
+    modalItemTitle: {
+        fontSize: 14,
+        fontWeight: '500',
+    },
+    modalCloseButton: {
+        marginTop: 8,
+        borderRadius: 10,
+        paddingVertical: 10,
+        alignItems: 'center',
+    },
+    modalCloseText: {
+        fontSize: 14,
+        fontWeight: '600',
     },
 });

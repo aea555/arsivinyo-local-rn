@@ -13,6 +13,7 @@ export {
     setDefaultCookieProfile,
     getDefaultCookieProfile,
     type CookiePlatform,
+    type CookieProfile,
 } from './cookies';
 export {
     clearAllStorage, getDownloadCount, getDownloadLocation, incrementDownloadCount,

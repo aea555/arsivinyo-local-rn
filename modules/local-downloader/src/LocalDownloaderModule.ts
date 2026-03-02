@@ -16,6 +16,8 @@ type LocalDownloaderNativeModule = {
   cancelTask(taskId: string): Promise<{ success: boolean }>;
   importCookie(input: { platform: LocalPlatform; uri: string; profileName: string }): Promise<{ profileName: string; path: string }>;
   listCookieProfiles(platform: LocalPlatform): Promise<LocalCookieProfile[]>;
+  setCookieDefault(input: { platform: LocalPlatform; profileName: string }): Promise<{ success: boolean }>;
+  getCookieDefaults(): Promise<Record<LocalPlatform, string | null>>;
   getDiagnostics(): Promise<LocalDiagnostics>;
 };
 
@@ -31,6 +33,8 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       cancelTask: async () => unsupported(),
       importCookie: async () => unsupported(),
       listCookieProfiles: async () => unsupported(),
+      setCookieDefault: async () => unsupported(),
+      getCookieDefaults: async () => unsupported(),
       getDiagnostics: async () => unsupported(),
     };
 const emitter: any = Platform.OS === 'android' ? new EventEmitter(NativeLocalDownloader as never) : null;

@@ -1,11 +1,9 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import ExpoFileSystem from 'expo-file-system/build/ExpoFileSystem';
 import LocalDownloaderModule, { type LocalCookieProfile, type LocalPlatform } from '../native/localDownloader';
 
 export const LOCAL_COOKIE_PLATFORMS: LocalPlatform[] = ['youtube', 'instagram', 'facebook', 'twitter', 'reddit'];
 export type CookiePlatform = LocalPlatform;
-
-const DEFAULT_COOKIE_PROFILE_KEY_PREFIX = '@arsivinyo_default_cookie_profile_';
+export type CookieProfile = LocalCookieProfile;
 
 export async function listCookieProfiles(platform: CookiePlatform): Promise<LocalCookieProfile[]> {
   return LocalDownloaderModule.listCookieProfiles(platform);
@@ -43,9 +41,13 @@ export async function importCookieProfile(platform: CookiePlatform): Promise<{
 }
 
 export async function setDefaultCookieProfile(platform: CookiePlatform, profileName: string): Promise<void> {
-  await AsyncStorage.setItem(`${DEFAULT_COOKIE_PROFILE_KEY_PREFIX}${platform}`, profileName);
+  const result = await LocalDownloaderModule.setCookieDefault({ platform, profileName });
+  if (!result.success) {
+    throw new Error('INVALID_COOKIE_PROFILE');
+  }
 }
 
 export async function getDefaultCookieProfile(platform: CookiePlatform): Promise<string | null> {
-  return AsyncStorage.getItem(`${DEFAULT_COOKIE_PROFILE_KEY_PREFIX}${platform}`);
+  const defaults = await LocalDownloaderModule.getCookieDefaults();
+  return defaults[platform] ?? null;
 }

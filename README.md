@@ -40,4 +40,11 @@ npx expo run:android
 
 - Expo Go is not sufficient for this app because it requires custom native code.
 - For best success on protected platforms, import valid cookie files in Settings.
-- FFmpeg binaries are not bundled yet; add them under `modules/local-downloader/android/src/main/assets/ffmpeg/` if needed.
+- Put Android FFmpeg binaries at:
+  - `modules/local-downloader/android/src/main/assets/ffmpeg/arm64-v8a/ffmpeg`
+  - `modules/local-downloader/android/src/main/assets/ffmpeg/armeabi-v7a/ffmpeg`
+  - `modules/local-downloader/android/src/main/assets/ffmpeg/x86_64/ffmpeg`
+- Verify prebuild idempotency and Gradle injection:
+  ```bash
+  npm run verify:prebuild
+  ```

@@ -18,9 +18,6 @@ import { BannerAd, DownloadButton } from '@/src/components';
 import {
   downloadAndSaveFile,
   getUrlFromClipboard,
-  incrementDownloadCount,
-  resetDownloadCount,
-  shouldShowInterstitialAd
 } from '@/src/services';
 import { useTheme } from '@/src/theme';
 
@@ -72,14 +69,6 @@ export default function HomeScreen() {
       // Success!
       setDownloadState('completed');
       setStatusMessage(result.filename);
-
-      // Track download for ads
-      await incrementDownloadCount();
-      const showAd = await shouldShowInterstitialAd();
-      if (showAd) {
-        // TODO: Show interstitial ad here
-        await resetDownloadCount();
-      }
 
       // Reset after delay
       setTimeout(() => {

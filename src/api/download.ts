@@ -20,6 +20,34 @@ const POLLING_INTERVALS = {
 };
 
 const MAX_POLLING_ATTEMPTS = 120;
+const DEFAULT_MAX_FILE_SIZE_MB = 2048;
+
+function extractErrorCode(error: unknown): ApiErrorCode {
+  if (!(error instanceof Error)) {
+    return 'UNKNOWN_ERROR';
+  }
+
+  const knownCodes: ApiErrorCode[] = [
+    'INVALID_URL',
+    'UNSUPPORTED_PLATFORM',
+    'DOWNLOAD_ALREADY_IN_PROGRESS',
+    'FILE_TOO_LARGE',
+    'SERVER_BUSY',
+    'DOWNLOAD_FAILED',
+    'DOWNLOAD_CANCELLED',
+    'TASK_CANCELLED',
+    'TASK_CANCEL_TIMEOUT',
+    'PROCESS_RESTARTED',
+    'PREFLIGHT_FAILED',
+    'INTERNAL_ERROR',
+    'FILE_NOT_FOUND',
+    'UNKNOWN_ERROR',
+  ];
+
+  const normalized = error.message.trim();
+  const match = knownCodes.find((code) => normalized.includes(code));
+  return match ?? 'UNKNOWN_ERROR';
+}
 
 function getPollingInterval(elapsedMs: number): number {
   if (elapsedMs < 30_000) return POLLING_INTERVALS.initial;
@@ -27,13 +55,14 @@ function getPollingInterval(elapsedMs: number): number {
   return POLLING_INTERVALS.slow;
 }
 
-export async function startDownload(url: string): Promise<DownloadStartResponse> {
+export async function startDownload(url: string, maxFileSizeMb: number = DEFAULT_MAX_FILE_SIZE_MB): Promise<DownloadStartResponse> {
   const platform = getPlatformFromUrl(url);
   const cookieProfile = platform ? await getDefaultCookieProfile(platform) : null;
 
   const result = await startLocalDownload({
     url,
     cookieProfile: cookieProfile ?? undefined,
+    maxFileSizeMb,
   });
 
   return {
@@ -105,7 +134,19 @@ export async function downloadMedia(
 
   onProgressChange?.({ state: 'starting' });
 
-  const startResult = await startDownload(url);
+  let startResult: DownloadStartResponse;
+  try {
+    startResult = await startDownload(url, DEFAULT_MAX_FILE_SIZE_MB);
+  } catch (error) {
+    const errorCode = extractErrorCode(error);
+    const errorMessage = getErrorMessage(errorCode);
+    onProgressChange?.({
+      state: 'error',
+      errorCode,
+      errorMessage,
+    });
+    throw new Error(errorMessage);
+  }
   const taskId = startResult.taskId;
   onProgressChange?.({ state: 'downloading', taskId });
 

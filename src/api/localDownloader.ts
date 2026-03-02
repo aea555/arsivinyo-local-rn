@@ -50,6 +50,19 @@ export async function listLocalCookieProfiles(platform: LocalPlatform): Promise<
   return LocalDownloaderModule.listCookieProfiles(platform);
 }
 
+export async function setLocalCookieDefault(input: {
+  platform: LocalPlatform;
+  profileName: string;
+}): Promise<{ success: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.setCookieDefault(input);
+}
+
+export async function getLocalCookieDefaults(): Promise<Record<LocalPlatform, string | null>> {
+  ensureAndroid();
+  return LocalDownloaderModule.getCookieDefaults();
+}
+
 export async function getLocalDiagnostics(): Promise<LocalDiagnostics> {
   ensureAndroid();
   return LocalDownloaderModule.getDiagnostics();

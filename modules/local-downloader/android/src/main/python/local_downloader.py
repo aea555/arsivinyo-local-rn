@@ -84,6 +84,10 @@ def _estimate_file_size_mb(info: Dict[str, Any]) -> Tuple[float, str]:
     return 0, "unknown"
 
 
+def _is_cancel_requested(cancel_flag_path: Optional[str]) -> bool:
+    return bool(cancel_flag_path and os.path.exists(cancel_flag_path))
+
+
 def _common_ydl_opts(cookie_file: Optional[str], ffmpeg_path: Optional[str]) -> Dict[str, Any]:
     opts: Dict[str, Any] = {
         "quiet": True,
@@ -99,6 +103,11 @@ def _common_ydl_opts(cookie_file: Optional[str], ffmpeg_path: Optional[str]) -> 
         opts["ffmpeg_location"] = ffmpeg_path
 
     return opts
+
+
+def _build_format_selector(max_file_size_mb: int) -> str:
+    limit_mb = max(1, int(max_file_size_mb))
+    return f"best[filesize<{limit_mb}M]/best[filesize_approx<{limit_mb}M]/bestvideo+bestaudio/best"
 
 
 def _sanitize_filename(name: str) -> str:
@@ -158,9 +167,13 @@ def run_download(
     cookies_dir: str,
     cookie_profile: Optional[str] = None,
     max_file_size_mb: int = 2048,
+    cancel_flag_path: Optional[str] = None,
     ffmpeg_path: Optional[str] = None,
 ) -> str:
     try:
+        if _is_cancel_requested(cancel_flag_path):
+            return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
+
         platform = _validate_supported_platform(url)
         cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
 
@@ -169,7 +182,7 @@ def run_download(
         opts = _common_ydl_opts(cookie_file, ffmpeg_path)
         opts.update(
             {
-                "format": "best[filesize<2048M]/best[filesize_approx<2048M]/bestvideo+bestaudio/best",
+                "format": _build_format_selector(max_file_size_mb),
                 "merge_output_format": "mp4",
                 "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
                 "extractor_args": {
@@ -179,6 +192,12 @@ def run_download(
                 },
             }
         )
+
+        def _progress_hook(_: Dict[str, Any]) -> None:
+            if _is_cancel_requested(cancel_flag_path):
+                raise RuntimeError("DOWNLOAD_CANCELLED")
+
+        opts["progress_hooks"] = [_progress_hook]
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -194,9 +213,15 @@ def run_download(
                     estimated_size_mb=round(estimated_mb, 1),
                 )
 
+            if _is_cancel_requested(cancel_flag_path):
+                return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
+
             info = ydl.extract_info(url, download=True)
             if "entries" in info and info["entries"]:
                 info = info["entries"][0]
+
+            if _is_cancel_requested(cancel_flag_path):
+                return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
 
             downloaded_file = None
             req = info.get("requested_downloads") or []
@@ -238,4 +263,6 @@ def run_download(
     except ValueError as exc:
         return _result(False, "UNSUPPORTED_PLATFORM", str(exc))
     except Exception as exc:
+        if "DOWNLOAD_CANCELLED" in str(exc):
+            return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
         return _result(False, "DOWNLOAD_FAILED", str(exc))

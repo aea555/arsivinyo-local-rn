@@ -28,25 +28,28 @@ export async function downloadAndSaveFile(
     throw new Error('Local file is empty');
   }
 
-  const asset = await MediaLibrary.createAssetAsync(normalizedPath);
-
+  const fileSize = file.size;
   try {
-    file.delete();
-  } catch (error) {
-    console.warn('[FileManager] Temp file cleanup failed:', error);
-  }
+    const asset = await MediaLibrary.createAssetAsync(normalizedPath);
 
-  if (onProgress) {
-    onProgress({
-      totalBytesWritten: file.size,
-      totalBytesExpectedToWrite: file.size,
-    });
-  }
+    if (onProgress) {
+      onProgress({
+        totalBytesWritten: fileSize,
+        totalBytesExpectedToWrite: fileSize,
+      });
+    }
 
-  return {
-    uri: asset.uri,
-    assetId: asset.id,
-  };
+    return {
+      uri: asset.uri,
+      assetId: asset.id,
+    };
+  } finally {
+    try {
+      file.delete();
+    } catch (error) {
+      console.warn('[FileManager] Temp file cleanup failed:', error);
+    }
+  }
 }
 
 export async function getFileInfo(uri: string): Promise<{

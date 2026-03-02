@@ -3,6 +3,7 @@ export type LocalPlatform = 'youtube' | 'instagram' | 'facebook' | 'twitter' | '
 export interface LocalDownloadStartInput {
   url: string;
   cookieProfile?: string;
+  maxFileSizeMb?: number;
 }
 
 export interface LocalDownloadStartResult {
@@ -38,8 +39,13 @@ export interface LocalDownloadEvent {
 
 export interface LocalDiagnostics {
   ytDlpVersion: string;
+  ytDlpAvailable: boolean;
+  pythonReady: boolean;
   ffmpegPath: string | null;
+  ffmpegAbi?: string | null;
+  ffmpegVersion?: string | null;
   ffmpegExists: boolean;
+  ffmpegExecutable?: boolean;
   activeTaskId: string | null;
   lastErrors: string[];
 }

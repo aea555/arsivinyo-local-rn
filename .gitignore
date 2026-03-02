@@ -46,3 +46,4 @@ app-example
 /devdocs
 
 local.properties.*
+ffmpeg-kit-*
