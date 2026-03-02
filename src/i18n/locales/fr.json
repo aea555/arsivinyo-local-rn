@@ -1,0 +1,72 @@
+{
+    "common": {
+        "appName": "Arsivinyo",
+        "loading": "Chargement...",
+        "error": "Erreur",
+        "success": "Succès",
+        "cancel": "Annuler",
+        "ok": "OK",
+        "save": "Enregistrer",
+        "back": "Retour"
+    },
+    "home": {
+        "title": "Télécharger des médias",
+        "downloadButton": "Appuyez pour télécharger",
+        "downloadButtonHint": "Télécharge l'URL du presse-papiers",
+        "downloading": "Téléchargement...",
+        "processing": "Traitement...",
+        "downloadComplete": "Téléchargement terminé !",
+        "savedTo": "Enregistré dans : {{path}}",
+        "noUrlInClipboard": "Aucune URL valide trouvée dans le presse-papiers",
+        "invalidUrl": "URL invalide",
+        "downloadFailed": "Échec du téléchargement",
+        "tryAgain": "Réessayer",
+        "rateLimitExceeded": "Limite de requêtes dépassée. Veuillez patienter.",
+        "fileTooLarge": "Limite de taille de fichier dépassée (max 50 Mo)",
+        "networkError": "Erreur de connexion. Vérifiez votre connexion Internet."
+    },
+    "settings": {
+        "title": "Paramètres",
+        "appearance": "Apparence",
+        "theme": "Thème",
+        "themeMode": "Mode du thème",
+        "darkMode": "Sombre",
+        "lightMode": "Clair",
+        "themeVariant": "Style du thème",
+        "storage": "Stockage",
+        "downloadLocation": "Emplacement de téléchargement",
+        "selectFolder": "Sélectionner un dossier",
+        "currentLocation": "Actuel : {{path}}",
+        "permissions": "Autorisations",
+        "requestPermissions": "Redemander les autorisations",
+        "permissionsGranted": "Toutes les autorisations accordées",
+        "permissionsDenied": "Certaines autorisations manquantes",
+        "about": "À propos",
+        "version": "Version",
+        "language": "Langue"
+    },
+    "permissions": {
+        "storageTitle": "Autorisation de stockage requise",
+        "storageMessage": "Nous avons besoin de l'autorisation de stockage pour enregistrer les vidéos sur votre appareil.",
+        "granted": "Autorisation accordée",
+        "denied": "Autorisation refusée",
+        "openSettings": "Ouvrir les paramètres"
+    },
+    "errors": {
+        "API_READY": "API prête",
+        "DOWNLOAD_STARTED": "Téléchargement commencé",
+        "INVALID_URL": "URL invalide ou manquante",
+        "INVALID_TOKEN": "Authentification invalide",
+        "FILE_NOT_READY": "Fichier pas encore prêt",
+        "FILE_NOT_FOUND": "Fichier non trouvé",
+        "TOO_MANY_REQUESTS": "Trop de requêtes. Veuillez patienter.",
+        "VOLUME_LIMIT_EXCEEDED": "Limite de données horaire dépassée",
+        "SPAM_DETECTED": "Spam détecté. Blocage temporaire appliqué.",
+        "FILE_TOO_LARGE": "Limite de taille de fichier dépassée (plus de 50 Mo)",
+        "INTERNAL_ERROR": "Erreur serveur. Veuillez réessayer.",
+        "UNKNOWN_ERROR": "Erreur inconnue",
+        "UNSUPPORTED_PLATFORM": "Cette plateforme n'est pas prise en charge. Supportées: Twitter, Instagram, Facebook, Reddit, Youtube",
+        "SERVER_ERROR": "Erreur inattendue. Veuillez réessayer plus tard.",
+        "NETWORK_ERROR": "Erreur de connexion. Vérifiez votre Internet."
+    }
+}

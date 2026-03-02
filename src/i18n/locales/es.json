@@ -1,0 +1,72 @@
+{
+    "common": {
+        "appName": "Arsivinyo",
+        "loading": "Cargando...",
+        "error": "Error",
+        "success": "Éxito",
+        "cancel": "Cancelar",
+        "ok": "Aceptar",
+        "save": "Guardar",
+        "back": "Atrás"
+    },
+    "home": {
+        "title": "Descargar medios",
+        "downloadButton": "Toca para descargar",
+        "downloadButtonHint": "Descarga la URL del portapapeles",
+        "downloading": "Descargando...",
+        "processing": "Procesando...",
+        "downloadComplete": "¡Descarga completada!",
+        "savedTo": "Guardado en: {{path}}",
+        "noUrlInClipboard": "No se encontró una URL válida en el portapapeles",
+        "invalidUrl": "URL inválida",
+        "downloadFailed": "Descarga fallida",
+        "tryAgain": "Intentar de nuevo",
+        "rateLimitExceeded": "Límite de solicitudes excedido. Por favor espera.",
+        "fileTooLarge": "Límite de tamaño de archivo excedido (máx. 50MB)",
+        "networkError": "Error de conexión. Verifica tu conexión a Internet."
+    },
+    "settings": {
+        "title": "Configuración",
+        "appearance": "Apariencia",
+        "theme": "Tema",
+        "themeMode": "Modo del tema",
+        "darkMode": "Oscuro",
+        "lightMode": "Claro",
+        "themeVariant": "Estilo del tema",
+        "storage": "Almacenamiento",
+        "downloadLocation": "Ubicación de descarga",
+        "selectFolder": "Seleccionar carpeta",
+        "currentLocation": "Actual: {{path}}",
+        "permissions": "Permisos",
+        "requestPermissions": "Solicitar permisos de nuevo",
+        "permissionsGranted": "Todos los permisos concedidos",
+        "permissionsDenied": "Faltan algunos permisos",
+        "about": "Acerca de",
+        "version": "Versión",
+        "language": "Idioma"
+    },
+    "permissions": {
+        "storageTitle": "Permiso de almacenamiento requerido",
+        "storageMessage": "Necesitamos permiso de almacenamiento para guardar videos en tu dispositivo.",
+        "granted": "Permiso concedido",
+        "denied": "Permiso denegado",
+        "openSettings": "Abrir configuración"
+    },
+    "errors": {
+        "API_READY": "API lista",
+        "DOWNLOAD_STARTED": "Descarga iniciada",
+        "INVALID_URL": "URL inválida o faltante",
+        "INVALID_TOKEN": "Autenticación inválida",
+        "FILE_NOT_READY": "Archivo aún no listo",
+        "FILE_NOT_FOUND": "Archivo no encontrado",
+        "TOO_MANY_REQUESTS": "Demasiadas solicitudes. Por favor espera.",
+        "VOLUME_LIMIT_EXCEEDED": "Límite de datos por hora excedido",
+        "SPAM_DETECTED": "Spam detectado. Bloqueo temporal aplicado.",
+        "FILE_TOO_LARGE": "Límite de tamaño de archivo excedido (más de 50MB)",
+        "INTERNAL_ERROR": "Error del servidor. Por favor intenta de nuevo.",
+        "UNKNOWN_ERROR": "Error desconocido",
+        "UNSUPPORTED_PLATFORM": "Esta plataforma no es compatible. Compatibles: Twitter, Instagram, Facebook, Reddit, Youtube",
+        "SERVER_ERROR": "Error inesperado. Por favor intenta más tarde.",
+        "NETWORK_ERROR": "Error de conexión. Verifica tu Internet."
+    }
+}

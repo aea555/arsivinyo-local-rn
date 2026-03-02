@@ -1,0 +1,72 @@
+{
+    "common": {
+        "appName": "Arsivinyo",
+        "loading": "جارٍ التحميل...",
+        "error": "خطأ",
+        "success": "نجاح",
+        "cancel": "إلغاء",
+        "ok": "موافق",
+        "save": "حفظ",
+        "back": "رجوع"
+    },
+    "home": {
+        "title": "تحميل الوسائط",
+        "downloadButton": "اضغط للتحميل",
+        "downloadButtonHint": "يحمّل الرابط من الحافظة",
+        "downloading": "جارٍ التحميل...",
+        "processing": "جارٍ المعالجة...",
+        "downloadComplete": "اكتمل التحميل!",
+        "savedTo": "تم الحفظ في: {{path}}",
+        "noUrlInClipboard": "لم يتم العثور على رابط صالح في الحافظة",
+        "invalidUrl": "رابط غير صالح",
+        "downloadFailed": "فشل التحميل",
+        "tryAgain": "حاول مرة أخرى",
+        "rateLimitExceeded": "تم تجاوز حد الطلبات. يرجى الانتظار.",
+        "fileTooLarge": "تم تجاوز حد حجم الملف (الحد الأقصى 50 ميجابايت)",
+        "networkError": "خطأ في الاتصال. تحقق من اتصالك بالإنترنت."
+    },
+    "settings": {
+        "title": "الإعدادات",
+        "appearance": "المظهر",
+        "theme": "السمة",
+        "themeMode": "وضع السمة",
+        "darkMode": "داكن",
+        "lightMode": "فاتح",
+        "themeVariant": "نمط السمة",
+        "storage": "التخزين",
+        "downloadLocation": "موقع التحميل",
+        "selectFolder": "اختر مجلد",
+        "currentLocation": "الحالي: {{path}}",
+        "permissions": "الأذونات",
+        "requestPermissions": "طلب الأذونات مرة أخرى",
+        "permissionsGranted": "تم منح جميع الأذونات",
+        "permissionsDenied": "بعض الأذونات مفقودة",
+        "about": "حول",
+        "version": "الإصدار",
+        "language": "اللغة"
+    },
+    "permissions": {
+        "storageTitle": "إذن التخزين مطلوب",
+        "storageMessage": "نحتاج إذن التخزين لحفظ مقاطع الفيديو على جهازك.",
+        "granted": "تم منح الإذن",
+        "denied": "تم رفض الإذن",
+        "openSettings": "فتح الإعدادات"
+    },
+    "errors": {
+        "API_READY": "API جاهز",
+        "DOWNLOAD_STARTED": "بدأ التحميل",
+        "INVALID_URL": "رابط غير صالح أو مفقود",
+        "INVALID_TOKEN": "مصادقة غير صالحة",
+        "FILE_NOT_READY": "الملف غير جاهز بعد",
+        "FILE_NOT_FOUND": "الملف غير موجود",
+        "TOO_MANY_REQUESTS": "طلبات كثيرة جداً. يرجى الانتظار.",
+        "VOLUME_LIMIT_EXCEEDED": "تم تجاوز حد البيانات بالساعة",
+        "SPAM_DETECTED": "تم اكتشاف سبام. تم تطبيق حظر مؤقت.",
+        "FILE_TOO_LARGE": "تم تجاوز حد حجم الملف (أكثر من 50 ميجابايت)",
+        "INTERNAL_ERROR": "خطأ في الخادم. يرجى المحاولة مرة أخرى.",
+        "UNKNOWN_ERROR": "خطأ غير معروف",
+        "UNSUPPORTED_PLATFORM": "هذه المنصة غير مدعومة. المدعومة: Twitter, Instagram, Facebook, Reddit, Youtube",
+        "SERVER_ERROR": "خطأ غير متوقع. يرجى المحاولة لاحقاً.",
+        "NETWORK_ERROR": "خطأ في الاتصال. تحقق من الإنترنت."
+    }
+}

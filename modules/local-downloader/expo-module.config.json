@@ -1,0 +1,7 @@
+{
+  "name": "local-downloader",
+  "platforms": ["android", "ios", "web"],
+  "android": {
+    "modules": ["expo.modules.localdownloader.LocalDownloaderModule"]
+  }
+}

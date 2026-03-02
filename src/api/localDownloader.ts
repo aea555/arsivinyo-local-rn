@@ -1,0 +1,56 @@
+import { Platform } from 'react-native';
+import LocalDownloaderModule, {
+  addDownloadProgressListener,
+  type LocalCookieProfile,
+  type LocalDiagnostics,
+  type LocalDownloadEvent,
+  type LocalDownloadStartInput,
+  type LocalDownloadStartResult,
+  type LocalPlatform,
+  type LocalTaskStatusResult,
+} from '../native/localDownloader';
+
+function ensureAndroid(): void {
+  if (Platform.OS !== 'android') {
+    throw new Error('Local downloader is Android-only in this release.');
+  }
+}
+
+export function listenDownloadProgress(listener: (event: LocalDownloadEvent) => void) {
+  ensureAndroid();
+  return addDownloadProgressListener(listener);
+}
+
+export async function startLocalDownload(input: LocalDownloadStartInput): Promise<LocalDownloadStartResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.startDownload(input);
+}
+
+export async function getLocalTaskStatus(taskId: string): Promise<LocalTaskStatusResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.getTaskStatus(taskId);
+}
+
+export async function cancelLocalTask(taskId: string): Promise<{ success: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.cancelTask(taskId);
+}
+
+export async function importLocalCookie(input: {
+  platform: LocalPlatform;
+  uri: string;
+  profileName: string;
+}): Promise<{ profileName: string; path: string }> {
+  ensureAndroid();
+  return LocalDownloaderModule.importCookie(input);
+}
+
+export async function listLocalCookieProfiles(platform: LocalPlatform): Promise<LocalCookieProfile[]> {
+  ensureAndroid();
+  return LocalDownloaderModule.listCookieProfiles(platform);
+}
+
+export async function getLocalDiagnostics(): Promise<LocalDiagnostics> {
+  ensureAndroid();
+  return LocalDownloaderModule.getDiagnostics();
+}

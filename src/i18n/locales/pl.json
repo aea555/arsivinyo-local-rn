@@ -1,0 +1,72 @@
+{
+    "common": {
+        "appName": "Arsivinyo",
+        "loading": "Ładowanie...",
+        "error": "Błąd",
+        "success": "Sukces",
+        "cancel": "Anuluj",
+        "ok": "OK",
+        "save": "Zapisz",
+        "back": "Wstecz"
+    },
+    "home": {
+        "title": "Pobierz media",
+        "downloadButton": "Dotknij, aby pobrać",
+        "downloadButtonHint": "Pobiera URL ze schowka",
+        "downloading": "Pobieranie...",
+        "processing": "Przetwarzanie...",
+        "downloadComplete": "Pobieranie zakończone!",
+        "savedTo": "Zapisano w: {{path}}",
+        "noUrlInClipboard": "Nie znaleziono prawidłowego URL w schowku",
+        "invalidUrl": "Nieprawidłowy URL",
+        "downloadFailed": "Pobieranie nie powiodło się",
+        "tryAgain": "Spróbuj ponownie",
+        "rateLimitExceeded": "Przekroczono limit żądań. Proszę czekać.",
+        "fileTooLarge": "Przekroczono limit rozmiaru pliku (maks. 50MB)",
+        "networkError": "Błąd połączenia. Sprawdź połączenie internetowe."
+    },
+    "settings": {
+        "title": "Ustawienia",
+        "appearance": "Wygląd",
+        "theme": "Motyw",
+        "themeMode": "Tryb motywu",
+        "darkMode": "Ciemny",
+        "lightMode": "Jasny",
+        "themeVariant": "Styl motywu",
+        "storage": "Pamięć",
+        "downloadLocation": "Lokalizacja pobierania",
+        "selectFolder": "Wybierz folder",
+        "currentLocation": "Bieżący: {{path}}",
+        "permissions": "Uprawnienia",
+        "requestPermissions": "Poproś ponownie o uprawnienia",
+        "permissionsGranted": "Wszystkie uprawnienia przyznane",
+        "permissionsDenied": "Brakuje niektórych uprawnień",
+        "about": "O aplikacji",
+        "version": "Wersja",
+        "language": "Język"
+    },
+    "permissions": {
+        "storageTitle": "Wymagane uprawnienie do pamięci",
+        "storageMessage": "Potrzebujemy uprawnienia do pamięci, aby zapisywać filmy na Twoim urządzeniu.",
+        "granted": "Uprawnienie przyznane",
+        "denied": "Uprawnienie odrzucone",
+        "openSettings": "Otwórz ustawienia"
+    },
+    "errors": {
+        "API_READY": "API gotowe",
+        "DOWNLOAD_STARTED": "Pobieranie rozpoczęte",
+        "INVALID_URL": "Nieprawidłowy lub brakujący URL",
+        "INVALID_TOKEN": "Nieprawidłowe uwierzytelnienie",
+        "FILE_NOT_READY": "Plik jeszcze nie jest gotowy",
+        "FILE_NOT_FOUND": "Plik nie znaleziony",
+        "TOO_MANY_REQUESTS": "Za dużo żądań. Proszę czekać.",
+        "VOLUME_LIMIT_EXCEEDED": "Przekroczono godzinowy limit danych",
+        "SPAM_DETECTED": "Wykryto spam. Zastosowano tymczasową blokadę.",
+        "FILE_TOO_LARGE": "Przekroczono limit rozmiaru pliku (ponad 50MB)",
+        "INTERNAL_ERROR": "Błąd serwera. Spróbuj ponownie.",
+        "UNKNOWN_ERROR": "Nieznany błąd",
+        "UNSUPPORTED_PLATFORM": "Ta platforma nie jest obsługiwana. Obsługiwane: Twitter, Instagram, Facebook, Reddit, Youtube",
+        "SERVER_ERROR": "Nieoczekiwany błąd. Spróbuj później.",
+        "NETWORK_ERROR": "Błąd połączenia. Sprawdź Internet."
+    }
+}

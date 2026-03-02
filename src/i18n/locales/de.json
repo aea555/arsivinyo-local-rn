@@ -1,0 +1,72 @@
+{
+    "common": {
+        "appName": "Arsivinyo",
+        "loading": "Wird geladen...",
+        "error": "Fehler",
+        "success": "Erfolg",
+        "cancel": "Abbrechen",
+        "ok": "OK",
+        "save": "Speichern",
+        "back": "Zurück"
+    },
+    "home": {
+        "title": "Medien herunterladen",
+        "downloadButton": "Zum Herunterladen tippen",
+        "downloadButtonHint": "Lädt URL aus der Zwischenablage herunter",
+        "downloading": "Wird heruntergeladen...",
+        "processing": "Wird verarbeitet...",
+        "downloadComplete": "Download abgeschlossen!",
+        "savedTo": "Gespeichert unter: {{path}}",
+        "noUrlInClipboard": "Keine gültige URL in der Zwischenablage gefunden",
+        "invalidUrl": "Ungültige URL",
+        "downloadFailed": "Download fehlgeschlagen",
+        "tryAgain": "Erneut versuchen",
+        "rateLimitExceeded": "Anfragelimit überschritten. Bitte warten Sie.",
+        "fileTooLarge": "Dateigrößenlimit überschritten (max. 50MB)",
+        "networkError": "Verbindungsfehler. Überprüfen Sie Ihre Internetverbindung."
+    },
+    "settings": {
+        "title": "Einstellungen",
+        "appearance": "Aussehen",
+        "theme": "Design",
+        "themeMode": "Designmodus",
+        "darkMode": "Dunkel",
+        "lightMode": "Hell",
+        "themeVariant": "Designstil",
+        "storage": "Speicher",
+        "downloadLocation": "Speicherort",
+        "selectFolder": "Ordner auswählen",
+        "currentLocation": "Aktuell: {{path}}",
+        "permissions": "Berechtigungen",
+        "requestPermissions": "Berechtigungen erneut anfordern",
+        "permissionsGranted": "Alle Berechtigungen erteilt",
+        "permissionsDenied": "Einige Berechtigungen fehlen",
+        "about": "Über",
+        "version": "Version",
+        "language": "Sprache"
+    },
+    "permissions": {
+        "storageTitle": "Speicherberechtigung erforderlich",
+        "storageMessage": "Wir benötigen die Speicherberechtigung, um Videos auf Ihrem Gerät zu speichern.",
+        "granted": "Berechtigung erteilt",
+        "denied": "Berechtigung verweigert",
+        "openSettings": "Einstellungen öffnen"
+    },
+    "errors": {
+        "API_READY": "API bereit",
+        "DOWNLOAD_STARTED": "Download gestartet",
+        "INVALID_URL": "Ungültige oder fehlende URL",
+        "INVALID_TOKEN": "Ungültige Authentifizierung",
+        "FILE_NOT_READY": "Datei noch nicht bereit",
+        "FILE_NOT_FOUND": "Datei nicht gefunden",
+        "TOO_MANY_REQUESTS": "Zu viele Anfragen. Bitte warten.",
+        "VOLUME_LIMIT_EXCEEDED": "Stündliches Datenlimit überschritten",
+        "SPAM_DETECTED": "Spam erkannt. Vorübergehende Sperre.",
+        "FILE_TOO_LARGE": "Dateigrößenlimit überschritten (über 50MB)",
+        "INTERNAL_ERROR": "Serverfehler. Bitte erneut versuchen.",
+        "UNKNOWN_ERROR": "Unbekannter Fehler",
+        "UNSUPPORTED_PLATFORM": "Diese Plattform wird nicht unterstützt. Unterstützt: Twitter, Instagram, Facebook, Reddit, Youtube",
+        "SERVER_ERROR": "Unerwarteter Fehler. Bitte später erneut versuchen.",
+        "NETWORK_ERROR": "Verbindungsfehler. Überprüfen Sie Ihr Internet."
+    }
+}

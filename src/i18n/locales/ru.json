@@ -1,0 +1,72 @@
+{
+    "common": {
+        "appName": "Arsivinyo",
+        "loading": "Загрузка...",
+        "error": "Ошибка",
+        "success": "Успешно",
+        "cancel": "Отмена",
+        "ok": "ОК",
+        "save": "Сохранить",
+        "back": "Назад"
+    },
+    "home": {
+        "title": "Скачать медиа",
+        "downloadButton": "Нажмите для загрузки",
+        "downloadButtonHint": "Загружает URL из буфера обмена",
+        "downloading": "Загрузка...",
+        "processing": "Обработка...",
+        "downloadComplete": "Загрузка завершена!",
+        "savedTo": "Сохранено в: {{path}}",
+        "noUrlInClipboard": "Действительный URL не найден в буфере обмена",
+        "invalidUrl": "Недействительный URL",
+        "downloadFailed": "Загрузка не удалась",
+        "tryAgain": "Попробовать снова",
+        "rateLimitExceeded": "Превышен лимит запросов. Пожалуйста, подождите.",
+        "fileTooLarge": "Превышен лимит размера файла (макс. 50 МБ)",
+        "networkError": "Ошибка подключения. Проверьте подключение к Интернету."
+    },
+    "settings": {
+        "title": "Настройки",
+        "appearance": "Внешний вид",
+        "theme": "Тема",
+        "themeMode": "Режим темы",
+        "darkMode": "Тёмный",
+        "lightMode": "Светлый",
+        "themeVariant": "Стиль темы",
+        "storage": "Хранилище",
+        "downloadLocation": "Место загрузки",
+        "selectFolder": "Выбрать папку",
+        "currentLocation": "Текущее: {{path}}",
+        "permissions": "Разрешения",
+        "requestPermissions": "Запросить разрешения снова",
+        "permissionsGranted": "Все разрешения предоставлены",
+        "permissionsDenied": "Некоторые разрешения отсутствуют",
+        "about": "О приложении",
+        "version": "Версия",
+        "language": "Язык"
+    },
+    "permissions": {
+        "storageTitle": "Требуется разрешение на хранение",
+        "storageMessage": "Нам нужно разрешение на хранение для сохранения видео на вашем устройстве.",
+        "granted": "Разрешение предоставлено",
+        "denied": "Разрешение отклонено",
+        "openSettings": "Открыть настройки"
+    },
+    "errors": {
+        "API_READY": "API готов",
+        "DOWNLOAD_STARTED": "Загрузка начата",
+        "INVALID_URL": "Недействительный или отсутствующий URL",
+        "INVALID_TOKEN": "Недействительная аутентификация",
+        "FILE_NOT_READY": "Файл ещё не готов",
+        "FILE_NOT_FOUND": "Файл не найден",
+        "TOO_MANY_REQUESTS": "Слишком много запросов. Пожалуйста, подождите.",
+        "VOLUME_LIMIT_EXCEEDED": "Превышен почасовой лимит данных",
+        "SPAM_DETECTED": "Обнаружен спам. Применена временная блокировка.",
+        "FILE_TOO_LARGE": "Превышен лимит размера файла (более 50 МБ)",
+        "INTERNAL_ERROR": "Ошибка сервера. Пожалуйста, попробуйте снова.",
+        "UNKNOWN_ERROR": "Неизвестная ошибка",
+        "UNSUPPORTED_PLATFORM": "Эта платформа не поддерживается. Поддерживаемые: Twitter, Instagram, Facebook, Reddit, Youtube",
+        "SERVER_ERROR": "Непредвиденная ошибка. Пожалуйста, попробуйте позже.",
+        "NETWORK_ERROR": "Ошибка подключения. Проверьте Интернет."
+    }
+}
