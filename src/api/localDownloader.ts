@@ -6,6 +6,8 @@ import LocalDownloaderModule, {
   type LocalDownloadEvent,
   type LocalDownloadStartInput,
   type LocalDownloadStartResult,
+  type LocalSaveToMediaStoreInput,
+  type LocalSaveToMediaStoreResult,
   type LocalPlatform,
   type LocalTaskStatusResult,
 } from '../native/localDownloader';
@@ -66,4 +68,9 @@ export async function getLocalCookieDefaults(): Promise<Record<LocalPlatform, st
 export async function getLocalDiagnostics(): Promise<LocalDiagnostics> {
   ensureAndroid();
   return LocalDownloaderModule.getDiagnostics();
+}
+
+export async function saveLocalFileToMediaStore(input: LocalSaveToMediaStoreInput): Promise<LocalSaveToMediaStoreResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.saveToMediaStore(input);
 }

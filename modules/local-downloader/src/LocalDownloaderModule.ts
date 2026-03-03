@@ -6,6 +6,8 @@ import type {
   LocalDownloadEvent,
   LocalDownloadStartInput,
   LocalDownloadStartResult,
+  LocalSaveToMediaStoreInput,
+  LocalSaveToMediaStoreResult,
   LocalPlatform,
   LocalTaskStatusResult,
 } from './LocalDownloader.types';
@@ -19,6 +21,7 @@ type LocalDownloaderNativeModule = {
   setCookieDefault(input: { platform: LocalPlatform; profileName: string }): Promise<{ success: boolean }>;
   getCookieDefaults(): Promise<Record<LocalPlatform, string | null>>;
   getDiagnostics(): Promise<LocalDiagnostics>;
+  saveToMediaStore(input: LocalSaveToMediaStoreInput): Promise<LocalSaveToMediaStoreResult>;
 };
 
 const unsupported = (): never => {
@@ -36,6 +39,7 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       setCookieDefault: async () => unsupported(),
       getCookieDefaults: async () => unsupported(),
       getDiagnostics: async () => unsupported(),
+      saveToMediaStore: async () => unsupported(),
     };
 const emitter: any = Platform.OS === 'android' ? new EventEmitter(NativeLocalDownloader as never) : null;
 

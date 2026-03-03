@@ -1,11 +1,14 @@
 package expo.modules.localdownloader
 
+import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.StatFs
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Log
+import android.provider.MediaStore
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import expo.modules.kotlin.modules.Module
@@ -23,7 +26,6 @@ import java.io.File
 import java.io.IOException
 import java.net.URI
 import java.security.KeyStore
-import java.security.MessageDigest
 import java.time.Instant
 import java.util.ArrayDeque
 import java.util.UUID
@@ -44,15 +46,34 @@ data class TaskState(
   var sizeMb: Double? = null,
   var errorCode: String? = null,
   var errorMessage: String? = null,
-  var estimatedSizeMb: Double? = null
+  var estimatedSizeMb: Double? = null,
+  var timestampNormalized: Boolean? = null,
+  var warningCode: String? = null
 )
 
 data class FfmpegInfo(
   val path: String? = null,
+  val ffprobePath: String? = null,
+  val location: String? = null,
   val abi: String? = null,
+  val runtimeSource: String = "none",
+  val nativeLibraryDir: String? = null,
+  val nativeLibraryEntries: List<String> = emptyList(),
   val exists: Boolean = false,
+  val ffprobeExists: Boolean = false,
   val executable: Boolean = false,
-  val version: String? = null
+  val ffprobeExecutable: Boolean = false,
+  val version: String? = null,
+  val ffprobeVersion: String? = null,
+  val ffmpegProbeError: String? = null,
+  val ffprobeProbeError: String? = null,
+  val mergeCapable: Boolean = false
+)
+
+data class BinaryProbeResult(
+  val runnable: Boolean,
+  val version: String? = null,
+  val error: String? = null
 )
 
 data class PreflightPythonInput(
@@ -62,7 +83,10 @@ data class PreflightPythonInput(
   val maxFileSizeMb: Int,
   val ffmpegPath: String?,
   val cookieFilePath: String?,
-  val forceNoCookie: Boolean = false
+  val forceNoCookie: Boolean = false,
+  val mergeCapable: Boolean = true,
+  val userAgent: String,
+  val debugLogging: Boolean = false
 )
 
 data class DownloadPythonInput(
@@ -74,7 +98,10 @@ data class DownloadPythonInput(
   val cancelFlagPath: String?,
   val ffmpegPath: String?,
   val cookieFilePath: String?,
-  val forceNoCookie: Boolean = false
+  val forceNoCookie: Boolean = false,
+  val mergeCapable: Boolean = true,
+  val userAgent: String,
+  val debugLogging: Boolean = false
 )
 
 class LocalDownloaderModule : Module() {
@@ -84,6 +111,7 @@ class LocalDownloaderModule : Module() {
   private val ignoredTaskResults = ConcurrentHashMap.newKeySet<String>()
   private val lastErrors = ArrayDeque<String>()
   private val tag = "LocalDownloader"
+  private val debugLoggingEnabled = BuildConfig.DEBUG
 
   @Volatile
   private var activeTaskId: String? = null
@@ -102,10 +130,25 @@ class LocalDownloaderModule : Module() {
     Events("downloadProgress")
 
     OnCreate {
+      debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
       cleanupRuntimeCookieTemp()
       migrateLegacyCookieStoreIfNeeded()
       loadTaskSnapshot()
-      cachedFfmpegInfo = resolveBundledFfmpegPath()
+      val ffmpegInfo = resolveBundledFfmpegPath()
+      debug("Initial ffmpeg info: ${summarizeFfmpegInfo(ffmpegInfo)}")
+      if (ffmpegInfo.runtimeSource != "native_library") {
+        addError(
+          "FFMPEG_NATIVE_RUNTIME_UNAVAILABLE: source=${ffmpegInfo.runtimeSource} " +
+            "nativeDir=${ffmpegInfo.nativeLibraryDir ?: "n/a"}"
+        )
+      } else if (!ffmpegInfo.exists) {
+        addError("FFMPEG_MISSING: bundled ffmpeg binary not found for device ABI")
+      } else if (!ffmpegInfo.ffprobeExists) {
+        addError("FFPROBE_MISSING: bundled ffprobe binary not found for device ABI")
+      } else if (!ffmpegInfo.mergeCapable) {
+        addError("MERGE_DEPENDENCY_MISSING: ffmpeg/ffprobe not executable")
+      }
+      cachedFfmpegInfo = ffmpegInfo
     }
 
     AsyncFunction("startDownload") { input: Map<String, Any?> ->
@@ -135,31 +178,48 @@ class LocalDownloaderModule : Module() {
       val cookiesDir = File(reactContext.filesDir, LEGACY_COOKIES_DIRNAME).apply { mkdirs() }
       val disabledCookiesDir = File(reactContext.filesDir, DISABLED_COOKIES_DIRNAME)
       val cancelFlag = createCancelFlag(taskId)
+      val effectivePlatform = cookiePlatform ?: detectCookiePlatform(url)
 
       activeTaskId = taskId
       activeJob = scope.launch {
         var runtimeCookiePath: String? = null
         runCatching {
+          debug("Task[$taskId] START url=$url platform=$effectivePlatform profile=$cookieProfile maxMb=$maxFileSizeMb")
           updateStatus(taskId, "STARTED", null, null, null, null, null)
           emitProgress(taskId, "STARTED", "starting", "Preflight")
 
-          runtimeCookiePath = prepareRuntimeCookiePath(taskId, url, cookieProfile, cookiePlatform)
+          runtimeCookiePath = prepareRuntimeCookiePath(taskId, url, cookieProfile, effectivePlatform)
           var effectiveCookiePath = runtimeCookiePath
+          debug("Task[$taskId] runtimeCookiePath=${runtimeCookiePath ?: "none"}")
 
-          val ffmpegInfo = getOrResolveFfmpegInfo()
+          if (effectivePlatform == "reddit" && effectiveCookiePath == null) {
+            val msg = "Reddit download requires a valid Reddit cookie profile in local mode."
+            debug("Task[$taskId] reddit cookie-first policy blocked anonymous attempt")
+            updateStatus(taskId, "FAILURE", null, null, null, "REDDIT_COOKIE_REQUIRED", msg)
+            emitProgress(taskId, "FAILURE", "error", msg)
+            addError("REDDIT_COOKIE_REQUIRED: $msg")
+            return@runCatching
+          }
+
+          val ffmpegInfo = getOrResolveFfmpegInfo(forceRefresh = true)
+          debug("Task[$taskId] ffmpeg info before preflight: ${summarizeFfmpegInfo(ffmpegInfo)}")
           var preflightResult = callPythonPreflight(
             PreflightPythonInput(
               url = url,
               cookiesDir = cookiesDir.absolutePath,
               cookieProfile = cookieProfile,
               maxFileSizeMb = maxFileSizeMb,
-              ffmpegPath = ffmpegInfo.path,
+              ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
               cookieFilePath = effectiveCookiePath,
               forceNoCookie = false,
+              mergeCapable = ffmpegInfo.mergeCapable,
+              userAgent = DEFAULT_HTTP_USER_AGENT,
+              debugLogging = debugLoggingEnabled,
             )
           )
+          debug("Task[$taskId] preflight result=$preflightResult")
 
-          if (!preflightResult.optBoolean("success", false) && shouldRetryWithoutCookies(preflightResult, effectiveCookiePath)) {
+          if (!preflightResult.optBoolean("success", false) && shouldRetryWithoutCookies(preflightResult, effectiveCookiePath, effectivePlatform)) {
             addError("COOKIE_RETRY_PREFLIGHT: task=$taskId")
             cleanupRuntimeCookieTemp(taskId)
             effectiveCookiePath = null
@@ -169,12 +229,17 @@ class LocalDownloaderModule : Module() {
                 cookiesDir = disabledCookiesDir.absolutePath,
                 cookieProfile = null,
                 maxFileSizeMb = maxFileSizeMb,
-                ffmpegPath = ffmpegInfo.path,
+                ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
                 cookieFilePath = null,
                 forceNoCookie = true,
+                mergeCapable = ffmpegInfo.mergeCapable,
+                userAgent = DEFAULT_HTTP_USER_AGENT,
+                debugLogging = debugLoggingEnabled,
               )
             )
+            debug("Task[$taskId] preflight retry(no-cookie) result=$preflightResult")
           }
+          preflightResult = normalizeRuntimeError(preflightResult, ffmpegInfo)
 
           if (shouldIgnoreTaskResult(taskId)) {
             return@runCatching
@@ -195,6 +260,7 @@ class LocalDownloaderModule : Module() {
           if (!preflightResult.optBoolean("success", false)) {
             val code = preflightResult.optString("code", "INTERNAL_ERROR")
             val msg = preflightResult.optString("message", "Preflight failed")
+            debug("Task[$taskId] preflight failed code=$code message=$msg")
 
             if (code == "DOWNLOAD_CANCELLED") {
               markCancelled(taskId, msg)
@@ -216,6 +282,7 @@ class LocalDownloaderModule : Module() {
 
           if (freeMb < requiredFreeMb) {
             val msg = "Not enough free storage. Free=${"%.1f".format(freeMb)}MB, Required=${"%.1f".format(requiredFreeMb)}MB"
+            debug("Task[$taskId] storage check failed: $msg")
             updateStatus(taskId, "FAILURE", null, null, null, "SERVER_BUSY", msg)
             emitProgress(taskId, "FAILURE", "error", msg)
             addError("SERVER_BUSY: $msg")
@@ -233,13 +300,17 @@ class LocalDownloaderModule : Module() {
               cookieProfile = cookieProfile,
               maxFileSizeMb = maxFileSizeMb,
               cancelFlagPath = cancelFlag.absolutePath,
-              ffmpegPath = ffmpegInfo.path,
+              ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
               cookieFilePath = effectiveCookiePath,
               forceNoCookie = false,
+              mergeCapable = ffmpegInfo.mergeCapable,
+              userAgent = DEFAULT_HTTP_USER_AGENT,
+              debugLogging = debugLoggingEnabled,
             )
           )
+          debug("Task[$taskId] download result=$result")
 
-          if (!result.optBoolean("success", false) && shouldRetryWithoutCookies(result, effectiveCookiePath)) {
+          if (!result.optBoolean("success", false) && shouldRetryWithoutCookies(result, effectiveCookiePath, effectivePlatform)) {
             addError("COOKIE_RETRY_DOWNLOAD: task=$taskId")
             emitProgress(taskId, "PROGRESS", "downloading", "Retrying without cookies")
             cleanupRuntimeCookieTemp(taskId)
@@ -252,12 +323,17 @@ class LocalDownloaderModule : Module() {
                 cookieProfile = null,
                 maxFileSizeMb = maxFileSizeMb,
                 cancelFlagPath = cancelFlag.absolutePath,
-                ffmpegPath = ffmpegInfo.path,
+                ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
                 cookieFilePath = null,
                 forceNoCookie = true,
+                mergeCapable = ffmpegInfo.mergeCapable,
+                userAgent = DEFAULT_HTTP_USER_AGENT,
+                debugLogging = debugLoggingEnabled,
               )
             )
+            debug("Task[$taskId] download retry(no-cookie) result=$result")
           }
+          result = normalizeRuntimeError(result, ffmpegInfo)
 
           if (shouldIgnoreTaskResult(taskId)) {
             return@runCatching
@@ -272,12 +348,26 @@ class LocalDownloaderModule : Module() {
             val filename = result.optString("filename").ifBlank { null }
             val filePath = result.optString("file_path").ifBlank { null }
             val sizeMb = result.optDouble("size_mb", Double.NaN).takeIf { !it.isNaN() }
+            val timestampNormalized = if (result.has("timestamp_normalized")) {
+              result.optBoolean("timestamp_normalized")
+            } else {
+              null
+            }
+            val warningCode = result.optString("warning_code").ifBlank { null }
+            debug("Task[$taskId] success file=$filePath sizeMb=$sizeMb timestampNormalized=$timestampNormalized warning=$warningCode")
 
             updateStatus(taskId, "SUCCESS", filename, filePath, sizeMb, null, null)
+            tasks[taskId]?.timestampNormalized = timestampNormalized
+            tasks[taskId]?.warningCode = warningCode
+            persistTaskSnapshot()
+            if (warningCode != null) {
+              addError("$warningCode: task=$taskId")
+            }
             emitProgress(taskId, "SUCCESS", "completed", filename ?: "Download completed")
           } else {
             val code = result.optString("code", "INTERNAL_ERROR")
             val message = result.optString("message", "Download failed")
+            debug("Task[$taskId] download failed code=$code message=$message")
 
             if (code == "DOWNLOAD_CANCELLED") {
               markCancelled(taskId, message)
@@ -296,11 +386,13 @@ class LocalDownloaderModule : Module() {
           Log.e(tag, "Task failed", it)
           val message = it.message ?: "Unexpected error"
           val code = extractKnownErrorCode(message) ?: "INTERNAL_ERROR"
+          debug("Task[$taskId] exception code=$code message=$message")
           updateStatus(taskId, "FAILURE", null, null, null, code, message)
           emitProgress(taskId, "FAILURE", "error", message)
           addError("$code: $message")
         }
 
+        debug("Task[$taskId] cleanup runtime cookie + cancel flag")
         cleanupRuntimeCookieTemp(taskId)
         clearCancelFlag(taskId)
         if (activeTaskId == taskId) {
@@ -459,8 +551,80 @@ class LocalDownloaderModule : Module() {
       }
     }
 
+    AsyncFunction("saveToMediaStore") { input: Map<String, Any?> ->
+      val filePath = (input["filePath"] as? String)?.trim().orEmpty()
+      val filename = (input["filename"] as? String)?.trim().orEmpty()
+      if (filePath.isBlank() || filename.isBlank()) {
+        throw IllegalArgumentException("FILE_NOT_FOUND")
+      }
+
+      val sourceFile = File(filePath)
+      if (!sourceFile.exists() || !sourceFile.isFile) {
+        throw IllegalArgumentException("FILE_NOT_FOUND")
+      }
+
+      val mimeType = (input["mimeType"] as? String)?.trim()?.takeIf { it.isNotBlank() }
+        ?: guessMimeType(filename)
+      val dateTakenMs = (input["dateTakenMs"] as? Number)?.toLong() ?: System.currentTimeMillis()
+      val isVideo = mimeType.startsWith("video/")
+      val dateTakenColumn = if (isVideo) {
+        MediaStore.Video.VideoColumns.DATE_TAKEN
+      } else {
+        MediaStore.Images.ImageColumns.DATE_TAKEN
+      }
+      val nowSeconds = System.currentTimeMillis() / 1000L
+
+      val contentValues = ContentValues().apply {
+        put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+        put(MediaStore.MediaColumns.DATE_ADDED, nowSeconds)
+        put(MediaStore.MediaColumns.DATE_MODIFIED, nowSeconds)
+        put(dateTakenColumn, dateTakenMs)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          put(
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            if (isVideo) Environment.DIRECTORY_DCIM else Environment.DIRECTORY_PICTURES
+          )
+          put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+      }
+
+      val resolver = requireNotNull(appContext.reactContext).contentResolver
+      val collection = if (isVideo) {
+        MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+      } else {
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+      }
+      val uri = resolver.insert(collection, contentValues) ?: throw IOException("MEDIASTORE_INSERT_FAILED")
+
+      runCatching {
+        resolver.openOutputStream(uri)?.use { output ->
+          sourceFile.inputStream().use { input ->
+            input.copyTo(output)
+          }
+        } ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_FAILED")
+      }.onFailure { error ->
+        runCatching { resolver.delete(uri, null, null) }
+        throw error
+      }
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val finalizeValues = ContentValues().apply {
+          put(MediaStore.MediaColumns.IS_PENDING, 0)
+          put(MediaStore.MediaColumns.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
+          put(dateTakenColumn, dateTakenMs)
+        }
+        resolver.update(uri, finalizeValues, null, null)
+      }
+
+      mapOf(
+        "uri" to uri.toString(),
+        "assetId" to uri.lastPathSegment
+      )
+    }
+
     AsyncFunction("getDiagnostics") {
-      val ffmpegInfo = getOrResolveFfmpegInfo()
+      val ffmpegInfo = getOrResolveFfmpegInfo(forceRefresh = true)
 
       var ytDlpVersion = "unknown"
       var ytDlpAvailable = false
@@ -481,10 +645,21 @@ class LocalDownloaderModule : Module() {
         "ytDlpAvailable" to ytDlpAvailable,
         "pythonReady" to pythonReady,
         "ffmpegPath" to ffmpegInfo.path,
+        "ffprobePath" to ffmpegInfo.ffprobePath,
         "ffmpegAbi" to ffmpegInfo.abi,
+        "ffmpegRuntimeSource" to ffmpegInfo.runtimeSource,
+        "nativeLibraryDir" to ffmpegInfo.nativeLibraryDir,
+        "nativeLibraryEntries" to ffmpegInfo.nativeLibraryEntries,
         "ffmpegVersion" to ffmpegInfo.version,
+        "ffprobeVersion" to ffmpegInfo.ffprobeVersion,
         "ffmpegExists" to ffmpegInfo.exists,
+        "ffprobeExists" to ffmpegInfo.ffprobeExists,
         "ffmpegExecutable" to ffmpegInfo.executable,
+        "ffprobeExecutable" to ffmpegInfo.ffprobeExecutable,
+        "ffmpegProbeError" to ffmpegInfo.ffmpegProbeError,
+        "ffprobeProbeError" to ffmpegInfo.ffprobeProbeError,
+        "mergeCapable" to ffmpegInfo.mergeCapable,
+        "activeHttpUserAgent" to DEFAULT_HTTP_USER_AGENT,
         "secureCookieStoreEnabled" to isSecureCookieStoreEnabled(),
         "cookieEncryptionVersion" to COOKIE_STORE_VERSION,
         "cookieProfilesEncryptedCount" to countSecureCookieProfiles(),
@@ -492,6 +667,23 @@ class LocalDownloaderModule : Module() {
         "cookieMigrationStatus" to cookieMigrationStatus,
         "activeTaskId" to activeTaskId,
         "lastErrors" to lastErrors.toList()
+      )
+    }
+
+    AsyncFunction("runCapabilityCheck") {
+      val ffmpegInfo = getOrResolveFfmpegInfo(forceRefresh = true)
+      val pythonReady = runCatching {
+        ensurePythonReady()
+        true
+      }.getOrDefault(false)
+
+      mapOf(
+        "pythonReady" to pythonReady,
+        "ffmpegRuntimeSource" to ffmpegInfo.runtimeSource,
+        "ffmpegExists" to ffmpegInfo.exists,
+        "ffprobeExists" to ffmpegInfo.ffprobeExists,
+        "mergeCapable" to ffmpegInfo.mergeCapable,
+        "activeHttpUserAgent" to DEFAULT_HTTP_USER_AGENT
       )
     }
   }
@@ -530,6 +722,10 @@ class LocalDownloaderModule : Module() {
 
   private fun callPythonPreflight(input: PreflightPythonInput): JSONObject {
     ensurePythonReady()
+    debug(
+      "Python preflight call url=${input.url} ffmpegPath=${input.ffmpegPath} " +
+        "cookieFile=${input.cookieFilePath ?: "none"} mergeCapable=${input.mergeCapable} forceNoCookie=${input.forceNoCookie}"
+    )
     val py = Python.getInstance()
     val module = py.getModule("local_downloader")
     val result = module.callAttr(
@@ -540,13 +736,22 @@ class LocalDownloaderModule : Module() {
       input.maxFileSizeMb,
       input.ffmpegPath,
       input.cookieFilePath,
-      input.forceNoCookie
+      input.forceNoCookie,
+      input.mergeCapable,
+      input.userAgent,
+      input.debugLogging
     )
-    return JSONObject(result.toString())
+    val json = JSONObject(result.toString())
+    debug("Python preflight response code=${json.optString("code")} success=${json.optBoolean("success")} msg=${json.optString("message")}")
+    return json
   }
 
   private fun callPythonDownload(input: DownloadPythonInput): JSONObject {
     ensurePythonReady()
+    debug(
+      "Python download call url=${input.url} ffmpegPath=${input.ffmpegPath} " +
+        "cookieFile=${input.cookieFilePath ?: "none"} mergeCapable=${input.mergeCapable} forceNoCookie=${input.forceNoCookie}"
+    )
     val py = Python.getInstance()
     val module = py.getModule("local_downloader")
     val result = module.callAttr(
@@ -559,21 +764,75 @@ class LocalDownloaderModule : Module() {
       input.cancelFlagPath,
       input.ffmpegPath,
       input.cookieFilePath,
-      input.forceNoCookie
+      input.forceNoCookie,
+      input.mergeCapable,
+      input.userAgent,
+      input.debugLogging
     )
-    return JSONObject(result.toString())
+    val json = JSONObject(result.toString())
+    debug("Python download response code=${json.optString("code")} success=${json.optBoolean("success")} msg=${json.optString("message")}")
+    return json
   }
 
   private fun ensurePythonReady() {
     val context = requireNotNull(appContext.reactContext).applicationContext
     if (!Python.isStarted()) {
       Python.start(AndroidPlatform(context))
+      debug("Python runtime started")
+    } else {
+      debug("Python runtime already started")
     }
   }
 
   private fun getFreeSpaceMb(directory: File): Double {
     val stat = StatFs(directory.absolutePath)
     return stat.availableBytes.toDouble() / MB_IN_BYTES
+  }
+
+  private fun normalizeRuntimeError(result: JSONObject, ffmpegInfo: FfmpegInfo): JSONObject {
+    if (result.optBoolean("success", false)) {
+      return result
+    }
+
+    val code = result.optString("code", "")
+    if (code != "MERGE_DEPENDENCY_MISSING" || ffmpegInfo.runtimeSource == "native_library") {
+      return result
+    }
+
+    val reason = buildString {
+      append("Native FFmpeg runtime unavailable")
+      if (!ffmpegInfo.nativeLibraryDir.isNullOrBlank()) {
+        append(" (nativeLibraryDir=")
+        append(ffmpegInfo.nativeLibraryDir)
+        append(")")
+      }
+      if (!ffmpegInfo.ffmpegProbeError.isNullOrBlank()) {
+        append(". ffmpeg: ")
+        append(ffmpegInfo.ffmpegProbeError)
+      }
+      if (!ffmpegInfo.ffprobeProbeError.isNullOrBlank()) {
+        append(". ffprobe: ")
+        append(ffmpegInfo.ffprobeProbeError)
+      }
+    }
+
+    return JSONObject(result.toString()).apply {
+      put("code", "FFMPEG_NATIVE_RUNTIME_UNAVAILABLE")
+      put("message", reason)
+    }
+  }
+
+  private fun guessMimeType(filename: String): String {
+    return when (filename.substringAfterLast('.', "").lowercase()) {
+      "mp4", "m4v", "mov", "3gp" -> "video/mp4"
+      "webm" -> "video/webm"
+      "mkv" -> "video/x-matroska"
+      "avi" -> "video/x-msvideo"
+      "jpg", "jpeg" -> "image/jpeg"
+      "png" -> "image/png"
+      "gif" -> "image/gif"
+      else -> "video/mp4"
+    }
   }
 
   private fun prepareRuntimeCookiePath(
@@ -596,25 +855,40 @@ class LocalDownloaderModule : Module() {
     val runtimeFile = File(runtimeDir, "cookie.txt")
     val plaintext = readEncryptedCookieFile(selectedFile)
     atomicWriteBytes(runtimeFile, plaintext)
+    debug("Task[$taskId] prepared runtime cookie file from profile=${selectedFile.nameWithoutExtension} platform=$platform")
     return runtimeFile.absolutePath
   }
 
-  private fun shouldRetryWithoutCookies(result: JSONObject, usedCookiePath: String?): Boolean {
+  private fun shouldRetryWithoutCookies(result: JSONObject, usedCookiePath: String?, platform: String?): Boolean {
     if (usedCookiePath.isNullOrBlank()) {
+      debug("Retry-without-cookies=false reason=no-cookie")
+      return false
+    }
+    if (platform != null && STRICT_COOKIE_PLATFORMS.contains(platform)) {
+      debug("Retry-without-cookies=false reason=strict-platform platform=$platform")
       return false
     }
 
     val code = result.optString("code", "")
     if (code == "DOWNLOAD_CANCELLED" || code == "FILE_TOO_LARGE") {
+      debug("Retry-without-cookies=false reason=terminal-code code=$code")
+      return false
+    }
+
+    if (code == "COOKIE_STALE_OR_INVALID") {
+      debug("Retry-without-cookies=false reason=cookie-invalid")
       return false
     }
 
     if (code in RETRYABLE_COOKIE_FAILURE_CODES) {
+      debug("Retry-without-cookies=true reason=retryable-code code=$code")
       return true
     }
 
     val message = result.optString("message", "").lowercase()
-    return message.contains("cookie") || message.contains("sign in") || message.contains("login")
+    val decision = message.contains("cookie") || message.contains("sign in") || message.contains("login")
+    debug("Retry-without-cookies=$decision reason=message-match")
+    return decision
   }
 
   private fun detectCookiePlatform(url: String): String? {
@@ -921,6 +1195,14 @@ class LocalDownloaderModule : Module() {
       "COOKIE_STORE_DECRYPT_FAILED",
       "COOKIE_MIGRATION_FAILED",
       "COOKIE_PROFILE_NOT_FOUND",
+      "REDDIT_COOKIE_REQUIRED",
+      "FFMPEG_NATIVE_RUNTIME_UNAVAILABLE",
+      "FFMPEG_MISSING",
+      "FFPROBE_MISSING",
+      "MERGE_DEPENDENCY_MISSING",
+      "SITE_BLOCKED_403",
+      "COOKIE_STALE_OR_INVALID",
+      "TIMESTAMP_POSTPROCESS_FAILED",
       "INVALID_URL",
       "DOWNLOAD_ALREADY_IN_PROGRESS",
       "FILE_TOO_LARGE",
@@ -1082,96 +1364,183 @@ class LocalDownloaderModule : Module() {
     return this.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ').trim()
   }
 
-  private fun getOrResolveFfmpegInfo(): FfmpegInfo {
-    val cached = cachedFfmpegInfo
-    if (cached != null) {
-      return cached
+  private fun getOrResolveFfmpegInfo(forceRefresh: Boolean = false): FfmpegInfo {
+    if (!forceRefresh) {
+      val cached = cachedFfmpegInfo
+      if (cached != null) {
+        debug("Using cached ffmpeg info: ${summarizeFfmpegInfo(cached)}")
+        return cached
+      }
     }
 
     val resolved = resolveBundledFfmpegPath()
+    debug("Resolved ffmpeg info: ${summarizeFfmpegInfo(resolved)}")
     cachedFfmpegInfo = resolved
     return resolved
   }
 
   private fun resolveBundledFfmpegPath(): FfmpegInfo {
     val context = requireNotNull(appContext.reactContext)
-    val candidateAbis = Build.SUPPORTED_ABIS?.toList()?.ifEmpty { SUPPORTED_FFMPEG_ABIS } ?: SUPPORTED_FFMPEG_ABIS
+    debug("Resolving ffmpeg runtime (native libs first)")
+    val nativeSnapshot = readNativeLibrarySnapshot(context)
+    resolveNativeLibraryFfmpeg(nativeSnapshot)?.let { nativeInfo ->
+      debug("Using native lib dir ffmpeg runtime: ${summarizeFfmpegInfo(nativeInfo)}")
+      return nativeInfo
+    }
 
+    val fallback = inspectAssetRuntimeFallback(context, nativeSnapshot)
+    addError(
+      "FFMPEG_NATIVE_RUNTIME_UNAVAILABLE: nativeDir=${fallback.nativeLibraryDir ?: "n/a"} " +
+        "entries=${fallback.nativeLibraryEntries.joinToString()} " +
+        "ffmpeg=${fallback.ffmpegProbeError ?: "n/a"} ffprobe=${fallback.ffprobeProbeError ?: "n/a"}"
+    )
+    return fallback
+  }
+
+  private fun readNativeLibrarySnapshot(context: android.content.Context): Pair<String?, List<String>> {
+    val nativeDirPath = context.applicationInfo.nativeLibraryDir
+    if (nativeDirPath.isNullOrBlank()) {
+      return null to emptyList()
+    }
+
+    val nativeDir = File(nativeDirPath)
+    if (!nativeDir.exists() || !nativeDir.isDirectory) {
+      return nativeDirPath to emptyList()
+    }
+
+    val entries = nativeDir.listFiles()
+      ?.map { it.name }
+      ?.sorted()
+      ?: emptyList()
+    return nativeDirPath to entries
+  }
+
+  private fun resolveNativeLibraryFfmpeg(nativeSnapshot: Pair<String?, List<String>>): FfmpegInfo? {
+    val nativeDirPath = nativeSnapshot.first ?: return null
+    val nativeDir = File(nativeDirPath)
+    if (!nativeDir.exists() || !nativeDir.isDirectory) {
+      debug("Native library dir unavailable: $nativeDirPath")
+      return null
+    }
+    debug("Checking native library dir for ffmpeg: ${nativeDir.absolutePath}")
+    debug("Native library dir entries: ${nativeSnapshot.second.joinToString()}")
+
+    val binaryNamePairs = listOf(
+      "ffmpeg" to "ffprobe",
+      "libffmpeg.so" to "libffprobe.so",
+    )
+
+    for ((ffmpegName, ffprobeName) in binaryNamePairs) {
+      val ffmpegFile = File(nativeDir, ffmpegName)
+      val ffprobeFile = File(nativeDir, ffprobeName)
+      if (!ffmpegFile.exists() || !ffprobeFile.exists()) {
+        debug("Native pair missing ffmpeg=${ffmpegFile.exists()} ffprobe=${ffprobeFile.exists()} names=$ffmpegName/$ffprobeName")
+        continue
+      }
+
+      val ffmpegProbe = probeBinary(ffmpegFile.absolutePath, "ffmpeg")
+      val ffprobeProbe = probeBinary(ffprobeFile.absolutePath, "ffprobe")
+
+      val ffmpegRunnable = ffmpegProbe.runnable
+      val ffprobeRunnable = ffprobeProbe.runnable
+      val mergeCapable = ffmpegRunnable && ffprobeRunnable
+      debug(
+        "Native pair probe names=$ffmpegName/$ffprobeName runnable=$mergeCapable " +
+          "ffmpeg=${ffmpegProbe.version ?: ffmpegProbe.error} ffprobe=${ffprobeProbe.version ?: ffprobeProbe.error}"
+      )
+      if (!mergeCapable) {
+        addError(
+          "FFMPEG_NATIVE_RUNTIME_NOT_READY: ffmpeg=${ffmpegProbe.error ?: "not runnable"} " +
+            "ffprobe=${ffprobeProbe.error ?: "not runnable"} dir=${nativeDir.absolutePath}"
+        )
+      }
+
+      return FfmpegInfo(
+        path = ffmpegFile.absolutePath,
+        ffprobePath = ffprobeFile.absolutePath,
+        location = nativeDir.absolutePath,
+        abi = Build.SUPPORTED_ABIS?.firstOrNull(),
+        runtimeSource = "native_library",
+        nativeLibraryDir = nativeDir.absolutePath,
+        nativeLibraryEntries = nativeSnapshot.second,
+        exists = true,
+        ffprobeExists = true,
+        executable = ffmpegRunnable,
+        ffprobeExecutable = ffprobeRunnable,
+        version = ffmpegProbe.version,
+        ffprobeVersion = ffprobeProbe.version,
+        ffmpegProbeError = ffmpegProbe.error,
+        ffprobeProbeError = ffprobeProbe.error,
+        mergeCapable = mergeCapable,
+      )
+    }
+
+    return null
+  }
+
+  private fun inspectAssetRuntimeFallback(
+    context: android.content.Context,
+    nativeSnapshot: Pair<String?, List<String>>
+  ): FfmpegInfo {
+    val candidateAbis = Build.SUPPORTED_ABIS?.toList()?.ifEmpty { SUPPORTED_FFMPEG_ABIS } ?: SUPPORTED_FFMPEG_ABIS
+    debug("Inspecting ffmpeg assets ABIs: ${candidateAbis.joinToString()}")
     for (abi in candidateAbis) {
       if (!SUPPORTED_FFMPEG_ABIS.contains(abi)) {
         continue
       }
 
-      val targetDir = File(context.filesDir, "ffmpeg/$abi").apply { mkdirs() }
-      val targetFile = File(targetDir, "ffmpeg")
-      val checksumFile = File(targetDir, "ffmpeg.sha256")
-      val assetPath = "ffmpeg/$abi/ffmpeg"
-
-      val expectedChecksum = computeAssetSha256(assetPath) ?: continue
-      val needsCopy = !targetFile.exists() || !checksumFile.exists() || checksumFile.readText().trim() != expectedChecksum
-
-      if (needsCopy) {
-        val copied = copyAssetToFile(assetPath, targetFile)
-        if (!copied) {
-          continue
-        }
-        checksumFile.writeText(expectedChecksum)
+      val ffmpegAssetExists = assetExists(context, "ffmpeg/$abi/ffmpeg")
+      val ffprobeAssetExists = assetExists(context, "ffmpeg/$abi/ffprobe")
+      if (!ffmpegAssetExists && !ffprobeAssetExists) {
+        continue
       }
 
-      val executable = targetFile.setExecutable(true, false) && targetFile.canExecute()
-      val version = if (executable) probeFfmpegVersion(targetFile.absolutePath) else null
-
-      if (targetFile.exists()) {
-        return FfmpegInfo(
-          path = targetFile.absolutePath,
-          abi = abi,
-          exists = true,
-          executable = executable,
-          version = version,
-        )
-      }
+      return FfmpegInfo(
+        abi = abi,
+        runtimeSource = "asset_fallback",
+        nativeLibraryDir = nativeSnapshot.first,
+        nativeLibraryEntries = nativeSnapshot.second,
+        exists = ffmpegAssetExists,
+        ffprobeExists = ffprobeAssetExists,
+        executable = false,
+        ffprobeExecutable = false,
+        ffmpegProbeError = if (ffmpegAssetExists) {
+          "Asset fallback binaries are non-executable on this device; enable native library runtime extraction."
+        } else {
+          "ffmpeg asset missing"
+        },
+        ffprobeProbeError = if (ffprobeAssetExists) {
+          "Asset fallback binaries are non-executable on this device; enable native library runtime extraction."
+        } else {
+          "ffprobe asset missing"
+        },
+        mergeCapable = false,
+      )
     }
 
-    addError("FFMPEG_NOT_AVAILABLE: no compatible bundled binary found")
-    return FfmpegInfo()
+    return FfmpegInfo(
+      runtimeSource = "none",
+      nativeLibraryDir = nativeSnapshot.first,
+      nativeLibraryEntries = nativeSnapshot.second,
+      exists = false,
+      ffprobeExists = false,
+      executable = false,
+      ffprobeExecutable = false,
+      ffmpegProbeError = "No compatible native runtime or bundled ffmpeg assets found for device ABI.",
+      ffprobeProbeError = "No compatible native runtime or bundled ffprobe assets found for device ABI.",
+      mergeCapable = false,
+    )
   }
 
-  private fun computeAssetSha256(assetPath: String): String? {
-    val context = requireNotNull(appContext.reactContext)
+  private fun assetExists(context: android.content.Context, assetPath: String): Boolean {
     return runCatching {
-      context.assets.open(assetPath).use { stream ->
-        val digest = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteArray(8192)
-        while (true) {
-          val read = stream.read(buffer)
-          if (read <= 0) {
-            break
-          }
-          digest.update(buffer, 0, read)
-        }
-        digest.digest().joinToString(separator = "") { "%02x".format(it) }
-      }
-    }.getOrNull()
-  }
-
-  private fun copyAssetToFile(assetPath: String, targetFile: File): Boolean {
-    val context = requireNotNull(appContext.reactContext)
-    return runCatching {
-      context.assets.open(assetPath).use { inputStream ->
-        targetFile.outputStream().use { outputStream ->
-          inputStream.copyTo(outputStream)
-        }
-      }
+      context.assets.open(assetPath).use { _ -> }
       true
-    }.getOrElse {
-      if (it !is IOException) {
-        addError("FFMPEG_COPY_ERROR: ${it.message}")
-      }
-      false
-    }
+    }.getOrDefault(false)
   }
 
-  private fun probeFfmpegVersion(binaryPath: String): String? {
+  private fun probeBinary(binaryPath: String, label: String): BinaryProbeResult {
+    debug("Probing $label binary at $binaryPath")
     return runCatching {
       val process = ProcessBuilder(binaryPath, "-version")
         .redirectErrorStream(true)
@@ -1180,13 +1549,42 @@ class LocalDownloaderModule : Module() {
       val finished = process.waitFor(2, TimeUnit.SECONDS)
       if (!finished) {
         process.destroyForcibly()
-        return@runCatching null
+        return@runCatching BinaryProbeResult(
+          runnable = false,
+          error = "$label probe timed out"
+        )
       }
 
-      process.inputStream.bufferedReader().use { reader ->
-        reader.readLine()?.trim()
+      val output = process.inputStream.bufferedReader().use { reader ->
+        reader.readText()
       }
-    }.getOrNull()
+      val firstLine = output.lineSequence().firstOrNull()?.trim()
+      val exitCode = process.exitValue()
+      if (exitCode == 0 && !firstLine.isNullOrBlank()) {
+        debug("$label probe success version=$firstLine")
+        BinaryProbeResult(
+          runnable = true,
+          version = firstLine
+        )
+      } else {
+        val snippet = output
+          .lineSequence()
+          .take(2)
+          .joinToString(" | ")
+          .ifBlank { "no output" }
+        debug("$label probe failure exit=$exitCode snippet=$snippet")
+        BinaryProbeResult(
+          runnable = false,
+          error = "$label exited $exitCode: $snippet"
+        )
+      }
+    }.getOrElse {
+      debug("$label probe exception: ${it.message ?: it::class.java.simpleName}")
+      BinaryProbeResult(
+        runnable = false,
+        error = "$label probe failed: ${it.message ?: it::class.java.simpleName}"
+      )
+    }
   }
 
   private fun createCancelFlag(taskId: String): File {
@@ -1262,10 +1660,26 @@ class LocalDownloaderModule : Module() {
 
   private fun addError(message: String) {
     val timestamped = "${Instant.now()}: $message"
+    if (debugLoggingEnabled) {
+      Log.e(tag, message)
+    }
     lastErrors.addFirst(timestamped)
     while (lastErrors.size > MAX_ERROR_LOGS) {
       lastErrors.removeLast()
     }
+  }
+
+  private fun debug(message: String) {
+    if (debugLoggingEnabled) {
+      Log.d(tag, message)
+    }
+  }
+
+  private fun summarizeFfmpegInfo(info: FfmpegInfo): String {
+    return "source=${info.runtimeSource} abi=${info.abi} exists=${info.exists} ffmpeg=${info.path} ffprobe=${info.ffprobePath} " +
+      "ffmpegExec=${info.executable} ffprobeExec=${info.ffprobeExecutable} mergeCapable=${info.mergeCapable} " +
+      "ffmpegVersion=${info.version ?: "n/a"} ffprobeVersion=${info.ffprobeVersion ?: "n/a"} " +
+      "ffmpegProbeError=${info.ffmpegProbeError ?: "n/a"} ffprobeProbeError=${info.ffprobeProbeError ?: "n/a"}"
   }
 
   private fun persistTaskSnapshot() {
@@ -1310,7 +1724,9 @@ class LocalDownloaderModule : Module() {
           } else {
             obj.optString("errorMessage").ifBlank { null }
           },
-          estimatedSizeMb = obj.optDouble("estimatedSizeMb", Double.NaN).takeIf { !it.isNaN() }
+          estimatedSizeMb = obj.optDouble("estimatedSizeMb", Double.NaN).takeIf { !it.isNaN() },
+          timestampNormalized = if (obj.has("timestampNormalized")) obj.optBoolean("timestampNormalized") else null,
+          warningCode = obj.optString("warningCode").ifBlank { null }
         )
 
         if (wasInFlight) {
@@ -1335,7 +1751,9 @@ class LocalDownloaderModule : Module() {
       "sizeMb" to sizeMb,
       "errorCode" to errorCode,
       "errorMessage" to errorMessage,
-      "estimatedSizeMb" to estimatedSizeMb
+      "estimatedSizeMb" to estimatedSizeMb,
+      "timestampNormalized" to timestampNormalized,
+      "warningCode" to warningCode
     )
   }
 
@@ -1348,6 +1766,8 @@ class LocalDownloaderModule : Module() {
     private const val LEGACY_COOKIES_DIRNAME = "cookies"
     private const val RUNTIME_COOKIE_DIRNAME = "cookie_runtime"
     private const val DISABLED_COOKIES_DIRNAME = "cookies_disabled"
+    private const val DEFAULT_HTTP_USER_AGENT =
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
     private const val DEFAULT_MAX_FILE_SIZE_MB = 2048
     private const val TASK_SNAPSHOT_FILENAME = "local_downloader_tasks.json"
     private const val DEFAULT_COOKIE_PROFILE_FILENAME = ".default_profile"
@@ -1365,6 +1785,7 @@ class LocalDownloaderModule : Module() {
       "tiktok" to listOf("tiktok.com", "vm.tiktok.com")
     )
     private val RETRYABLE_COOKIE_FAILURE_CODES = setOf("PREFLIGHT_FAILED", "DOWNLOAD_FAILED", "INTERNAL_ERROR")
+    private val STRICT_COOKIE_PLATFORMS = setOf("instagram", "facebook", "tiktok", "reddit")
     private val IN_FLIGHT_STATUSES = setOf("PENDING", "STARTED", "PROGRESS")
     private val SUPPORTED_FFMPEG_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
   }

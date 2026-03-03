@@ -52,3 +52,11 @@ ffmpeg-kit-*
 modules/local-downloader/android/build/
 modules/local-downloader/android/src/main/python/__pycache__/
 modules/local-downloader/android/src/main/python/**/*.pyc
+
+# local-downloader ffmpeg binaries and native libs
+modules/local-downloader/android/src/main/jniLibs/
+modules/local-downloader/android/src/main/assets/ffmpeg/*/ffmpeg
+modules/local-downloader/android/src/main/assets/ffmpeg/*/ffprobe
+modules/local-downloader/android/src/main/assets/ffmpeg/*/*.so
+modules/local-downloader/android/src/main/assets/ffmpeg/*/*.a
+modules/local-downloader/android/src/main/assets/ffmpeg/*/*.o

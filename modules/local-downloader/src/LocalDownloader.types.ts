@@ -12,6 +12,18 @@ export interface LocalDownloadStartResult {
   estimatedSizeMb?: number | null;
 }
 
+export interface LocalSaveToMediaStoreInput {
+  filePath: string;
+  filename: string;
+  mimeType?: string;
+  dateTakenMs?: number;
+}
+
+export interface LocalSaveToMediaStoreResult {
+  uri: string;
+  assetId?: string;
+}
+
 export type LocalTaskStatus = 'PENDING' | 'STARTED' | 'PROGRESS' | 'SUCCESS' | 'FAILURE' | 'CANCELLED';
 
 export interface LocalTaskStatusResult {
@@ -23,6 +35,8 @@ export interface LocalTaskStatusResult {
   errorCode?: string;
   errorMessage?: string;
   estimatedSizeMb?: number | null;
+  timestampNormalized?: boolean;
+  warningCode?: string;
 }
 
 export interface LocalCookieProfile {
@@ -43,10 +57,21 @@ export interface LocalDiagnostics {
   ytDlpAvailable: boolean;
   pythonReady: boolean;
   ffmpegPath: string | null;
+  ffprobePath: string | null;
   ffmpegAbi?: string | null;
+  ffmpegRuntimeSource?: 'native_library' | 'asset_fallback' | 'none';
+  nativeLibraryDir?: string | null;
+  nativeLibraryEntries?: string[];
   ffmpegVersion?: string | null;
+  ffprobeVersion?: string | null;
   ffmpegExists: boolean;
+  ffprobeExists: boolean;
   ffmpegExecutable?: boolean;
+  ffprobeExecutable?: boolean;
+  ffmpegProbeError?: string | null;
+  ffprobeProbeError?: string | null;
+  mergeCapable: boolean;
+  activeHttpUserAgent: string;
   secureCookieStoreEnabled: boolean;
   cookieEncryptionVersion: string;
   cookieProfilesEncryptedCount: number;

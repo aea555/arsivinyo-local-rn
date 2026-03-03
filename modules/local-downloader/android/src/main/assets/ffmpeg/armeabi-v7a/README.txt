@@ -1,1 +1,3 @@
-Place Android armeabi-v7a ffmpeg binary here with filename exactly: ffmpeg
+Place Android armeabi-v7a binaries here with filenames exactly:
+- ffmpeg
+- ffprobe

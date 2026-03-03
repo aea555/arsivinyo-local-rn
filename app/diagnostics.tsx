@@ -14,10 +14,21 @@ type DiagnosticsState = {
   ytDlpAvailable: boolean;
   pythonReady: boolean;
   ffmpegPath: string | null;
+  ffprobePath: string | null;
   ffmpegAbi?: string | null;
+  ffmpegRuntimeSource?: 'native_library' | 'asset_fallback' | 'none';
+  nativeLibraryDir?: string | null;
+  nativeLibraryEntries?: string[];
   ffmpegVersion?: string | null;
+  ffprobeVersion?: string | null;
   ffmpegExists: boolean;
+  ffprobeExists: boolean;
   ffmpegExecutable?: boolean;
+  ffprobeExecutable?: boolean;
+  ffmpegProbeError?: string | null;
+  ffprobeProbeError?: string | null;
+  mergeCapable: boolean;
+  activeHttpUserAgent: string;
   secureCookieStoreEnabled: boolean;
   cookieEncryptionVersion: string;
   cookieProfilesEncryptedCount: number;
@@ -33,10 +44,21 @@ const initialState: DiagnosticsState = {
   ytDlpAvailable: false,
   pythonReady: false,
   ffmpegPath: null,
+  ffprobePath: null,
   ffmpegAbi: null,
+  ffmpegRuntimeSource: 'none',
+  nativeLibraryDir: null,
+  nativeLibraryEntries: [],
   ffmpegVersion: null,
+  ffprobeVersion: null,
   ffmpegExists: false,
+  ffprobeExists: false,
   ffmpegExecutable: false,
+  ffprobeExecutable: false,
+  ffmpegProbeError: null,
+  ffprobeProbeError: null,
+  mergeCapable: false,
+  activeHttpUserAgent: 'unknown',
   secureCookieStoreEnabled: false,
   cookieEncryptionVersion: 'v1',
   cookieProfilesEncryptedCount: 0,
@@ -69,10 +91,21 @@ export default function DiagnosticsScreen() {
       ytDlpAvailable: diag.ytDlpAvailable,
       pythonReady: diag.pythonReady,
       ffmpegPath: diag.ffmpegPath,
+      ffprobePath: diag.ffprobePath,
       ffmpegAbi: diag.ffmpegAbi,
+      ffmpegRuntimeSource: diag.ffmpegRuntimeSource,
+      nativeLibraryDir: diag.nativeLibraryDir,
+      nativeLibraryEntries: diag.nativeLibraryEntries ?? [],
       ffmpegVersion: diag.ffmpegVersion,
+      ffprobeVersion: diag.ffprobeVersion,
       ffmpegExists: diag.ffmpegExists,
+      ffprobeExists: diag.ffprobeExists,
       ffmpegExecutable: diag.ffmpegExecutable,
+      ffprobeExecutable: diag.ffprobeExecutable,
+      ffmpegProbeError: diag.ffmpegProbeError,
+      ffprobeProbeError: diag.ffprobeProbeError,
+      mergeCapable: diag.mergeCapable,
+      activeHttpUserAgent: diag.activeHttpUserAgent,
       secureCookieStoreEnabled: diag.secureCookieStoreEnabled,
       cookieEncryptionVersion: diag.cookieEncryptionVersion,
       cookieProfilesEncryptedCount: diag.cookieProfilesEncryptedCount,
@@ -111,10 +144,21 @@ export default function DiagnosticsScreen() {
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp: {state.ytDlpVersion}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp import: {state.ytDlpAvailable ? 'ok' : 'failed'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg path: {state.ffmpegPath ?? 'not bundled'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFprobe path: {state.ffprobePath ?? 'not bundled'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg ABI: {state.ffmpegAbi ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Runtime source: {state.ffmpegRuntimeSource ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Native library dir: {state.nativeLibraryDir ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Native entries: {(state.nativeLibraryEntries ?? []).join(', ') || 'none'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg version: {state.ffmpegVersion ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFprobe version: {state.ffprobeVersion ?? 'unknown'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg available: {state.ffmpegExists ? 'yes' : 'no'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFprobe available: {state.ffprobeExists ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg executable: {state.ffmpegExecutable ? 'yes' : 'no'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFprobe executable: {state.ffprobeExecutable ? 'yes' : 'no'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg probe error: {state.ffmpegProbeError ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>FFprobe probe error: {state.ffprobeProbeError ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Merge capable: {state.mergeCapable ? 'yes' : 'no'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>HTTP User-Agent: {state.activeHttpUserAgent}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Secure cookie store: {state.secureCookieStoreEnabled ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Cookie encryption: {state.cookieEncryptionVersion}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Encrypted cookie profiles: {state.cookieProfilesEncryptedCount}</Text>

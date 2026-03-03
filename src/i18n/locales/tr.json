@@ -100,6 +100,14 @@
         "COOKIE_STORE_ENCRYPT_FAILED": "Cookie profili güvenli şekilde kaydedilemedi.",
         "COOKIE_STORE_DECRYPT_FAILED": "Cookie profili çözümlenemedi.",
         "COOKIE_MIGRATION_FAILED": "Eski cookie profilleri güvenli depoya taşınamadı.",
-        "COOKIE_PROFILE_NOT_FOUND": "Seçilen cookie profili bulunamadı."
+        "COOKIE_PROFILE_NOT_FOUND": "Seçilen cookie profili bulunamadı.",
+        "REDDIT_COOKIE_REQUIRED": "Reddit indirmeleri için içe aktarılmış bir Reddit cookie profili gerekiyor.",
+        "FFMPEG_NATIVE_RUNTIME_UNAVAILABLE": "Yerel FFmpeg çalışma zamanı kullanılamıyor. Legacy packaging açıkken yeniden derleyin.",
+        "FFMPEG_MISSING": "FFmpeg çalışma zamanı bulunamadı.",
+        "FFPROBE_MISSING": "FFprobe çalışma zamanı bulunamadı.",
+        "MERGE_DEPENDENCY_MISSING": "Bu medya birleştirme gerektiriyor ancak FFmpeg/FFprobe hazır değil.",
+        "SITE_BLOCKED_403": "Kaynak site isteği engelledi (HTTP 403).",
+        "COOKIE_STALE_OR_INVALID": "Cookie profili geçersiz veya süresi dolmuş olabilir.",
+        "TIMESTAMP_POSTPROCESS_FAILED": "Medya zaman damgası güncellenemedi, ancak dosya kaydedildi."
     }
 }

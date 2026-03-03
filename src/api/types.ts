@@ -26,6 +26,8 @@ export interface TaskStatusResponse {
     errorCode?: string;
     errorMessage?: string;
     estimatedSizeMb?: number | null;
+    timestampNormalized?: boolean;
+    warningCode?: string;
 }
 
 /**
@@ -52,6 +54,14 @@ export type ApiErrorCode =
     | 'COOKIE_STORE_DECRYPT_FAILED'
     | 'COOKIE_MIGRATION_FAILED'
     | 'COOKIE_PROFILE_NOT_FOUND'
+    | 'REDDIT_COOKIE_REQUIRED'
+    | 'FFMPEG_NATIVE_RUNTIME_UNAVAILABLE'
+    | 'FFMPEG_MISSING'
+    | 'FFPROBE_MISSING'
+    | 'MERGE_DEPENDENCY_MISSING'
+    | 'SITE_BLOCKED_403'
+    | 'COOKIE_STALE_OR_INVALID'
+    | 'TIMESTAMP_POSTPROCESS_FAILED'
     | 'INTERNAL_ERROR'
     | 'DOWNLOAD_FAILED'
     | 'PREFLIGHT_FAILED'

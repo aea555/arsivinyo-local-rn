@@ -1,1 +1,3 @@
-Place Android arm64-v8a ffmpeg binary here with filename exactly: ffmpeg
+Place Android arm64-v8a binaries here with filenames exactly:
+- ffmpeg
+- ffprobe

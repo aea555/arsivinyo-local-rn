@@ -1,5 +1,7 @@
 import { File } from 'expo-file-system';
 import * as MediaLibrary from 'expo-media-library';
+import { Platform } from 'react-native';
+import LocalDownloaderModule from '../native/localDownloader';
 
 /**
  * Download status callback
@@ -17,7 +19,8 @@ export async function downloadAndSaveFile(
   filename: string,
   onProgress?: DownloadProgressCallback
 ): Promise<{ uri: string; assetId?: string }> {
-  const normalizedPath = localFilePath.startsWith('file://') ? localFilePath : `file://${localFilePath}`;
+  const sourcePath = localFilePath.startsWith('file://') ? localFilePath.slice(7) : localFilePath;
+  const normalizedPath = sourcePath.startsWith('file://') ? sourcePath : `file://${sourcePath}`;
   const file = new File(normalizedPath);
 
   if (!file.exists) {
@@ -30,6 +33,27 @@ export async function downloadAndSaveFile(
 
   const fileSize = file.size;
   try {
+    const nativeSaveToMediaStore = (LocalDownloaderModule as Partial<typeof LocalDownloaderModule>).saveToMediaStore;
+    if (Platform.OS === 'android' && typeof nativeSaveToMediaStore === 'function') {
+      const saved = await nativeSaveToMediaStore({
+        filePath: sourcePath,
+        filename,
+        dateTakenMs: Date.now(),
+      });
+
+      if (onProgress) {
+        onProgress({
+          totalBytesWritten: fileSize,
+          totalBytesExpectedToWrite: fileSize,
+        });
+      }
+
+      return {
+        uri: saved.uri,
+        assetId: saved.assetId,
+      };
+    }
+
     const asset = await MediaLibrary.createAssetAsync(normalizedPath);
 
     if (onProgress) {

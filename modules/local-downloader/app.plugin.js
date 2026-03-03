@@ -1,7 +1,7 @@
-const { createRunOncePlugin, withAppBuildGradle, withProjectBuildGradle } = require('expo/config-plugins');
+const { createRunOncePlugin, withAppBuildGradle, withGradleProperties, withProjectBuildGradle } = require('expo/config-plugins');
 
 const CHAQUOPY_VERSION = '15.0.1';
-const YT_DLP_VERSION = '2026.02.21';
+const YT_DLP_VERSION = '2026.2.4';
 
 const TAGS = {
   buildscriptRepo: {
@@ -85,8 +85,8 @@ function ensureChaquopyApplyPlugin(contents) {
 function cleanLegacyInjectedBlocks(contents) {
   let next = contents;
 
-  next = next.replace(/\npython\s*\{[\s\S]*?yt-dlp==\d{4}\.\d{2}\.\d{2}[\s\S]*?\n\}\n?/g, '\n');
-  next = next.replace(/\nchaquopy\s*\{[\s\S]*?yt-dlp==\d{4}\.\d{2}\.\d{2}[\s\S]*?\n\}\n?/g, '\n');
+  next = next.replace(/\npython\s*\{[\s\S]*?yt-dlp==\d{4}\.\d{1,2}\.\d{1,2}[\s\S]*?\n\}\n?/g, '\n');
+  next = next.replace(/\nchaquopy\s*\{[\s\S]*?yt-dlp==\d{4}\.\d{1,2}\.\d{1,2}[\s\S]*?\n\}\n?/g, '\n');
   next = next.replace(/\nandroid\s*\{\s*\n\s*sourceSets\s*\{[\s\S]*?python\.srcDir\s+\(?["']\.\.\/\.\.\/modules\/local-downloader\/android\/src\/main\/python["']\)?[\s\S]*?\n\s*\}\s*\n\}\n?/g, '\n');
 
   return next;
@@ -144,6 +144,21 @@ function addAppGradleChanges(contents) {
 }
 
 const withLocalDownloader = (config) => {
+  config = withGradleProperties(config, (config) => {
+    const key = 'expo.useLegacyPackaging';
+    const existing = config.modResults.find((item) => item.type === 'property' && item.key === key);
+    if (existing) {
+      existing.value = 'true';
+    } else {
+      config.modResults.push({
+        type: 'property',
+        key,
+        value: 'true',
+      });
+    }
+    return config;
+  });
+
   config = withProjectBuildGradle(config, (config) => {
     config.modResults.contents = addProjectGradleChanges(config.modResults.contents);
     return config;
