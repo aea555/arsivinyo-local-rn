@@ -63,7 +63,23 @@
         "language": "Dil",
         "diagnostics": "Tanılama",
         "diagnosticsHint": "Çalışma zamanı sürümleri ve son yerel hatalar",
-        "refreshDiagnostics": "Tanılamayı Yenile"
+        "refreshDiagnostics": "Tanılamayı Yenile",
+        "customCookieDomains": "Özel Cookie Alanları",
+        "addCustomCookie": "Özel Cookie Ekle",
+        "customDomainOptionalHint": "Alan adı opsiyoneldir. Cookie dosyasından otomatik algılanır.",
+        "customDomainHint": "Profil: {{count}} • Varsayılan: {{defaultProfile}}",
+        "customDomainActionPrompt": "Bu özel alan için bir işlem seçin.",
+        "importCustomCookieAction": "Özel profil içe aktar",
+        "selectCustomDefaultAction": "Varsayılan profili seç",
+        "deleteCustomProfileAction": "Profili sil",
+        "customDomainOptionalInputLabel": "Alan adı (opsiyonel)",
+        "customDomainOptionalPlaceholder": "ornek.com",
+        "customCookieImportSuccess": "Özel profil içe aktarıldı: {{profile}} (alan: {{domains}})",
+        "noCustomDomainProfiles": "Bu alan için özel profil bulunamadı.",
+        "selectDefaultForDomain": "{{domain}} için varsayılan profil",
+        "selectDeleteProfileForDomain": "{{domain}} için silinecek profil",
+        "deleteCustomProfileConfirmTitle": "Özel profil sil",
+        "deleteCustomProfileConfirmMessage": "{{profile}} profili silinsin mi? Bu işlem geri alınamaz."
     },
     "permissions": {
         "storageTitle": "Depolama İzni Gerekli",
@@ -108,6 +124,10 @@
         "MERGE_DEPENDENCY_MISSING": "Bu medya birleştirme gerektiriyor ancak FFmpeg/FFprobe hazır değil.",
         "SITE_BLOCKED_403": "Kaynak site isteği engelledi (HTTP 403).",
         "COOKIE_STALE_OR_INVALID": "Cookie profili geçersiz veya süresi dolmuş olabilir.",
-        "TIMESTAMP_POSTPROCESS_FAILED": "Medya zaman damgası güncellenemedi, ancak dosya kaydedildi."
+        "TIMESTAMP_POSTPROCESS_FAILED": "Medya zaman damgası güncellenemedi, ancak dosya kaydedildi.",
+        "INVALID_CUSTOM_DOMAIN": "Geçersiz özel alan adı formatı.",
+        "CUSTOM_COOKIE_NO_DOMAIN_DETECTED": "Cookie dosyasında alan adı bulunamadı.",
+        "CUSTOM_COOKIE_DOMAIN_NOT_FOUND": "Özel cookie alanı bulunamadı.",
+        "CUSTOM_COOKIE_PROFILE_NOT_FOUND": "Bu alan için özel cookie profili bulunamadı."
     }
 }

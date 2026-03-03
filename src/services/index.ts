@@ -8,12 +8,19 @@ export {
 } from './permissions';
 export {
     importCookieProfile,
+    importCustomCookieProfile,
     listCookieProfiles,
+    listCustomDomainProfiles,
+    listCustomDomains,
     LOCAL_COOKIE_PLATFORMS,
     setDefaultCookieProfile,
+    setCustomDomainDefault,
+    deleteCustomDomainProfile,
     getDefaultCookieProfile,
     type CookiePlatform,
     type CookieProfile,
+    type CustomDomainProfile,
+    type CustomDomainSummary,
 } from './cookies';
 export {
     clearAllStorage, getDownloadCount, getDownloadLocation, incrementDownloadCount,

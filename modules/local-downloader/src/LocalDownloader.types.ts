@@ -45,6 +45,31 @@ export interface LocalCookieProfile {
   lastModified: number;
 }
 
+export interface LocalCustomCookieImportInput {
+  uri: string;
+  profileName?: string;
+  domain?: string | null;
+}
+
+export interface LocalCustomCookieImportResult {
+  profileId: string;
+  profileName: string;
+  detectedDomains: string[];
+  boundDomains: string[];
+}
+
+export interface LocalCustomDomainSummary {
+  domain: string;
+  profileCount: number;
+  defaultProfileName: string | null;
+}
+
+export interface LocalCustomDomainProfile {
+  profileName: string;
+  profileId: string;
+  lastModified: number;
+}
+
 export interface LocalDownloadEvent {
   taskId: string;
   status: LocalTaskStatus;
@@ -75,8 +100,15 @@ export interface LocalDiagnostics {
   secureCookieStoreEnabled: boolean;
   cookieEncryptionVersion: string;
   cookieProfilesEncryptedCount: number;
+  customDomainsCount?: number;
+  customProfilesCount?: number;
   cookieLegacyPlaintextCount: number;
   cookieMigrationStatus: 'not_needed' | 'migrated' | 'partial' | 'failed';
+  customDomainMatchLast?: {
+    urlHost: string;
+    matchedDomain?: string | null;
+    profileName?: string | null;
+  } | null;
   activeTaskId: string | null;
   lastErrors: string[];
 }

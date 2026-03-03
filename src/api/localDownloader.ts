@@ -2,6 +2,10 @@ import { Platform } from 'react-native';
 import LocalDownloaderModule, {
   addDownloadProgressListener,
   type LocalCookieProfile,
+  type LocalCustomCookieImportInput,
+  type LocalCustomCookieImportResult,
+  type LocalCustomDomainProfile,
+  type LocalCustomDomainSummary,
   type LocalDiagnostics,
   type LocalDownloadEvent,
   type LocalDownloadStartInput,
@@ -63,6 +67,31 @@ export async function setLocalCookieDefault(input: {
 export async function getLocalCookieDefaults(): Promise<Record<LocalPlatform, string | null>> {
   ensureAndroid();
   return LocalDownloaderModule.getCookieDefaults();
+}
+
+export async function importLocalCustomCookie(input: LocalCustomCookieImportInput): Promise<LocalCustomCookieImportResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.importCustomCookie(input);
+}
+
+export async function listLocalCustomDomains(): Promise<LocalCustomDomainSummary[]> {
+  ensureAndroid();
+  return LocalDownloaderModule.listCustomDomains();
+}
+
+export async function listLocalCustomDomainProfiles(domain: string): Promise<LocalCustomDomainProfile[]> {
+  ensureAndroid();
+  return LocalDownloaderModule.listCustomDomainProfiles(domain);
+}
+
+export async function setLocalCustomDomainDefault(input: { domain: string; profileName: string }): Promise<{ success: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.setCustomDomainDefault(input);
+}
+
+export async function deleteLocalCustomDomainProfile(input: { domain: string; profileName: string }): Promise<{ success: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.deleteCustomDomainProfile(input);
 }
 
 export async function getLocalDiagnostics(): Promise<LocalDiagnostics> {

@@ -63,7 +63,23 @@
         "selectDefaultForPlatform": "Default profile for {{platform}}",
         "diagnostics": "Diagnostics",
         "diagnosticsHint": "Runtime versions and recent local errors",
-        "refreshDiagnostics": "Refresh Diagnostics"
+        "refreshDiagnostics": "Refresh Diagnostics",
+        "customCookieDomains": "Custom Cookie Domains",
+        "addCustomCookie": "Add Custom Cookie",
+        "customDomainOptionalHint": "Domain is optional. Domains are auto-detected from cookie file.",
+        "customDomainHint": "Profiles: {{count}} • Default: {{defaultProfile}}",
+        "customDomainActionPrompt": "Choose what to do for this custom domain.",
+        "importCustomCookieAction": "Import custom profile",
+        "selectCustomDefaultAction": "Select default profile",
+        "deleteCustomProfileAction": "Delete profile",
+        "customDomainOptionalInputLabel": "Domain (optional)",
+        "customDomainOptionalPlaceholder": "example.com",
+        "customCookieImportSuccess": "Custom profile imported: {{profile}} (domains: {{domains}})",
+        "noCustomDomainProfiles": "No custom profiles found for this domain.",
+        "selectDefaultForDomain": "Default profile for {{domain}}",
+        "selectDeleteProfileForDomain": "Delete a profile for {{domain}}",
+        "deleteCustomProfileConfirmTitle": "Delete custom profile",
+        "deleteCustomProfileConfirmMessage": "Delete profile {{profile}}? This cannot be undone."
     },
     "permissions": {
         "storageTitle": "Permiso de almacenamiento requerido",
@@ -108,6 +124,10 @@
         "MERGE_DEPENDENCY_MISSING": "This media requires merge, but FFmpeg/FFprobe runtime is not ready.",
         "SITE_BLOCKED_403": "Source site blocked this request (HTTP 403).",
         "COOKIE_STALE_OR_INVALID": "Cookie profile appears stale or invalid.",
-        "TIMESTAMP_POSTPROCESS_FAILED": "Media timestamp refresh failed, but file was saved."
+        "TIMESTAMP_POSTPROCESS_FAILED": "Media timestamp refresh failed, but file was saved.",
+        "INVALID_CUSTOM_DOMAIN": "Invalid custom domain format.",
+        "CUSTOM_COOKIE_NO_DOMAIN_DETECTED": "No domains were detected in the cookie file.",
+        "CUSTOM_COOKIE_DOMAIN_NOT_FOUND": "Custom cookie domain was not found.",
+        "CUSTOM_COOKIE_PROFILE_NOT_FOUND": "Custom cookie profile was not found for this domain."
     }
 }

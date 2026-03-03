@@ -32,8 +32,15 @@ type DiagnosticsState = {
   secureCookieStoreEnabled: boolean;
   cookieEncryptionVersion: string;
   cookieProfilesEncryptedCount: number;
+  customDomainsCount?: number;
+  customProfilesCount?: number;
   cookieLegacyPlaintextCount: number;
   cookieMigrationStatus: 'not_needed' | 'migrated' | 'partial' | 'failed';
+  customDomainMatchLast?: {
+    urlHost: string;
+    matchedDomain?: string | null;
+    profileName?: string | null;
+  } | null;
   activeTaskId: string | null;
   lastErrors: string[];
   cookieCounts: Record<string, number>;
@@ -62,8 +69,11 @@ const initialState: DiagnosticsState = {
   secureCookieStoreEnabled: false,
   cookieEncryptionVersion: 'v1',
   cookieProfilesEncryptedCount: 0,
+  customDomainsCount: 0,
+  customProfilesCount: 0,
   cookieLegacyPlaintextCount: 0,
   cookieMigrationStatus: 'not_needed',
+  customDomainMatchLast: null,
   activeTaskId: null,
   lastErrors: [],
   cookieCounts: {},
@@ -109,8 +119,11 @@ export default function DiagnosticsScreen() {
       secureCookieStoreEnabled: diag.secureCookieStoreEnabled,
       cookieEncryptionVersion: diag.cookieEncryptionVersion,
       cookieProfilesEncryptedCount: diag.cookieProfilesEncryptedCount,
+      customDomainsCount: diag.customDomainsCount ?? 0,
+      customProfilesCount: diag.customProfilesCount ?? 0,
       cookieLegacyPlaintextCount: diag.cookieLegacyPlaintextCount,
       cookieMigrationStatus: diag.cookieMigrationStatus,
+      customDomainMatchLast: diag.customDomainMatchLast ?? null,
       activeTaskId: diag.activeTaskId,
       lastErrors: diag.lastErrors,
       cookieCounts: Object.fromEntries(cookieCounts),
@@ -162,8 +175,15 @@ export default function DiagnosticsScreen() {
           <Text style={[styles.row, { color: colors.textMuted }]}>Secure cookie store: {state.secureCookieStoreEnabled ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Cookie encryption: {state.cookieEncryptionVersion}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Encrypted cookie profiles: {state.cookieProfilesEncryptedCount}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Custom domains: {state.customDomainsCount ?? 0}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Custom profiles: {state.customProfilesCount ?? 0}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Legacy plaintext cookies: {state.cookieLegacyPlaintextCount}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Cookie migration status: {state.cookieMigrationStatus}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>
+            Last custom match: {state.customDomainMatchLast
+              ? `${state.customDomainMatchLast.urlHost} -> ${state.customDomainMatchLast.matchedDomain ?? 'none'} (${state.customDomainMatchLast.profileName ?? 'none'})`
+              : 'none'}
+          </Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Active task: {state.activeTaskId ?? 'none'}</Text>
         </View>
 
