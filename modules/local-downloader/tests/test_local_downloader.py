@@ -62,6 +62,14 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         self.assertEqual(code, "REDDIT_EXTRACTOR_ROUTE_FAILED")
 
         code, _ = ld._classify_exception(
+            Exception("ERROR: [generic] Unable to download webpage: HTTP Error 403: Blocked"),
+            "PREFLIGHT_FAILED",
+            platform="reddit",
+            context_url="https://www.reddit.com/r/PublicFreakout/s/YG1awl66Ls",
+        )
+        self.assertEqual(code, "SITE_BLOCKED_403")
+
+        code, _ = ld._classify_exception(
             Exception("The extractor is attempting impersonation, but none of these impersonate targets are available: firefox"),
             "PREFLIGHT_FAILED",
             platform=None,
@@ -85,6 +93,97 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         self.assertEqual(
             normalized,
             "https://www.tiktok.com/@sample/video/7612119485763374344",
+        )
+
+    def test_reddit_share_soft_fallback_on_403(self):
+        share_url = "https://www.reddit.com/r/PublicFreakout/s/YG1awl66Ls"
+        with unittest.mock.patch.object(
+            ld,
+            "_resolve_reddit_share_url",
+            return_value=(None, "HTTP Error 403: Blocked"),
+        ):
+            normalized, error = ld._normalize_input_url(
+                share_url,
+                "reddit",
+                ld.DEFAULT_HTTP_USER_AGENT,
+                cookie_file=None,
+                debug_logging=False,
+            )
+        self.assertIsNone(error)
+        self.assertEqual(normalized, share_url)
+        diag = ld._RUNTIME_DIAGNOSTICS.get("redditShareResolutionLast")
+        self.assertEqual(diag.get("mode"), "fallback_original")
+
+    def test_reddit_share_canonicalization_success(self):
+        share_url = "https://www.reddit.com/r/PublicFreakout/s/YG1awl66Ls"
+        canonical_url = "https://www.reddit.com/r/PublicFreakout/comments/abc123/title/"
+        with unittest.mock.patch.object(
+            ld,
+            "_resolve_reddit_share_url",
+            return_value=(canonical_url, None),
+        ):
+            normalized, error = ld._normalize_input_url(
+                share_url,
+                "reddit",
+                ld.DEFAULT_HTTP_USER_AGENT,
+                cookie_file=None,
+                debug_logging=False,
+            )
+        self.assertIsNone(error)
+        self.assertEqual(normalized, canonical_url)
+        diag = ld._RUNTIME_DIAGNOSTICS.get("redditShareResolutionLast")
+        self.assertEqual(diag.get("mode"), "canonicalized")
+
+    def test_reddit_share_non_reddit_redirect_fails(self):
+        share_url = "https://www.reddit.com/r/PublicFreakout/s/YG1awl66Ls"
+        with unittest.mock.patch.object(
+            ld,
+            "_resolve_reddit_share_url",
+            return_value=("https://example.com/not-reddit", None),
+        ):
+            normalized, error = ld._normalize_input_url(
+                share_url,
+                "reddit",
+                ld.DEFAULT_HTTP_USER_AGENT,
+                cookie_file=None,
+                debug_logging=False,
+            )
+        self.assertIsNone(normalized)
+        self.assertIsNotNone(error)
+        self.assertIn("resolved host is not reddit", error)
+
+    def test_reddit_share_resolution_receives_cookie_file(self):
+        share_url = "https://www.reddit.com/r/PublicFreakout/s/YG1awl66Ls"
+        with unittest.mock.patch.object(
+            ld,
+            "_resolve_reddit_share_url",
+            return_value=("https://www.reddit.com/r/PublicFreakout/comments/abc123/title/", None),
+        ) as resolver:
+            normalized, error = ld._normalize_input_url(
+                share_url,
+                "reddit",
+                ld.DEFAULT_HTTP_USER_AGENT,
+                cookie_file="/tmp/runtime_cookie.txt",
+                debug_logging=False,
+            )
+        self.assertIsNone(error)
+        self.assertIn("/comments/", normalized)
+        self.assertEqual(resolver.call_args.kwargs.get("cookie_file"), "/tmp/runtime_cookie.txt")
+
+    def test_reddit_generic_route_guard_respects_share_fallback(self):
+        self.assertTrue(
+            ld._should_fail_reddit_generic_route(
+                "reddit",
+                "https://www.reddit.com/r/PublicFreakout/comments/abc123/title/",
+                "generic",
+            )
+        )
+        self.assertFalse(
+            ld._should_fail_reddit_generic_route(
+                "reddit",
+                "https://www.reddit.com/r/PublicFreakout/s/YG1awl66Ls",
+                "generic",
+            )
         )
 
     def test_error_replacement_keeps_specific_over_generic(self):
@@ -155,6 +254,19 @@ class LocalDownloaderUnitTests(unittest.TestCase):
             mismatch = ld._inspect_cookie_file(cookie_path, "tiktok")
             code, _ = ld._cookie_integrity_error(mismatch)
             self.assertEqual(code, "COOKIE_DOMAIN_MISMATCH")
+
+    def test_build_cookie_header_from_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cookie_path = os.path.join(tmp, "cookie.txt")
+            now = int(time.time())
+            with open(cookie_path, "w", encoding="utf-8") as f:
+                f.write("# Netscape HTTP Cookie File\n")
+                f.write(f".reddit.com\tTRUE\t/\tTRUE\t{now + 3600}\tsession\tabc\n")
+                f.write(f".example.com\tTRUE\t/\tTRUE\t{now + 3600}\tother\tdef\n")
+
+            header, count = ld._build_cookie_header_from_file(cookie_path, "www.reddit.com")
+            self.assertEqual(count, 1)
+            self.assertEqual(header, "session=abc")
 
 
 if __name__ == "__main__":

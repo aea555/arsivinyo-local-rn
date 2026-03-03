@@ -97,6 +97,20 @@ URL_REDACTION_PATTERN = re.compile(r"/(?:data|storage|sdcard)/[^\s)]+", flags=re
 TOKEN_REDACTION_PATTERN = re.compile(r"(po_token|visitor_data|authorization)=([^,&\\s]+)", flags=re.IGNORECASE)
 REDDIT_SHARE_PATH_PATTERN = re.compile(r"/r/[^/]+/s/[^/?#]+", flags=re.IGNORECASE)
 GENERIC_FAILURE_CODES = {"PREFLIGHT_FAILED", "DOWNLOAD_FAILED"}
+SOFT_REDDIT_SHARE_RESOLUTION_MARKERS = (
+    "http error 403",
+    "http error 429",
+    "http error 500",
+    "http error 502",
+    "http error 503",
+    "http error 504",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "connection reset",
+    "network is unreachable",
+    "temporary failure in name resolution",
+)
 
 _RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
     "normalizedUrlLast": None,
@@ -115,6 +129,7 @@ _RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
     "impersonationWheelVersion": None,
     "impersonationBuildAbiCoverage": IMP_ABI_COVERAGE,
     "impersonationBootstrapError": None,
+    "redditShareResolutionLast": None,
 }
 _IMPERSONATION_RUNTIME_AVAILABLE: Optional[bool] = None
 
@@ -133,6 +148,7 @@ def _reset_attempt_trace() -> None:
     _RUNTIME_DIAGNOSTICS["impersonationAttemptedTargetsLast"] = []
     _RUNTIME_DIAGNOSTICS["impersonationResolvedTargetLast"] = None
     _RUNTIME_DIAGNOSTICS["impersonationRequiredByExtractorLast"] = None
+    _RUNTIME_DIAGNOSTICS["redditShareResolutionLast"] = None
 
 
 def _push_attempt_trace(entry: Dict[str, Any]) -> None:
@@ -283,6 +299,7 @@ def get_runtime_diagnostics() -> str:
         "impersonationWheelVersion": _RUNTIME_DIAGNOSTICS.get("impersonationWheelVersion"),
         "impersonationBuildAbiCoverage": _RUNTIME_DIAGNOSTICS.get("impersonationBuildAbiCoverage") or IMP_ABI_COVERAGE,
         "impersonationBootstrapError": _RUNTIME_DIAGNOSTICS.get("impersonationBootstrapError"),
+        "redditShareResolutionLast": _RUNTIME_DIAGNOSTICS.get("redditShareResolutionLast"),
     }
     return json.dumps(payload)
 
@@ -354,9 +371,99 @@ def _is_public_reddit_url(url: str) -> bool:
     return "/comments/" in path or host in {"v.redd.it", "redd.it"}
 
 
-def _resolve_reddit_share_url(url: str, user_agent: str, debug_logging: bool = False) -> Tuple[Optional[str], Optional[str]]:
+def _is_reddit_share_path(url: str) -> bool:
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    path = parsed.path or ""
+    return bool(REDDIT_SHARE_PATH_PATTERN.search(path))
+
+
+def _is_soft_reddit_share_resolution_error(error: str) -> bool:
+    lower = (error or "").lower()
+    return any(marker in lower for marker in SOFT_REDDIT_SHARE_RESOLUTION_MARKERS)
+
+
+def _should_fail_reddit_generic_route(platform: Optional[str], normalized_url: str, extractor_key: str) -> bool:
+    if platform != "reddit":
+        return False
+    if (extractor_key or "").strip().lower() != "generic":
+        return False
+    # If we intentionally kept a share link due soft fallback, allow extraction flow to continue.
+    if _is_reddit_share_path(normalized_url):
+        return False
+    return True
+
+
+def _build_cookie_header_from_file(cookie_file: Optional[str], target_host: str) -> Tuple[Optional[str], int]:
+    if not cookie_file or not os.path.exists(cookie_file):
+        return None, 0
+
+    host = (target_host or "").strip().lower()
+    if not host:
+        return None, 0
+
+    now = int(time.time())
+    pairs: List[str] = []
     try:
-        request = Request(url, headers={"User-Agent": user_agent})
+        with open(cookie_file, "r", encoding="utf-8", errors="replace") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                cols = raw_line.rstrip("\n").split("\t")
+                if len(cols) < 7:
+                    continue
+
+                domain = (cols[0] or "").strip().lstrip(".").lower()
+                if not domain:
+                    continue
+                if not (host == domain or host.endswith(f".{domain}")):
+                    continue
+
+                expiry_raw = (cols[4] or "").strip()
+                try:
+                    expiry = int(expiry_raw)
+                except Exception:
+                    expiry = 0
+                if expiry > 0 and expiry <= now:
+                    continue
+
+                name = (cols[5] or "").strip()
+                value = (cols[6] or "").strip()
+                if not name:
+                    continue
+                pairs.append(f"{name}={value}")
+    except Exception:
+        return None, 0
+
+    if not pairs:
+        return None, 0
+    return "; ".join(pairs), len(pairs)
+
+
+def _resolve_reddit_share_url(
+    url: str,
+    user_agent: str,
+    cookie_file: Optional[str] = None,
+    debug_logging: bool = False,
+) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        host = _extract_host(url)
+        cookie_header, cookie_count = _build_cookie_header_from_file(cookie_file, host)
+        request = Request(
+            url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": "https://www.reddit.com/",
+                "Origin": "https://www.reddit.com",
+                **({"Cookie": cookie_header} if cookie_header else {}),
+            },
+        )
+        _debug_log(
+            debug_logging,
+            f"reddit share resolve request host={host} cookie_file={'yes' if cookie_file else 'no'} cookie_count={cookie_count}",
+        )
         with urlopen(request, timeout=12) as response:
             final_url = response.geturl()
             _debug_log(debug_logging, f"reddit share resolved url={url} final={final_url}")
@@ -382,7 +489,13 @@ def _resolve_redirect_url(url: str, user_agent: str, debug_logging: bool = False
         return None, str(exc)
 
 
-def _normalize_input_url(url: str, platform: Optional[str], user_agent: str, debug_logging: bool = False) -> Tuple[Optional[str], Optional[str]]:
+def _normalize_input_url(
+    url: str,
+    platform: Optional[str],
+    user_agent: str,
+    cookie_file: Optional[str] = None,
+    debug_logging: bool = False,
+) -> Tuple[Optional[str], Optional[str]]:
     parsed = urlparse(url if "://" in url else f"https://{url}")
     host = _extract_host(url)
 
@@ -406,13 +519,41 @@ def _normalize_input_url(url: str, platform: Optional[str], user_agent: str, deb
     if not REDDIT_SHARE_PATH_PATTERN.search(path):
         return normalized_url, None
 
-    final_url, error = _resolve_reddit_share_url(normalized_url, user_agent, debug_logging)
+    final_url, error = _resolve_reddit_share_url(
+        normalized_url,
+        user_agent,
+        cookie_file=cookie_file,
+        debug_logging=debug_logging,
+    )
     if error:
+        if _is_soft_reddit_share_resolution_error(error):
+            _debug_log(debug_logging, f"reddit share resolve soft-fallback reason={error}")
+            _set_runtime_diag(
+                "redditShareResolutionLast",
+                {"inputUrl": normalized_url, "mode": "fallback_original", "reason": error},
+            )
+            _debug_log(debug_logging, "reddit share normalization mode=fallback_original")
+            return normalized_url, None
+        _set_runtime_diag(
+            "redditShareResolutionLast",
+            {"inputUrl": normalized_url, "mode": "failed", "reason": error},
+        )
         return None, error
 
     final_host = _extract_host(final_url or "")
     if final_host not in REDDIT_DOMAINS:
-        return None, f"resolved host is not reddit ({final_host})"
+        reason = f"resolved host is not reddit ({final_host})"
+        _set_runtime_diag(
+            "redditShareResolutionLast",
+            {"inputUrl": normalized_url, "mode": "failed", "reason": reason},
+        )
+        return None, reason
+
+    _set_runtime_diag(
+        "redditShareResolutionLast",
+        {"inputUrl": normalized_url, "mode": "canonicalized"},
+    )
+    _debug_log(debug_logging, "reddit share normalization mode=canonicalized")
 
     return final_url, None
 
@@ -1079,7 +1220,12 @@ def _extract_error_extractor_key(message: str) -> Optional[str]:
     return key or None
 
 
-def _classify_exception(exc: Exception, default_code: str, platform: Optional[str] = None) -> Tuple[str, str]:
+def _classify_exception(
+    exc: Exception,
+    default_code: str,
+    platform: Optional[str] = None,
+    context_url: Optional[str] = None,
+) -> Tuple[str, str]:
     message = str(exc) or default_code
     lower = message.lower()
 
@@ -1090,7 +1236,9 @@ def _classify_exception(exc: Exception, default_code: str, platform: Optional[st
             return "IMPERSONATION_DEPENDENCY_MISSING", message
         return "IMPERSONATION_RUNTIME_UNAVAILABLE", message
 
-    if platform == "reddit" and "[generic]" in lower:
+    if platform == "reddit" and "[generic]" in lower and not (
+        context_url and _is_reddit_share_path(context_url)
+    ):
         return "REDDIT_EXTRACTOR_ROUTE_FAILED", message
 
     if "http error 403" in lower and ("blocked" in lower or "forbidden" in lower or "reddit" in lower):
@@ -1518,7 +1666,12 @@ def _perform_attempts(
                 )
                 return info, None, None, label
         except Exception as exc:
-            code, message = _classify_exception(exc, "PREFLIGHT_FAILED" if phase == "preflight" else "DOWNLOAD_FAILED", platform=platform)
+            code, message = _classify_exception(
+                exc,
+                "PREFLIGHT_FAILED" if phase == "preflight" else "DOWNLOAD_FAILED",
+                platform=platform,
+                context_url=attempt_url,
+            )
             if _is_impersonation_unavailable_message(message):
                 required_extractor = _extract_error_extractor_key(message)
                 required_targets = _extract_required_targets_from_message(message)
@@ -1612,6 +1765,7 @@ def _perform_attempts(
                         retry_exc,
                         "PREFLIGHT_FAILED" if phase == "preflight" else "DOWNLOAD_FAILED",
                         platform=platform,
+                        context_url=attempt_url,
                     )
                     if _is_impersonation_unavailable_message(message) and required_extractor:
                         _set_runtime_diag("impersonationRequiredByExtractorLast", required_extractor)
@@ -1847,7 +2001,17 @@ def preflight(
             f"force_no_cookie={force_no_cookie} merge_capable={merge_capable}",
         )
         platform = _detect_cookie_platform(url)
-        normalized_url, normalize_error = _normalize_input_url(url, platform, user_agent, debug_logging)
+        selected_cookie_file = cookie_file if cookie_file and os.path.exists(cookie_file) else None
+        if not selected_cookie_file and not force_no_cookie:
+            selected_cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
+
+        normalized_url, normalize_error = _normalize_input_url(
+            url,
+            platform,
+            user_agent,
+            cookie_file=selected_cookie_file,
+            debug_logging=debug_logging,
+        )
         if normalize_error:
             _set_runtime_diag("normalizedUrlLast", url)
             return _result(False, "REDDIT_SHARE_URL_RESOLUTION_FAILED", f"Could not resolve Reddit share URL: {normalize_error}")
@@ -1855,7 +2019,6 @@ def preflight(
         _set_runtime_diag("normalizedUrlLast", normalized_url)
         platform = _detect_cookie_platform(normalized_url)
 
-        selected_cookie_file = cookie_file if cookie_file and os.path.exists(cookie_file) else None
         if not selected_cookie_file and not force_no_cookie:
             selected_cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
 
@@ -1917,7 +2080,7 @@ def preflight(
             )
 
         extractor_key = str(info.get("extractor_key") or "")
-        if platform == "reddit" and extractor_key.lower() == "generic":
+        if _should_fail_reddit_generic_route(platform, normalized_url, extractor_key):
             return _result(
                 False,
                 "REDDIT_EXTRACTOR_ROUTE_FAILED",
@@ -1937,7 +2100,12 @@ def preflight(
             extractor_key=extractor_key,
         )
     except Exception as exc:
-        code, message = _classify_exception(exc, "PREFLIGHT_FAILED", platform=_detect_cookie_platform(url))
+        code, message = _classify_exception(
+            exc,
+            "PREFLIGHT_FAILED",
+            platform=_detect_cookie_platform(url),
+            context_url=url,
+        )
         _debug_log(debug_logging, f"preflight exception code={code} message={message}")
         return _result(False, code, message)
 
@@ -1969,7 +2137,17 @@ def run_download(
             return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
 
         platform = _detect_cookie_platform(url)
-        normalized_url, normalize_error = _normalize_input_url(url, platform, user_agent, debug_logging)
+        selected_cookie_file = cookie_file if cookie_file and os.path.exists(cookie_file) else None
+        if not selected_cookie_file and not force_no_cookie:
+            selected_cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
+
+        normalized_url, normalize_error = _normalize_input_url(
+            url,
+            platform,
+            user_agent,
+            cookie_file=selected_cookie_file,
+            debug_logging=debug_logging,
+        )
         if normalize_error:
             _set_runtime_diag("normalizedUrlLast", url)
             return _result(False, "REDDIT_SHARE_URL_RESOLUTION_FAILED", f"Could not resolve Reddit share URL: {normalize_error}")
@@ -1977,7 +2155,6 @@ def run_download(
         _set_runtime_diag("normalizedUrlLast", normalized_url)
         platform = _detect_cookie_platform(normalized_url)
 
-        selected_cookie_file = cookie_file if cookie_file and os.path.exists(cookie_file) else None
         if not selected_cookie_file and not force_no_cookie:
             selected_cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
 
@@ -2146,6 +2323,11 @@ def run_download(
         if "DOWNLOAD_CANCELLED" in str(exc):
             return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
 
-        code, message = _classify_exception(exc, "DOWNLOAD_FAILED", platform=_detect_cookie_platform(url))
+        code, message = _classify_exception(
+            exc,
+            "DOWNLOAD_FAILED",
+            platform=_detect_cookie_platform(url),
+            context_url=url,
+        )
         _debug_log(debug_logging, f"download exception code={code} message={message}")
         return _result(False, code, message)
