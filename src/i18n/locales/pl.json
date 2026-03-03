@@ -79,7 +79,11 @@
         "selectDefaultForDomain": "Default profile for {{domain}}",
         "selectDeleteProfileForDomain": "Delete a profile for {{domain}}",
         "deleteCustomProfileConfirmTitle": "Delete custom profile",
-        "deleteCustomProfileConfirmMessage": "Delete profile {{profile}}? This cannot be undone."
+        "deleteCustomProfileConfirmMessage": "Delete profile {{profile}}? This cannot be undone.",
+        "deleteCookieProfileAction": "Delete profile",
+        "selectDeleteCookieForPlatform": "Delete a profile for {{platform}}",
+        "deleteCookieProfileConfirmTitle": "Delete cookie profile",
+        "deleteCookieProfileConfirmMessage": "Delete profile {{profile}}? This cannot be undone."
     },
     "permissions": {
         "storageTitle": "Wymagane uprawnienie do pamięci",

@@ -23,6 +23,7 @@ type LocalDownloaderNativeModule = {
   importCookie(input: { platform: LocalPlatform; uri: string; profileName: string }): Promise<{ profileName: string; path: string }>;
   listCookieProfiles(platform: LocalPlatform): Promise<LocalCookieProfile[]>;
   setCookieDefault(input: { platform: LocalPlatform; profileName: string }): Promise<{ success: boolean }>;
+  deleteCookieProfile(input: { platform: LocalPlatform; profileName: string }): Promise<{ success: boolean }>;
   getCookieDefaults(): Promise<Record<LocalPlatform, string | null>>;
   importCustomCookie(input: LocalCustomCookieImportInput): Promise<LocalCustomCookieImportResult>;
   listCustomDomains(): Promise<LocalCustomDomainSummary[]>;
@@ -46,6 +47,7 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       importCookie: async () => unsupported(),
       listCookieProfiles: async () => unsupported(),
       setCookieDefault: async () => unsupported(),
+      deleteCookieProfile: async () => unsupported(),
       getCookieDefaults: async () => unsupported(),
       importCustomCookie: async () => unsupported(),
       listCustomDomains: async () => unsupported(),

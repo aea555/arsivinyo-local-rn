@@ -61,6 +61,13 @@ export async function setDefaultCookieProfile(platform: CookiePlatform, profileN
   }
 }
 
+export async function deleteCookieProfile(platform: CookiePlatform, profileName: string): Promise<void> {
+  const result = await LocalDownloaderModule.deleteCookieProfile({ platform, profileName });
+  if (!result.success) {
+    throw new Error('COOKIE_PROFILE_NOT_FOUND');
+  }
+}
+
 export async function getDefaultCookieProfile(platform: CookiePlatform): Promise<string | null> {
   const defaults = await LocalDownloaderModule.getCookieDefaults();
   return defaults[platform] ?? null;

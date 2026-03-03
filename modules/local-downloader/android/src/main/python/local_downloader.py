@@ -56,16 +56,27 @@ def _result(success: bool, code: str, message: Optional[str] = None, **kwargs: A
 
 
 def _detect_cookie_platform(url: str) -> Optional[str]:
-    parsed = urlparse(url)
-    domain = parsed.netloc.lower()
-    if domain.startswith("www."):
-        domain = domain[4:]
+    domain = _extract_host(url)
+    if not domain:
+        return None
 
     for platform, domains in COOKIE_PLATFORMS.items():
-        if any(d in domain for d in domains):
+        if any(domain == d or domain.endswith(f".{d}") for d in domains):
             return platform
 
     return None
+
+
+def _extract_host(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    host = (parsed.hostname or parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
 
 
 def _resolve_cookie_file(cookies_dir: str, platform: Optional[str], cookie_profile: Optional[str]) -> Optional[str]:
@@ -233,9 +244,7 @@ def _build_http_headers(url: str, user_agent: str) -> Dict[str, str]:
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "none",
     }
-    host = (urlparse(url).netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
+    host = _extract_host(url)
 
     if host.endswith("reddit.com") or host.endswith("redd.it"):
         headers["Referer"] = "https://www.reddit.com/"

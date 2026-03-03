@@ -79,7 +79,11 @@
         "selectDefaultForDomain": "{{domain}} için varsayılan profil",
         "selectDeleteProfileForDomain": "{{domain}} için silinecek profil",
         "deleteCustomProfileConfirmTitle": "Özel profil sil",
-        "deleteCustomProfileConfirmMessage": "{{profile}} profili silinsin mi? Bu işlem geri alınamaz."
+        "deleteCustomProfileConfirmMessage": "{{profile}} profili silinsin mi? Bu işlem geri alınamaz.",
+        "deleteCookieProfileAction": "Profili sil",
+        "selectDeleteCookieForPlatform": "{{platform}} için silinecek profil",
+        "deleteCookieProfileConfirmTitle": "Cookie profili sil",
+        "deleteCookieProfileConfirmMessage": "{{profile}} profili silinsin mi? Bu işlem geri alınamaz."
     },
     "permissions": {
         "storageTitle": "Depolama İzni Gerekli",

@@ -3,7 +3,6 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -22,6 +21,7 @@ import {
   type CookieProfile,
   type CustomDomainProfile,
   type CustomDomainSummary,
+  deleteCookieProfile,
   deleteCustomDomainProfile,
   getDefaultCookieProfile,
   importCookieProfile,
@@ -35,7 +35,11 @@ import {
 } from '@/src/services';
 import { useTheme } from '@/src/theme';
 
+type BuiltInSelectorMode = 'default' | 'delete' | null;
 type CustomSelectorMode = 'default' | 'delete' | null;
+type PendingBuiltInDelete = { platform: CookiePlatform; profileName: string } | null;
+type PendingCustomDelete = { domain: string; profileName: string } | null;
+type FeedbackState = { title: string; message: string; tone: 'success' | 'error' } | null;
 
 export default function SettingsScreen() {
   const { t } = useTranslation();
@@ -49,6 +53,7 @@ export default function SettingsScreen() {
   );
   const [customDomains, setCustomDomains] = useState<CustomDomainSummary[]>([]);
   const [selectorPlatform, setSelectorPlatform] = useState<CookiePlatform | null>(null);
+  const [selectorMode, setSelectorMode] = useState<BuiltInSelectorMode>(null);
   const [selectorProfiles, setSelectorProfiles] = useState<CookieProfile[]>([]);
   const [selectorDefaultProfile, setSelectorDefaultProfile] = useState<string | null>(null);
 
@@ -56,10 +61,27 @@ export default function SettingsScreen() {
   const [customSelectorDomain, setCustomSelectorDomain] = useState<string | null>(null);
   const [customSelectorProfiles, setCustomSelectorProfiles] = useState<CustomDomainProfile[]>([]);
   const [customSelectorDefaultProfile, setCustomSelectorDefaultProfile] = useState<string | null>(null);
+  const [cookieActionPlatform, setCookieActionPlatform] = useState<CookiePlatform | null>(null);
+  const [customDomainAction, setCustomDomainAction] = useState<string | null>(null);
+  const [pendingBuiltInDelete, setPendingBuiltInDelete] = useState<PendingBuiltInDelete>(null);
+  const [pendingCustomDelete, setPendingCustomDelete] = useState<PendingCustomDelete>(null);
 
   const [showCustomImportModal, setShowCustomImportModal] = useState(false);
   const [customImportDomain, setCustomImportDomain] = useState('');
   const [diagnosticUnlockTaps, setDiagnosticUnlockTaps] = useState(0);
+  const [feedback, setFeedback] = useState<FeedbackState>(null);
+
+  const showError = useCallback((message: string) => {
+    setFeedback({ title: t('common.error'), message, tone: 'error' });
+  }, [t]);
+
+  const showSuccess = useCallback((message: string) => {
+    setFeedback({ title: t('common.success'), message, tone: 'success' });
+  }, [t]);
+
+  const closeFeedback = useCallback(() => {
+    setFeedback(null);
+  }, []);
 
   const refreshCookieData = useCallback(async () => {
     try {
@@ -81,13 +103,20 @@ export default function SettingsScreen() {
       setCustomDomains(customDomainList);
     } catch (error) {
       const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-      Alert.alert(t('common.error'), getErrorMessage(code));
+      showError(getErrorMessage(code));
     }
-  }, [t]);
+  }, [showError, t]);
 
   useEffect(() => {
     void refreshCookieData();
   }, [refreshCookieData]);
+
+  const closeSelector = useCallback(() => {
+    setSelectorPlatform(null);
+    setSelectorMode(null);
+    setSelectorProfiles([]);
+    setSelectorDefaultProfile(null);
+  }, []);
 
   const customDefaultsMap = useMemo(() => {
     return Object.fromEntries(customDomains.map((item) => [item.domain, item.defaultProfileName])) as Record<string, string | null>;
@@ -105,50 +134,55 @@ export default function SettingsScreen() {
       }
 
       await refreshCookieData();
-      Alert.alert(t('common.success'), t('settings.cookieImportSuccess', { platform, profile: result.profileName ?? 'default' }));
+      showSuccess(t('settings.cookieImportSuccess', { platform, profile: result.profileName ?? 'default' }));
     } catch (error) {
       const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-      Alert.alert(t('common.error'), getErrorMessage(code));
+      showError(getErrorMessage(code));
     }
-  }, [refreshCookieData, t]);
+  }, [refreshCookieData, showError, showSuccess, t]);
 
-  const openDefaultSelector = useCallback(async (platform: CookiePlatform) => {
+  const openCookieSelector = useCallback(async (platform: CookiePlatform, mode: Exclude<BuiltInSelectorMode, null>) => {
     const profiles = await listCookieProfiles(platform);
     if (profiles.length === 0) {
-      Alert.alert(t('common.error'), t('settings.noCookieProfiles'));
+      showError(t('settings.noCookieProfiles'));
       return;
     }
 
     const defaultProfile = await getDefaultCookieProfile(platform);
+    setSelectorMode(mode);
     setSelectorProfiles(profiles);
     setSelectorDefaultProfile(defaultProfile);
     setSelectorPlatform(platform);
-  }, [t]);
+  }, [showError, t]);
 
   const handleCookiePlatformPress = useCallback((platform: CookiePlatform) => {
-    Alert.alert(
-      t(`settings.cookiePlatform.${platform}`),
-      t('settings.cookieActionPrompt'),
-      [
-        {
-          text: t('settings.importCookieAction'),
-          onPress: () => {
-            void handleImportCookie(platform);
-          },
-        },
-        {
-          text: t('settings.selectDefaultCookieAction'),
-          onPress: () => {
-            void openDefaultSelector(platform);
-          },
-        },
-        {
-          text: t('common.cancel'),
-          style: 'cancel',
-        },
-      ],
-    );
-  }, [handleImportCookie, openDefaultSelector, t]);
+    setCookieActionPlatform(platform);
+  }, []);
+
+  const closeCookieActionModal = useCallback(() => {
+    setCookieActionPlatform(null);
+  }, []);
+
+  const handleCookieActionImport = useCallback(() => {
+    if (!cookieActionPlatform) return;
+    const selected = cookieActionPlatform;
+    closeCookieActionModal();
+    void handleImportCookie(selected);
+  }, [closeCookieActionModal, cookieActionPlatform, handleImportCookie]);
+
+  const handleCookieActionSelectDefault = useCallback(() => {
+    if (!cookieActionPlatform) return;
+    const selected = cookieActionPlatform;
+    closeCookieActionModal();
+    void openCookieSelector(selected, 'default');
+  }, [closeCookieActionModal, cookieActionPlatform, openCookieSelector]);
+
+  const handleCookieActionDelete = useCallback(() => {
+    if (!cookieActionPlatform) return;
+    const selected = cookieActionPlatform;
+    closeCookieActionModal();
+    void openCookieSelector(selected, 'delete');
+  }, [closeCookieActionModal, cookieActionPlatform, openCookieSelector]);
 
   const handleSetDefaultProfile = useCallback(async (platform: CookiePlatform, profileName: string) => {
     try {
@@ -157,9 +191,37 @@ export default function SettingsScreen() {
       setSelectorDefaultProfile(profileName);
     } catch (error) {
       const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-      Alert.alert(t('common.error'), getErrorMessage(code));
+      showError(getErrorMessage(code));
     }
-  }, [refreshCookieData, t]);
+  }, [refreshCookieData, showError, t]);
+
+  const requestDeleteCookieProfile = useCallback((platform: CookiePlatform, profileName: string) => {
+    setPendingBuiltInDelete({ platform, profileName });
+  }, []);
+
+  const closeBuiltInDeleteConfirmModal = useCallback(() => {
+    setPendingBuiltInDelete(null);
+  }, []);
+
+  const handleDeleteCookieProfile = useCallback(async () => {
+    if (!pendingBuiltInDelete) return;
+    const { platform, profileName } = pendingBuiltInDelete;
+    closeBuiltInDeleteConfirmModal();
+    try {
+      await deleteCookieProfile(platform, profileName);
+      await refreshCookieData();
+      const remaining = await listCookieProfiles(platform);
+      if (remaining.length === 0) {
+        closeSelector();
+      } else {
+        setSelectorProfiles(remaining);
+        setSelectorDefaultProfile(await getDefaultCookieProfile(platform));
+      }
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+      showError(getErrorMessage(code));
+    }
+  }, [closeBuiltInDeleteConfirmModal, closeSelector, pendingBuiltInDelete, refreshCookieData, showError]);
 
   const openCustomImportModal = useCallback((presetDomain?: string) => {
     setCustomImportDomain(presetDomain ?? '');
@@ -183,18 +245,15 @@ export default function SettingsScreen() {
 
       await refreshCookieData();
       closeCustomImportModal();
-      Alert.alert(
-        t('common.success'),
-        t('settings.customCookieImportSuccess', {
-          profile: result.result.profileName,
-          domains: result.result.boundDomains.length,
-        }),
-      );
+      showSuccess(t('settings.customCookieImportSuccess', {
+        profile: result.result.profileName,
+        domains: result.result.boundDomains.length,
+      }));
     } catch (error) {
       const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-      Alert.alert(t('common.error'), getErrorMessage(code));
+      showError(getErrorMessage(code));
     }
-  }, [closeCustomImportModal, customImportDomain, refreshCookieData, t]);
+  }, [closeCustomImportModal, customImportDomain, refreshCookieData, showError, showSuccess, t]);
 
   const closeCustomSelector = useCallback(() => {
     setCustomSelectorMode(null);
@@ -207,7 +266,7 @@ export default function SettingsScreen() {
     try {
       const profiles = await listCustomDomainProfiles(domain);
       if (profiles.length === 0) {
-        Alert.alert(t('common.error'), t('settings.noCustomDomainProfiles'));
+        showError(t('settings.noCustomDomainProfiles'));
         return;
       }
       setCustomSelectorMode(mode);
@@ -216,41 +275,38 @@ export default function SettingsScreen() {
       setCustomSelectorDefaultProfile(customDefaultsMap[domain] ?? null);
     } catch (error) {
       const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-      Alert.alert(t('common.error'), getErrorMessage(code));
+      showError(getErrorMessage(code));
     }
-  }, [customDefaultsMap, t]);
+  }, [customDefaultsMap, showError, t]);
 
   const handleCustomDomainPress = useCallback((domain: string) => {
-    Alert.alert(
-      domain,
-      t('settings.customDomainActionPrompt'),
-      [
-        {
-          text: t('settings.importCustomCookieAction'),
-          onPress: () => {
-            openCustomImportModal(domain);
-          },
-        },
-        {
-          text: t('settings.selectCustomDefaultAction'),
-          onPress: () => {
-            void openCustomSelector(domain, 'default');
-          },
-        },
-        {
-          text: t('settings.deleteCustomProfileAction'),
-          style: 'destructive',
-          onPress: () => {
-            void openCustomSelector(domain, 'delete');
-          },
-        },
-        {
-          text: t('common.cancel'),
-          style: 'cancel',
-        },
-      ],
-    );
-  }, [openCustomImportModal, openCustomSelector, t]);
+    setCustomDomainAction(domain);
+  }, []);
+
+  const closeCustomActionModal = useCallback(() => {
+    setCustomDomainAction(null);
+  }, []);
+
+  const handleCustomActionImport = useCallback(() => {
+    if (!customDomainAction) return;
+    const selected = customDomainAction;
+    closeCustomActionModal();
+    openCustomImportModal(selected);
+  }, [closeCustomActionModal, customDomainAction, openCustomImportModal]);
+
+  const handleCustomActionSelectDefault = useCallback(() => {
+    if (!customDomainAction) return;
+    const selected = customDomainAction;
+    closeCustomActionModal();
+    void openCustomSelector(selected, 'default');
+  }, [closeCustomActionModal, customDomainAction, openCustomSelector]);
+
+  const handleCustomActionDelete = useCallback(() => {
+    if (!customDomainAction) return;
+    const selected = customDomainAction;
+    closeCustomActionModal();
+    void openCustomSelector(selected, 'delete');
+  }, [closeCustomActionModal, customDomainAction, openCustomSelector]);
 
   const handleSetCustomDefaultProfile = useCallback(async (domain: string, profileName: string) => {
     try {
@@ -259,43 +315,41 @@ export default function SettingsScreen() {
       setCustomSelectorDefaultProfile(profileName);
     } catch (error) {
       const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-      Alert.alert(t('common.error'), getErrorMessage(code));
+      showError(getErrorMessage(code));
     }
-  }, [refreshCookieData, t]);
+  }, [refreshCookieData, showError, t]);
 
-  const handleDeleteCustomProfile = useCallback(async (domain: string, profileName: string) => {
-    Alert.alert(
-      t('settings.deleteCustomProfileConfirmTitle'),
-      t('settings.deleteCustomProfileConfirmMessage', { profile: profileName }),
-      [
-        { text: t('common.cancel'), style: 'cancel' },
-        {
-          text: t('settings.deleteCustomProfileAction'),
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteCustomDomainProfile(domain, profileName);
-              await refreshCookieData();
-              const remaining = await listCustomDomainProfiles(domain);
-              if (remaining.length === 0) {
-                closeCustomSelector();
-              } else {
-                setCustomSelectorProfiles(remaining);
-                const currentDefault = customDefaultsMap[domain];
-                const nextDefault = remaining.some((entry) => entry.profileName === currentDefault)
-                  ? currentDefault
-                  : remaining[0]?.profileName ?? null;
-                setCustomSelectorDefaultProfile(nextDefault);
-              }
-            } catch (error) {
-              const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-              Alert.alert(t('common.error'), getErrorMessage(code));
-            }
-          },
-        },
-      ],
-    );
-  }, [closeCustomSelector, customDefaultsMap, refreshCookieData, t]);
+  const requestDeleteCustomProfile = useCallback((domain: string, profileName: string) => {
+    setPendingCustomDelete({ domain, profileName });
+  }, []);
+
+  const closeDeleteConfirmModal = useCallback(() => {
+    setPendingCustomDelete(null);
+  }, []);
+
+  const handleDeleteCustomProfile = useCallback(async () => {
+    if (!pendingCustomDelete) return;
+    const { domain, profileName } = pendingCustomDelete;
+    closeDeleteConfirmModal();
+    try {
+      await deleteCustomDomainProfile(domain, profileName);
+      await refreshCookieData();
+      const remaining = await listCustomDomainProfiles(domain);
+      if (remaining.length === 0) {
+        closeCustomSelector();
+      } else {
+        setCustomSelectorProfiles(remaining);
+        const currentDefault = customDefaultsMap[domain];
+        const nextDefault = remaining.some((entry) => entry.profileName === currentDefault)
+          ? currentDefault
+          : remaining[0]?.profileName ?? null;
+        setCustomSelectorDefaultProfile(nextDefault);
+      }
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+      showError(getErrorMessage(code));
+    }
+  }, [closeCustomSelector, closeDeleteConfirmModal, customDefaultsMap, pendingCustomDelete, refreshCookieData, showError]);
 
   const handleClose = useCallback(() => {
     router.back();
@@ -308,12 +362,6 @@ export default function SettingsScreen() {
   const openDiagnostics = useCallback(() => {
     router.push('/diagnostics' as never);
   }, [router]);
-
-  const closeSelector = useCallback(() => {
-    setSelectorPlatform(null);
-    setSelectorProfiles([]);
-    setSelectorDefaultProfile(null);
-  }, []);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
@@ -417,7 +465,7 @@ export default function SettingsScreen() {
       </ScrollView>
 
       <Modal
-        visible={selectorPlatform !== null}
+        visible={selectorPlatform !== null && selectorMode !== null}
         transparent
         animationType="fade"
         onRequestClose={closeSelector}
@@ -425,7 +473,11 @@ export default function SettingsScreen() {
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
-              {selectorPlatform ? t('settings.selectDefaultForPlatform', { platform: t(`settings.cookiePlatform.${selectorPlatform}`) }) : ''}
+              {selectorPlatform && selectorMode === 'default'
+                ? t('settings.selectDefaultForPlatform', { platform: t(`settings.cookiePlatform.${selectorPlatform}`) })
+                : selectorPlatform
+                  ? t('settings.selectDeleteCookieForPlatform', { platform: t(`settings.cookiePlatform.${selectorPlatform}`) })
+                  : ''}
             </Text>
             <ScrollView style={styles.modalList}>
               {selectorPlatform && selectorProfiles.map((profile) => {
@@ -434,17 +486,28 @@ export default function SettingsScreen() {
                   <Pressable
                     key={`${selectorPlatform}-${profile.profileName}`}
                     onPress={() => {
+                      if (selectorMode === 'delete') {
+                        requestDeleteCookieProfile(selectorPlatform, profile.profileName);
+                        return;
+                      }
                       void handleSetDefaultProfile(selectorPlatform, profile.profileName);
                     }}
                     style={({ pressed }) => [
                       styles.modalItem,
                       {
                         backgroundColor: pressed ? colors.surfaceHover : 'transparent',
-                        borderColor: selected ? colors.accent : colors.border,
+                        borderColor: selectorMode === 'default' && selected ? colors.accent : colors.border,
                       },
                     ]}
                   >
-                    <Text style={[styles.modalItemTitle, { color: selected ? colors.accent : colors.text }]}>
+                    <Text style={[
+                      styles.modalItemTitle,
+                      {
+                        color: selectorMode === 'delete'
+                          ? colors.error
+                          : (selected ? colors.accent : colors.text),
+                      },
+                    ]}>
                       {profile.profileName}
                     </Text>
                   </Pressable>
@@ -488,7 +551,7 @@ export default function SettingsScreen() {
                     onPress={() => {
                       if (!customSelectorDomain) return;
                       if (customSelectorMode === 'delete') {
-                        void handleDeleteCustomProfile(customSelectorDomain, profile.profileName);
+                        requestDeleteCustomProfile(customSelectorDomain, profile.profileName);
                         return;
                       }
                       void handleSetCustomDefaultProfile(customSelectorDomain, profile.profileName);
@@ -524,6 +587,198 @@ export default function SettingsScreen() {
             >
               <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.cancel')}</Text>
             </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={cookieActionPlatform !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeCookieActionModal}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {cookieActionPlatform ? t(`settings.cookiePlatform.${cookieActionPlatform}`) : ''}
+            </Text>
+            <Text style={[styles.modalDescription, { color: colors.textMuted }]}>
+              {t('settings.cookieActionPrompt')}
+            </Text>
+            <View style={styles.modalActionsColumn}>
+              <Pressable
+                onPress={handleCookieActionImport}
+                style={({ pressed }) => [
+                  styles.modalActionRow,
+                  { backgroundColor: pressed ? colors.surfaceHover : colors.background, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.modalActionText, { color: colors.text }]}>{t('settings.importCookieAction')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleCookieActionSelectDefault}
+                style={({ pressed }) => [
+                  styles.modalActionRow,
+                  { backgroundColor: pressed ? colors.surfaceHover : colors.background, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.modalActionText, { color: colors.text }]}>{t('settings.selectDefaultCookieAction')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleCookieActionDelete}
+                style={({ pressed }) => [
+                  styles.modalActionRow,
+                  { backgroundColor: pressed ? colors.surfaceHover : colors.background, borderColor: colors.error },
+                ]}
+              >
+                <Text style={[styles.modalActionText, { color: colors.error }]}>{t('settings.deleteCookieProfileAction')}</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={closeCookieActionModal}
+              style={({ pressed }) => [
+                styles.modalCloseButton,
+                { backgroundColor: pressed ? colors.surfaceHover : colors.background },
+              ]}
+            >
+              <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.cancel')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={pendingBuiltInDelete !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeBuiltInDeleteConfirmModal}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {t('settings.deleteCookieProfileConfirmTitle')}
+            </Text>
+            <Text style={[styles.modalDescription, { color: colors.textMuted }]}>
+              {t('settings.deleteCookieProfileConfirmMessage', { profile: pendingBuiltInDelete?.profileName ?? '' })}
+            </Text>
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={closeBuiltInDeleteConfirmModal}
+                style={({ pressed }) => [
+                  styles.modalActionButton,
+                  { backgroundColor: pressed ? colors.surfaceHover : colors.background },
+                ]}
+              >
+                <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.cancel')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  void handleDeleteCookieProfile();
+                }}
+                style={({ pressed }) => [
+                  styles.modalActionButton,
+                  { backgroundColor: pressed ? colors.error + 'bb' : colors.error },
+                ]}
+              >
+                <Text style={[styles.modalCloseText, { color: colors.background }]}>{t('settings.deleteCookieProfileAction')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={customDomainAction !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeCustomActionModal}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {customDomainAction ?? ''}
+            </Text>
+            <Text style={[styles.modalDescription, { color: colors.textMuted }]}>
+              {t('settings.customDomainActionPrompt')}
+            </Text>
+            <View style={styles.modalActionsColumn}>
+              <Pressable
+                onPress={handleCustomActionImport}
+                style={({ pressed }) => [
+                  styles.modalActionRow,
+                  { backgroundColor: pressed ? colors.surfaceHover : colors.background, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.modalActionText, { color: colors.text }]}>{t('settings.importCustomCookieAction')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleCustomActionSelectDefault}
+                style={({ pressed }) => [
+                  styles.modalActionRow,
+                  { backgroundColor: pressed ? colors.surfaceHover : colors.background, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.modalActionText, { color: colors.text }]}>{t('settings.selectCustomDefaultAction')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleCustomActionDelete}
+                style={({ pressed }) => [
+                  styles.modalActionRow,
+                  { backgroundColor: pressed ? colors.surfaceHover : colors.background, borderColor: colors.error },
+                ]}
+              >
+                <Text style={[styles.modalActionText, { color: colors.error }]}>{t('settings.deleteCustomProfileAction')}</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={closeCustomActionModal}
+              style={({ pressed }) => [
+                styles.modalCloseButton,
+                { backgroundColor: pressed ? colors.surfaceHover : colors.background },
+              ]}
+            >
+              <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.cancel')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={pendingCustomDelete !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeDeleteConfirmModal}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {t('settings.deleteCustomProfileConfirmTitle')}
+            </Text>
+            <Text style={[styles.modalDescription, { color: colors.textMuted }]}>
+              {t('settings.deleteCustomProfileConfirmMessage', { profile: pendingCustomDelete?.profileName ?? '' })}
+            </Text>
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={closeDeleteConfirmModal}
+                style={({ pressed }) => [
+                  styles.modalActionButton,
+                  { backgroundColor: pressed ? colors.surfaceHover : colors.background },
+                ]}
+              >
+                <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.cancel')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  void handleDeleteCustomProfile();
+                }}
+                style={({ pressed }) => [
+                  styles.modalActionButton,
+                  { backgroundColor: pressed ? colors.error + 'bb' : colors.error },
+                ]}
+              >
+                <Text style={[styles.modalCloseText, { color: colors.background }]}>{t('settings.deleteCustomProfileAction')}</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -580,6 +835,36 @@ export default function SettingsScreen() {
                 <Text style={[styles.modalCloseText, { color: colors.background }]}>{t('settings.importCustomCookieAction')}</Text>
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={feedback !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeFeedback}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[
+              styles.modalTitle,
+              { color: feedback?.tone === 'error' ? colors.error : colors.accent },
+            ]}>
+              {feedback?.title ?? ''}
+            </Text>
+            <Text style={[styles.modalDescription, { color: colors.text }]}>
+              {feedback?.message ?? ''}
+            </Text>
+            <Pressable
+              onPress={closeFeedback}
+              style={({ pressed }) => [
+                styles.modalCloseButton,
+                { backgroundColor: pressed ? colors.surfaceHover : colors.background },
+              ]}
+            >
+              <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.ok')}</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -664,6 +949,23 @@ const styles = StyleSheet.create({
   modalItemTitle: {
     fontSize: 14,
     fontWeight: '500',
+  },
+  modalDescription: {
+    fontSize: 13,
+    marginBottom: 12,
+  },
+  modalActionsColumn: {
+    gap: 8,
+  },
+  modalActionRow: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  modalActionText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   modalCloseButton: {
     marginTop: 8,

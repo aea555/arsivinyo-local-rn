@@ -549,6 +549,46 @@ class LocalDownloaderModule : Module() {
       mapOf("success" to true)
     }
 
+    AsyncFunction("deleteCookieProfile") { input: Map<String, String> ->
+      val platform = input["platform"]?.trim().orEmpty().lowercase()
+      val profileName = sanitizeProfileName(input["profileName"].orEmpty())
+
+      if (!SUPPORTED_PLATFORMS.contains(platform) || profileName.isBlank()) {
+        return@AsyncFunction mapOf("success" to false)
+      }
+
+      val platformDir = secureCookiePlatformDir(platform, create = false)
+      if (!platformDir.exists()) {
+        return@AsyncFunction mapOf("success" to false)
+      }
+
+      val targetFile = File(platformDir, "$profileName.enc")
+      if (!targetFile.exists() || !targetFile.isFile) {
+        return@AsyncFunction mapOf("success" to false)
+      }
+
+      if (!targetFile.delete()) {
+        return@AsyncFunction mapOf("success" to false)
+      }
+
+      val remaining = platformDir.listFiles()
+        ?.filter { it.isFile && it.extension == "enc" }
+        ?.sortedByDescending { it.lastModified() }
+        ?: emptyList()
+
+      if (remaining.isEmpty()) {
+        clearDefaultProfile(platformDir)
+        return@AsyncFunction mapOf("success" to true)
+      }
+
+      val defaultProfile = readDefaultProfile(platformDir)
+      if (defaultProfile == null || defaultProfile == profileName) {
+        writeDefaultProfile(platformDir, remaining.first().nameWithoutExtension)
+      }
+
+      mapOf("success" to true)
+    }
+
     AsyncFunction("getCookieDefaults") {
       val cookiesRoot = secureCookiesRoot(create = false)
       SUPPORTED_PLATFORMS.associateWith { platform ->
@@ -1402,10 +1442,24 @@ class LocalDownloaderModule : Module() {
   }
 
   private fun extractCanonicalHostFromUrl(url: String): String? {
-    val rawHost = runCatching {
-      val parsed = URI(url)
-      parsed.host?.lowercase()
-    }.getOrNull() ?: return null
+    val trimmed = url.trim()
+    if (trimmed.isBlank()) {
+      return null
+    }
+
+    val candidates = if (trimmed.contains("://")) {
+      listOf(trimmed)
+    } else {
+      listOf(trimmed, "https://$trimmed")
+    }
+
+    val rawHost = candidates.asSequence()
+      .mapNotNull { candidate ->
+        runCatching { URI(candidate).host?.lowercase() }.getOrNull()
+      }
+      .firstOrNull()
+      ?: return null
+
     return canonicalizeDomain(rawHost)
   }
 
@@ -2180,6 +2234,13 @@ class LocalDownloaderModule : Module() {
   private fun writeDefaultProfile(platformDir: File, profileName: String) {
     val file = File(platformDir, DEFAULT_COOKIE_PROFILE_FILENAME)
     file.writeText(profileName)
+  }
+
+  private fun clearDefaultProfile(platformDir: File) {
+    val file = File(platformDir, DEFAULT_COOKIE_PROFILE_FILENAME)
+    if (file.exists()) {
+      file.delete()
+    }
   }
 
   private fun addError(message: String) {

@@ -13,6 +13,7 @@ export {
     listCustomDomainProfiles,
     listCustomDomains,
     LOCAL_COOKIE_PLATFORMS,
+    deleteCookieProfile,
     setDefaultCookieProfile,
     setCustomDomainDefault,
     deleteCustomDomainProfile,

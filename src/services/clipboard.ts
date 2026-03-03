@@ -6,6 +6,26 @@ import { SUPPORTED_PLATFORM_HOSTS, type SupportedPlatform } from '../constants/s
  */
 const SUPPORTED_HOSTS = Object.values(SUPPORTED_PLATFORM_HOSTS).flat();
 
+function parseUrlWithFallback(input: string): URL | null {
+    const trimmed = input.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const candidates = trimmed.includes('://')
+        ? [trimmed]
+        : [trimmed, `https://${trimmed}`];
+
+    for (const candidate of candidates) {
+        try {
+            return new URL(candidate);
+        } catch {
+            // Try the next candidate.
+        }
+    }
+    return null;
+}
+
 /**
  * Check if a string is a valid URL
  * Uses URL parsing instead of complex regex to avoid catastrophic backtracking
@@ -36,30 +56,27 @@ export function isValidUrl(text: string): boolean {
  * Check if URL matches one of the known platform hostnames.
  */
 export function isSupportedPlatformUrl(url: string): boolean {
-    try {
-        const parsed = new URL(url);
-        const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '');
-        return SUPPORTED_HOSTS.some((host) => hostname === host || hostname.endsWith(`.${host}`));
-    } catch {
+    const parsed = parseUrlWithFallback(url);
+    if (!parsed) {
         return false;
     }
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    return SUPPORTED_HOSTS.some((host) => hostname === host || hostname.endsWith(`.${host}`));
 }
 
 export function getPlatformFromUrl(url: string): SupportedPlatform | null {
-    try {
-        const parsed = new URL(url);
-        const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '');
-
-        for (const [platform, hosts] of Object.entries(SUPPORTED_PLATFORM_HOSTS)) {
-            if (hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))) {
-                return platform as SupportedPlatform;
-            }
-        }
-
-        return null;
-    } catch {
+    const parsed = parseUrlWithFallback(url);
+    if (!parsed) {
         return null;
     }
+
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    for (const [platform, hosts] of Object.entries(SUPPORTED_PLATFORM_HOSTS)) {
+        if (hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))) {
+            return platform as SupportedPlatform;
+        }
+    }
+    return null;
 }
 
 /**
