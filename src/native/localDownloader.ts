@@ -1,5 +1,8 @@
-export { default, addDownloadProgressListener } from '../../modules/local-downloader/src';
+export { default, addBackgroundStateListener, addDownloadProgressListener } from '../../modules/local-downloader/src';
 export type {
+  LocalBackgroundPermissionResult,
+  LocalBackgroundState,
+  LocalBackgroundStateEvent,
   LocalCookieProfile,
   LocalCustomCookieImportInput,
   LocalCustomCookieImportResult,
@@ -13,6 +16,7 @@ export type {
   LocalSaveToMediaStoreInput,
   LocalSaveToMediaStoreResult,
   LocalPlatform,
+  LocalQuickDownloadResult,
   LocalTaskStatus,
   LocalTaskStatusResult,
 } from '../../modules/local-downloader/src';

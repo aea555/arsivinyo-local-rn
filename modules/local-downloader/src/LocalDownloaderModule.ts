@@ -2,6 +2,9 @@ import { EventEmitter, type EventSubscription, requireNativeModule } from 'expo-
 import { Platform } from 'react-native';
 import type {
   LocalCookieProfile,
+  LocalBackgroundPermissionResult,
+  LocalBackgroundState,
+  LocalBackgroundStateEvent,
   LocalCustomCookieImportInput,
   LocalCustomCookieImportResult,
   LocalCustomDomainProfile,
@@ -14,6 +17,7 @@ import type {
   LocalSaveToMediaStoreInput,
   LocalSaveToMediaStoreResult,
   LocalPlatform,
+  LocalQuickDownloadResult,
   LocalTaskStatusResult,
 } from './LocalDownloader.types';
 
@@ -21,6 +25,10 @@ type LocalDownloaderNativeModule = {
   startDownload(input: LocalDownloadStartInput): Promise<LocalDownloadStartResult>;
   getTaskStatus(taskId: string): Promise<LocalTaskStatusResult>;
   cancelTask(taskId: string): Promise<{ success: boolean }>;
+  getBackgroundState(): Promise<LocalBackgroundState>;
+  ensureBackgroundPermission(): Promise<LocalBackgroundPermissionResult>;
+  startQuickDownloadFromClipboard(): Promise<LocalQuickDownloadResult>;
+  startQuickDownloadWithUrl(input: { url: string }): Promise<LocalQuickDownloadResult>;
   importCookie(input: { platform: LocalPlatform; uri: string; profileName: string }): Promise<{ profileName: string; path: string }>;
   listCookieProfiles(platform: LocalPlatform): Promise<LocalCookieProfile[]>;
   setCookieDefault(input: { platform: LocalPlatform; profileName: string }): Promise<{ success: boolean }>;
@@ -46,6 +54,10 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       startDownload: async () => unsupported(),
       getTaskStatus: async () => unsupported(),
       cancelTask: async () => unsupported(),
+      getBackgroundState: async () => unsupported(),
+      ensureBackgroundPermission: async () => unsupported(),
+      startQuickDownloadFromClipboard: async () => unsupported(),
+      startQuickDownloadWithUrl: async () => unsupported(),
       importCookie: async () => unsupported(),
       listCookieProfiles: async () => unsupported(),
       setCookieDefault: async () => unsupported(),
@@ -67,6 +79,13 @@ export function addDownloadProgressListener(listener: (event: LocalDownloadEvent
     return { remove: () => undefined };
   }
   return emitter.addListener('downloadProgress', listener);
+}
+
+export function addBackgroundStateListener(listener: (event: LocalBackgroundStateEvent) => void): EventSubscription {
+  if (!emitter) {
+    return { remove: () => undefined };
+  }
+  return emitter.addListener('backgroundStateChanged', listener);
 }
 
 export default NativeLocalDownloader;

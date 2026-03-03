@@ -29,7 +29,10 @@
         "cancelDownloadTitle": "Mevcut indirme iptal edilsin mi?",
         "cancelDownloadMessage": "Devam eden indirmeyi durdurmak istediğinize emin misiniz?",
         "confirmCancelDownload": "Evet, iptal et",
-        "cancelRequestFailed": "İptal isteği gönderilemedi. Lütfen tekrar deneyin."
+        "cancelRequestFailed": "İptal isteği gönderilemedi. Lütfen tekrar deneyin.",
+        "quickBackgroundDownload": "Hızlı arka plan indirme",
+        "quickDownloadQueued": "Hızlı indirme kabul edildi.",
+        "backgroundActive": "Arka plan aktif • Kuyruk: {{count}}"
     },
     "settings": {
         "title": "Ayarlar",
@@ -148,6 +151,13 @@
         "IMPERSONATION_RUNTIME_UNAVAILABLE": "Bu sürümde gerekli impersonation hedefi mevcut değil.",
         "IMPERSONATION_BOOTSTRAP_FAILED": "Impersonation çalışma zamanı başlatılamadı.",
         "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE": "Bu kaynak için gereken impersonation hedefi bu derlemede kullanılamıyor.",
-        "IMPERSONATION_DEPENDENCY_MISSING": "Impersonation bağımlılığı eksik (curl-cffi)."
+        "IMPERSONATION_DEPENDENCY_MISSING": "Impersonation bağımlılığı eksik (curl-cffi).",
+        "BACKGROUND_PERMISSION_REQUIRED": "Arka planda indirme için bildirim izni gerekiyor.",
+        "NO_CLIPBOARD_URL": "Panoda geçerli URL bulunamadı.",
+        "DOWNLOAD_QUEUE_FULL": "Arka plan kuyruğu dolu (maks 3).",
+        "BACKGROUND_SERVICE_START_FAILED": "Arka plan indirme servisi başlatılamadı.",
+        "QUICK_DOWNLOAD_REJECTED": "Hızlı indirme reddedildi.",
+        "INVALID_QUICK_URL": "Girilen hızlı indirme bağlantısı geçersiz.",
+        "QUICK_CAPTURE_CANCELLED": "Hızlı yakalama iptal edildi."
     }
 }

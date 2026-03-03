@@ -13,6 +13,33 @@ export interface LocalDownloadStartResult {
   estimatedSizeMb?: number | null;
 }
 
+export interface LocalBackgroundState {
+  serviceRunning: boolean;
+  activeTaskId: string | null;
+  queueSize: number;
+  maxQueueSize?: number;
+  queuedUrls: string[];
+  lastQuickReason?: string | null;
+  notificationPhase?: string;
+  notificationPermissionRequired: boolean;
+  notificationPermissionGranted: boolean;
+}
+
+export interface LocalBackgroundPermissionResult {
+  granted: boolean;
+  canAskAgain: boolean;
+}
+
+export interface LocalQuickDownloadResult {
+  accepted: boolean;
+  reason?: 'NO_CLIPBOARD_URL' | 'INVALID_QUICK_URL' | 'QUEUE_FULL' | 'PERMISSION_REQUIRED' | 'ALREADY_ACTIVE' | 'QUICK_DOWNLOAD_REJECTED' | 'QUICK_CAPTURE_CANCELLED';
+  taskId?: string;
+  queueSize?: number;
+  queueMax?: number;
+  resolvedUrl?: string | null;
+  captureMode?: 'clipboard' | 'manual';
+}
+
 export interface LocalSaveToMediaStoreInput {
   filePath: string;
   filename: string;
@@ -80,6 +107,8 @@ export interface LocalDownloadEvent {
   progressPercent?: number;
 }
 
+export interface LocalBackgroundStateEvent extends LocalBackgroundState {}
+
 export interface LocalDiagnostics {
   ytDlpVersion: string;
   ytDlpAvailable: boolean;
@@ -135,6 +164,9 @@ export interface LocalDiagnostics {
   ffprobeProbeError?: string | null;
   mergeCapable: boolean;
   activeHttpUserAgent: string;
+  serviceRunning?: boolean;
+  queuedDownloadCount?: number;
+  lastBackgroundServiceError?: string | null;
   secureCookieStoreEnabled: boolean;
   cookieEncryptionVersion: string;
   cookieProfilesEncryptedCount: number;

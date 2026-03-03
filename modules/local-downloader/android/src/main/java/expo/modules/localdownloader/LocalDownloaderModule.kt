@@ -1,6 +1,11 @@
 package expo.modules.localdownloader
 
+import android.Manifest
+import android.content.ClipboardManager
 import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -9,6 +14,8 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Log
 import android.provider.MediaStore
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import expo.modules.kotlin.modules.Module
@@ -29,6 +36,7 @@ import java.net.URI
 import java.security.KeyStore
 import java.time.Instant
 import java.util.ArrayDeque
+import java.util.LinkedHashMap
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -113,6 +121,12 @@ data class CustomDomainMatch(
   val profileName: String? = null,
 )
 
+data class PendingQuickRequest(
+  val url: String,
+  val captureMode: String,
+  val createdAtMs: Long
+)
+
 class LocalDownloaderModule : Module() {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val tasks = ConcurrentHashMap<String, TaskState>()
@@ -120,6 +134,9 @@ class LocalDownloaderModule : Module() {
   private val ignoredTaskResults = ConcurrentHashMap.newKeySet<String>()
   private val lastErrors = ArrayDeque<String>()
   private val customCookieIndexLock = Any()
+  private val queueLock = Any()
+  private val queuedQuickDownloads = ArrayDeque<String>()
+  private val recentQuickUrls = LinkedHashMap<String, Long>()
   private val tag = "LocalDownloader"
   private val debugLoggingEnabled = BuildConfig.DEBUG
 
@@ -138,11 +155,22 @@ class LocalDownloaderModule : Module() {
   @Volatile
   private var lastCustomDomainMatch: CustomDomainMatch? = null
 
+  @Volatile
+  private var lastQuickReason: String? = null
+
+  @Volatile
+  private var notificationPhase: String = "idle"
+
+  @Volatile
+  private var activeTaskUrl: String? = null
+
   override fun definition() = ModuleDefinition {
     Name("LocalDownloader")
-    Events("downloadProgress")
+    Events("downloadProgress", "backgroundStateChanged")
 
     OnCreate {
+      activeModule = this@LocalDownloaderModule
+      lastQuickReason = lastQuickReasonFallback
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
       cleanupRuntimeCookieTemp()
       migrateLegacyCookieStoreIfNeeded()
@@ -162,6 +190,18 @@ class LocalDownloaderModule : Module() {
         addError("MERGE_DEPENDENCY_MISSING: ffmpeg/ffprobe not executable")
       }
       cachedFfmpegInfo = ffmpegInfo
+      syncForegroundNotification("idle", "Ready for quick downloads")
+      consumePendingQuickRequests()
+      emitBackgroundStateChanged()
+    }
+
+    OnDestroy {
+      if (activeModule === this@LocalDownloaderModule) {
+        activeModule = null
+      }
+      syncForegroundNotification("idle", "Stopping background notification")
+      appContext.reactContext?.let { DownloadNotificationController.stop(it) }
+      emitBackgroundStateChanged()
     }
 
     AsyncFunction("startDownload") { input: Map<String, Any?> ->
@@ -169,265 +209,12 @@ class LocalDownloaderModule : Module() {
       val cookiePlatform = (input["cookiePlatform"] as? String)?.trim()?.lowercase()?.takeIf { SUPPORTED_PLATFORMS.contains(it) }
       val cookieProfile = (input["cookieProfile"] as? String)?.trim().orEmpty().ifEmpty { null }
       val maxFileSizeMb = (input["maxFileSizeMb"] as? Number)?.toInt()?.coerceAtLeast(0) ?: DEFAULT_MAX_FILE_SIZE_MB
-
-      if (url.isBlank()) {
-        throw IllegalArgumentException("INVALID_URL")
-      }
-
-      if (activeJob?.isActive == true) {
-        throw IllegalStateException("DOWNLOAD_ALREADY_IN_PROGRESS")
-      }
-
-      val taskId = UUID.randomUUID().toString()
-      ignoredTaskResults.remove(taskId)
-
-      val task = TaskState(taskId = taskId, status = "PENDING")
-      tasks[taskId] = task
-      persistTaskSnapshot()
-      emitProgress(taskId, "PENDING", "starting", "Task created")
-
-      val reactContext = requireNotNull(appContext.reactContext)
-      val outputDir = File(reactContext.cacheDir, "local_downloads").apply { mkdirs() }
-      val cookiesDir = File(reactContext.filesDir, LEGACY_COOKIES_DIRNAME).apply { mkdirs() }
-      val disabledCookiesDir = File(reactContext.filesDir, DISABLED_COOKIES_DIRNAME)
-      val cancelFlag = createCancelFlag(taskId)
-      val progressFile = createProgressFile(taskId)
-      val effectivePlatform = cookiePlatform ?: detectCookiePlatform(url)
-
-      activeTaskId = taskId
-      activeJob = scope.launch {
-        var runtimeCookiePath: String? = null
-        var progressWatcher: Job? = null
-        runCatching {
-          debug("Task[$taskId] START url=$url platform=$effectivePlatform profile=$cookieProfile maxMb=$maxFileSizeMb")
-          updateStatus(taskId, "STARTED", null, null, null, null, null)
-          emitProgress(taskId, "STARTED", "starting", "Preflight")
-
-          runtimeCookiePath = prepareRuntimeCookiePath(taskId, url, cookieProfile, effectivePlatform)
-          var effectiveCookiePath = runtimeCookiePath
-          debug("Task[$taskId] runtimeCookiePath=${runtimeCookiePath ?: "none"}")
-
-          val ffmpegInfo = getOrResolveFfmpegInfo(forceRefresh = true)
-          debug("Task[$taskId] ffmpeg info before preflight: ${summarizeFfmpegInfo(ffmpegInfo)}")
-          var preflightResult = callPythonPreflight(
-            PreflightPythonInput(
-              url = url,
-              cookiesDir = cookiesDir.absolutePath,
-              cookieProfile = cookieProfile,
-              maxFileSizeMb = maxFileSizeMb,
-              ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
-              cookieFilePath = effectiveCookiePath,
-              forceNoCookie = false,
-              mergeCapable = ffmpegInfo.mergeCapable,
-              userAgent = DEFAULT_HTTP_USER_AGENT,
-              debugLogging = debugLoggingEnabled,
-            )
-          )
-          debug("Task[$taskId] preflight result=$preflightResult")
-
-          if (!preflightResult.optBoolean("success", false) && shouldRetryWithoutCookies(preflightResult, effectiveCookiePath, effectivePlatform)) {
-            addError("COOKIE_RETRY_PREFLIGHT: task=$taskId")
-            cleanupRuntimeCookieTemp(taskId)
-            effectiveCookiePath = null
-            preflightResult = callPythonPreflight(
-              PreflightPythonInput(
-                url = url,
-                cookiesDir = disabledCookiesDir.absolutePath,
-                cookieProfile = null,
-                maxFileSizeMb = maxFileSizeMb,
-                ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
-                cookieFilePath = null,
-                forceNoCookie = true,
-                mergeCapable = ffmpegInfo.mergeCapable,
-                userAgent = DEFAULT_HTTP_USER_AGENT,
-                debugLogging = debugLoggingEnabled,
-              )
-            )
-            debug("Task[$taskId] preflight retry(no-cookie) result=$preflightResult")
-          }
-          preflightResult = normalizeRuntimeError(preflightResult, ffmpegInfo)
-
-          if (shouldIgnoreTaskResult(taskId)) {
-            return@runCatching
-          }
-
-          val estimatedSizeMb = preflightResult.optDouble("estimated_size_mb", Double.NaN)
-            .takeIf { !it.isNaN() && it > 0.0 }
-          if (estimatedSizeMb != null) {
-            tasks[taskId]?.estimatedSizeMb = estimatedSizeMb
-            persistTaskSnapshot()
-          }
-
-          if (isCancelRequested(taskId)) {
-            markCancelled(taskId, "Cancellation confirmed before download start")
-            return@runCatching
-          }
-
-          if (!preflightResult.optBoolean("success", false)) {
-            val code = preflightResult.optString("code", "INTERNAL_ERROR")
-            val msg = preflightResult.optString("message", "Preflight failed")
-            debug("Task[$taskId] preflight failed code=$code message=$msg")
-
-            if (code == "DOWNLOAD_CANCELLED") {
-              markCancelled(taskId, msg)
-              return@runCatching
-            }
-
-            updateStatus(taskId, "FAILURE", null, null, null, code, msg)
-            emitProgress(taskId, "FAILURE", "error", msg)
-            addError("$code: $msg")
-            return@runCatching
-          }
-
-          val freeMb = getFreeSpaceMb(outputDir)
-          val requiredFreeMb = if (estimatedSizeMb != null) {
-            max(1024.0, estimatedSizeMb * 2.5)
-          } else {
-            1024.0
-          }
-
-          if (freeMb < requiredFreeMb) {
-            val msg = "Not enough free storage. Free=${"%.1f".format(freeMb)}MB, Required=${"%.1f".format(requiredFreeMb)}MB"
-            debug("Task[$taskId] storage check failed: $msg")
-            updateStatus(taskId, "FAILURE", null, null, null, "SERVER_BUSY", msg)
-            emitProgress(taskId, "FAILURE", "error", msg)
-            addError("SERVER_BUSY: $msg")
-            return@runCatching
-          }
-
-          tasks[taskId]?.progressPercent = 0.0
-          emitProgress(taskId, "PROGRESS", "downloading", "Downloading media", 0.0)
-          updateStatus(taskId, "PROGRESS", null, null, null, null, null)
-          progressWatcher = launch {
-            observeProgressFile(taskId, progressFile)
-          }
-
-          var result = callPythonDownload(
-            DownloadPythonInput(
-              url = url,
-              outputDir = outputDir.absolutePath,
-              cookiesDir = cookiesDir.absolutePath,
-              cookieProfile = cookieProfile,
-              maxFileSizeMb = maxFileSizeMb,
-              cancelFlagPath = cancelFlag.absolutePath,
-              progressFilePath = progressFile.absolutePath,
-              ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
-              cookieFilePath = effectiveCookiePath,
-              forceNoCookie = false,
-              mergeCapable = ffmpegInfo.mergeCapable,
-              userAgent = DEFAULT_HTTP_USER_AGENT,
-              debugLogging = debugLoggingEnabled,
-            )
-          )
-          debug("Task[$taskId] download result=$result")
-
-          if (!result.optBoolean("success", false) && shouldRetryWithoutCookies(result, effectiveCookiePath, effectivePlatform)) {
-            addError("COOKIE_RETRY_DOWNLOAD: task=$taskId")
-            emitProgress(taskId, "PROGRESS", "downloading", "Retrying without cookies")
-            cleanupRuntimeCookieTemp(taskId)
-            effectiveCookiePath = null
-            clearProgressFile(progressFile)
-            tasks[taskId]?.progressPercent = 0.0
-            result = callPythonDownload(
-              DownloadPythonInput(
-                url = url,
-                outputDir = outputDir.absolutePath,
-                cookiesDir = disabledCookiesDir.absolutePath,
-                cookieProfile = null,
-                maxFileSizeMb = maxFileSizeMb,
-                cancelFlagPath = cancelFlag.absolutePath,
-                progressFilePath = progressFile.absolutePath,
-                ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
-                cookieFilePath = null,
-                forceNoCookie = true,
-                mergeCapable = ffmpegInfo.mergeCapable,
-                userAgent = DEFAULT_HTTP_USER_AGENT,
-                debugLogging = debugLoggingEnabled,
-              )
-            )
-            debug("Task[$taskId] download retry(no-cookie) result=$result")
-          }
-          progressWatcher?.cancel()
-          progressWatcher = null
-          result = normalizeRuntimeError(result, ffmpegInfo)
-
-          if (shouldIgnoreTaskResult(taskId)) {
-            return@runCatching
-          }
-
-          if (result.optBoolean("success", false)) {
-            if (isCancelRequested(taskId)) {
-              markCancelled(taskId, "Cancellation confirmed after worker completion")
-              return@runCatching
-            }
-
-            val filename = result.optString("filename").ifBlank { null }
-            val filePath = result.optString("file_path").ifBlank { null }
-            val sizeMb = result.optDouble("size_mb", Double.NaN).takeIf { !it.isNaN() }
-            val timestampNormalized = if (result.has("timestamp_normalized")) {
-              result.optBoolean("timestamp_normalized")
-            } else {
-              null
-            }
-            val warningCode = result.optString("warning_code").ifBlank { null }
-            debug("Task[$taskId] success file=$filePath sizeMb=$sizeMb timestampNormalized=$timestampNormalized warning=$warningCode")
-
-            updateStatus(taskId, "SUCCESS", filename, filePath, sizeMb, null, null)
-            tasks[taskId]?.progressPercent = 100.0
-            tasks[taskId]?.timestampNormalized = timestampNormalized
-            tasks[taskId]?.warningCode = warningCode
-            persistTaskSnapshot()
-            if (warningCode != null) {
-              addError("$warningCode: task=$taskId")
-            }
-            emitProgress(taskId, "SUCCESS", "completed", filename ?: "Download completed", 100.0)
-          } else {
-            val code = result.optString("code", "INTERNAL_ERROR")
-            val message = result.optString("message", "Download failed")
-            debug("Task[$taskId] download failed code=$code message=$message")
-
-            if (isCancelRequested(taskId) || code == "DOWNLOAD_CANCELLED") {
-              markCancelled(taskId, message)
-              return@runCatching
-            }
-
-            updateStatus(taskId, "FAILURE", null, null, null, code, message)
-            emitProgress(taskId, "FAILURE", "error", message)
-            addError("$code: $message")
-          }
-        }.onFailure {
-          progressWatcher?.cancel()
-          if (shouldIgnoreTaskResult(taskId)) {
-            return@onFailure
-          }
-
-          if (isCancelRequested(taskId)) {
-            markCancelled(taskId, "Cancellation requested")
-            return@onFailure
-          }
-
-          Log.e(tag, "Task failed", it)
-          val message = it.message ?: "Unexpected error"
-          val code = extractKnownErrorCode(message) ?: "INTERNAL_ERROR"
-          debug("Task[$taskId] exception code=$code message=$message")
-          updateStatus(taskId, "FAILURE", null, null, null, code, message)
-          emitProgress(taskId, "FAILURE", "error", message)
-          addError("$code: $message")
-        }
-
-        debug("Task[$taskId] cleanup runtime cookie + cancel flag")
-        cleanupRuntimeCookieTemp(taskId)
-        clearCancelFlag(taskId)
-        clearProgressFile(progressFile)
-        if (activeTaskId == taskId) {
-          activeTaskId = null
-          activeJob = null
-        }
-      }
-
-      mapOf(
-        "taskId" to taskId,
-        "estimatedSizeMb" to task.estimatedSizeMb
+      startDownloadInternal(
+        url = url,
+        cookiePlatform = cookiePlatform,
+        cookieProfile = cookieProfile,
+        maxFileSizeMb = maxFileSizeMb,
+        source = "manual",
       )
     }
 
@@ -454,12 +241,44 @@ class LocalDownloaderModule : Module() {
         markCancelled(taskId, "Cancellation requested")
       }
       debug("Task[$taskId] cancellation requested; task marked cancelled immediately")
+      syncForegroundNotification("downloading", "Cancellation requested")
+      emitBackgroundStateChanged()
 
       mapOf(
         "success" to true,
         "confirmed" to true,
         "pending" to true
       )
+    }
+
+    AsyncFunction("getBackgroundState") {
+      backgroundStateMap()
+    }
+
+    AsyncFunction("ensureBackgroundPermission") {
+      val context = requireNotNull(appContext.reactContext)
+      val granted = isNotificationPermissionGranted(context)
+      if (!granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        appContext.currentActivity?.let { activity ->
+          runCatching {
+            ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_NOTIFICATIONS)
+          }
+        }
+      }
+      val refreshedGranted = isNotificationPermissionGranted(context)
+      mapOf(
+        "granted" to refreshedGranted,
+        "canAskAgain" to canAskForNotificationPermission()
+      )
+    }
+
+    AsyncFunction("startQuickDownloadFromClipboard") {
+      startQuickDownloadFromClipboard()
+    }
+
+    AsyncFunction("startQuickDownloadWithUrl") { input: Map<String, Any?> ->
+      val url = (input["url"] as? String)?.trim().orEmpty()
+      startQuickDownloadWithUrl(url, "manual")
     }
 
     AsyncFunction("importCookie") { input: Map<String, String> ->
@@ -803,70 +622,9 @@ class LocalDownloaderModule : Module() {
       if (filePath.isBlank() || filename.isBlank()) {
         throw IllegalArgumentException("FILE_NOT_FOUND")
       }
-
-      val sourceFile = File(filePath)
-      if (!sourceFile.exists() || !sourceFile.isFile) {
-        throw IllegalArgumentException("FILE_NOT_FOUND")
-      }
-
-      val mimeType = (input["mimeType"] as? String)?.trim()?.takeIf { it.isNotBlank() }
-        ?: guessMimeType(filename)
+      val mimeType = (input["mimeType"] as? String)?.trim()?.takeIf { it.isNotBlank() } ?: guessMimeType(filename)
       val dateTakenMs = (input["dateTakenMs"] as? Number)?.toLong() ?: System.currentTimeMillis()
-      val isVideo = mimeType.startsWith("video/")
-      val dateTakenColumn = if (isVideo) {
-        MediaStore.Video.VideoColumns.DATE_TAKEN
-      } else {
-        MediaStore.Images.ImageColumns.DATE_TAKEN
-      }
-      val nowSeconds = System.currentTimeMillis() / 1000L
-
-      val contentValues = ContentValues().apply {
-        put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
-        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-        put(MediaStore.MediaColumns.DATE_ADDED, nowSeconds)
-        put(MediaStore.MediaColumns.DATE_MODIFIED, nowSeconds)
-        put(dateTakenColumn, dateTakenMs)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          put(
-            MediaStore.MediaColumns.RELATIVE_PATH,
-            if (isVideo) Environment.DIRECTORY_DCIM else Environment.DIRECTORY_PICTURES
-          )
-          put(MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-      }
-
-      val resolver = requireNotNull(appContext.reactContext).contentResolver
-      val collection = if (isVideo) {
-        MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-      } else {
-        MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-      }
-      val uri = resolver.insert(collection, contentValues) ?: throw IOException("MEDIASTORE_INSERT_FAILED")
-
-      runCatching {
-        resolver.openOutputStream(uri)?.use { output ->
-          sourceFile.inputStream().use { input ->
-            input.copyTo(output)
-          }
-        } ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_FAILED")
-      }.onFailure { error ->
-        runCatching { resolver.delete(uri, null, null) }
-        throw error
-      }
-
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val finalizeValues = ContentValues().apply {
-          put(MediaStore.MediaColumns.IS_PENDING, 0)
-          put(MediaStore.MediaColumns.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
-          put(dateTakenColumn, dateTakenMs)
-        }
-        resolver.update(uri, finalizeValues, null, null)
-      }
-
-      mapOf(
-        "uri" to uri.toString(),
-        "assetId" to uri.lastPathSegment
-      )
+      saveToMediaStoreInternal(filePath, filename, mimeType, dateTakenMs)
     }
 
     AsyncFunction("getDiagnostics") {
@@ -1031,6 +789,9 @@ class LocalDownloaderModule : Module() {
           )
         },
         "activeTaskId" to activeTaskId,
+        "serviceRunning" to DownloadForegroundService.isRunning,
+        "queuedDownloadCount" to queueSize(),
+        "lastBackgroundServiceError" to lastBackgroundServiceError,
         "lastErrors" to lastErrors.toList()
       )
     }
@@ -1071,6 +832,590 @@ class LocalDownloaderModule : Module() {
     }
   }
 
+  private fun startDownloadInternal(
+    url: String,
+    cookiePlatform: String?,
+    cookieProfile: String?,
+    maxFileSizeMb: Int,
+    source: String,
+  ): Map<String, Any?> {
+    if (url.isBlank()) {
+      throw IllegalArgumentException("INVALID_URL")
+    }
+
+    val reactContext = requireNotNull(appContext.reactContext)
+    if (!isNotificationPermissionGranted(reactContext)) {
+      throw IllegalStateException("BACKGROUND_PERMISSION_REQUIRED")
+    }
+
+    if (activeJob?.isActive == true) {
+      throw IllegalStateException("DOWNLOAD_ALREADY_IN_PROGRESS")
+    }
+
+    val taskId = UUID.randomUUID().toString()
+    ignoredTaskResults.remove(taskId)
+
+    val task = TaskState(taskId = taskId, status = "PENDING")
+    tasks[taskId] = task
+    persistTaskSnapshot()
+    emitProgress(taskId, "PENDING", "starting", "Task created")
+
+    val outputDir = File(reactContext.cacheDir, "local_downloads").apply { mkdirs() }
+    val cookiesDir = File(reactContext.filesDir, LEGACY_COOKIES_DIRNAME).apply { mkdirs() }
+    val disabledCookiesDir = File(reactContext.filesDir, DISABLED_COOKIES_DIRNAME)
+    val cancelFlag = createCancelFlag(taskId)
+    val progressFile = createProgressFile(taskId)
+    val effectivePlatform = cookiePlatform ?: detectCookiePlatform(url)
+
+    activeTaskId = taskId
+    activeTaskUrl = url
+    syncForegroundNotification("starting", "Preparing download")
+    emitBackgroundStateChanged()
+
+    activeJob = scope.launch {
+      var runtimeCookiePath: String? = null
+      var progressWatcher: Job? = null
+      runCatching {
+        debug("Task[$taskId] START source=$source url=$url platform=$effectivePlatform profile=$cookieProfile maxMb=$maxFileSizeMb")
+        updateStatus(taskId, "STARTED", null, null, null, null, null)
+        emitProgress(taskId, "STARTED", "starting", "Preflight")
+
+        runtimeCookiePath = prepareRuntimeCookiePath(taskId, url, cookieProfile, effectivePlatform)
+        var effectiveCookiePath = runtimeCookiePath
+        debug("Task[$taskId] runtimeCookiePath=${runtimeCookiePath ?: "none"}")
+
+        val ffmpegInfo = getOrResolveFfmpegInfo(forceRefresh = true)
+        debug("Task[$taskId] ffmpeg info before preflight: ${summarizeFfmpegInfo(ffmpegInfo)}")
+        var preflightResult = callPythonPreflight(
+          PreflightPythonInput(
+            url = url,
+            cookiesDir = cookiesDir.absolutePath,
+            cookieProfile = cookieProfile,
+            maxFileSizeMb = maxFileSizeMb,
+            ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
+            cookieFilePath = effectiveCookiePath,
+            forceNoCookie = false,
+            mergeCapable = ffmpegInfo.mergeCapable,
+            userAgent = DEFAULT_HTTP_USER_AGENT,
+            debugLogging = debugLoggingEnabled,
+          )
+        )
+        debug("Task[$taskId] preflight result=$preflightResult")
+
+        if (!preflightResult.optBoolean("success", false) && shouldRetryWithoutCookies(preflightResult, effectiveCookiePath, effectivePlatform)) {
+          addError("COOKIE_RETRY_PREFLIGHT: task=$taskId")
+          cleanupRuntimeCookieTemp(taskId)
+          effectiveCookiePath = null
+          preflightResult = callPythonPreflight(
+            PreflightPythonInput(
+              url = url,
+              cookiesDir = disabledCookiesDir.absolutePath,
+              cookieProfile = null,
+              maxFileSizeMb = maxFileSizeMb,
+              ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
+              cookieFilePath = null,
+              forceNoCookie = true,
+              mergeCapable = ffmpegInfo.mergeCapable,
+              userAgent = DEFAULT_HTTP_USER_AGENT,
+              debugLogging = debugLoggingEnabled,
+            )
+          )
+          debug("Task[$taskId] preflight retry(no-cookie) result=$preflightResult")
+        }
+        preflightResult = normalizeRuntimeError(preflightResult, ffmpegInfo)
+
+        if (shouldIgnoreTaskResult(taskId)) {
+          return@runCatching
+        }
+
+        val estimatedSizeMb = preflightResult.optDouble("estimated_size_mb", Double.NaN)
+          .takeIf { !it.isNaN() && it > 0.0 }
+        if (estimatedSizeMb != null) {
+          tasks[taskId]?.estimatedSizeMb = estimatedSizeMb
+          persistTaskSnapshot()
+        }
+
+        if (isCancelRequested(taskId)) {
+          markCancelled(taskId, "Cancellation confirmed before download start")
+          return@runCatching
+        }
+
+        if (!preflightResult.optBoolean("success", false)) {
+          val code = preflightResult.optString("code", "INTERNAL_ERROR")
+          val msg = preflightResult.optString("message", "Preflight failed")
+          debug("Task[$taskId] preflight failed code=$code message=$msg")
+
+          if (code == "DOWNLOAD_CANCELLED") {
+            markCancelled(taskId, msg)
+            return@runCatching
+          }
+
+          updateStatus(taskId, "FAILURE", null, null, null, code, msg)
+          emitProgress(taskId, "FAILURE", "error", msg)
+          addError("$code: $msg")
+          return@runCatching
+        }
+
+        val freeMb = getFreeSpaceMb(outputDir)
+        val requiredFreeMb = if (estimatedSizeMb != null) {
+          max(1024.0, estimatedSizeMb * 2.5)
+        } else {
+          1024.0
+        }
+
+        if (freeMb < requiredFreeMb) {
+          val msg = "Not enough free storage. Free=${"%.1f".format(freeMb)}MB, Required=${"%.1f".format(requiredFreeMb)}MB"
+          debug("Task[$taskId] storage check failed: $msg")
+          updateStatus(taskId, "FAILURE", null, null, null, "SERVER_BUSY", msg)
+          emitProgress(taskId, "FAILURE", "error", msg)
+          addError("SERVER_BUSY: $msg")
+          return@runCatching
+        }
+
+        tasks[taskId]?.progressPercent = 0.0
+        emitProgress(taskId, "PROGRESS", "downloading", "Downloading media", 0.0)
+        updateStatus(taskId, "PROGRESS", null, null, null, null, null)
+        progressWatcher = launch {
+          observeProgressFile(taskId, progressFile)
+        }
+
+        var result = callPythonDownload(
+          DownloadPythonInput(
+            url = url,
+            outputDir = outputDir.absolutePath,
+            cookiesDir = cookiesDir.absolutePath,
+            cookieProfile = cookieProfile,
+            maxFileSizeMb = maxFileSizeMb,
+            cancelFlagPath = cancelFlag.absolutePath,
+            progressFilePath = progressFile.absolutePath,
+            ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
+            cookieFilePath = effectiveCookiePath,
+            forceNoCookie = false,
+            mergeCapable = ffmpegInfo.mergeCapable,
+            userAgent = DEFAULT_HTTP_USER_AGENT,
+            debugLogging = debugLoggingEnabled,
+          )
+        )
+        debug("Task[$taskId] download result=$result")
+
+        if (!result.optBoolean("success", false) && shouldRetryWithoutCookies(result, effectiveCookiePath, effectivePlatform)) {
+          addError("COOKIE_RETRY_DOWNLOAD: task=$taskId")
+          emitProgress(taskId, "PROGRESS", "downloading", "Retrying without cookies")
+          cleanupRuntimeCookieTemp(taskId)
+          effectiveCookiePath = null
+          clearProgressFile(progressFile)
+          tasks[taskId]?.progressPercent = 0.0
+          result = callPythonDownload(
+            DownloadPythonInput(
+              url = url,
+              outputDir = outputDir.absolutePath,
+              cookiesDir = disabledCookiesDir.absolutePath,
+              cookieProfile = null,
+              maxFileSizeMb = maxFileSizeMb,
+              cancelFlagPath = cancelFlag.absolutePath,
+              progressFilePath = progressFile.absolutePath,
+              ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
+              cookieFilePath = null,
+              forceNoCookie = true,
+              mergeCapable = ffmpegInfo.mergeCapable,
+              userAgent = DEFAULT_HTTP_USER_AGENT,
+              debugLogging = debugLoggingEnabled,
+            )
+          )
+          debug("Task[$taskId] download retry(no-cookie) result=$result")
+        }
+        progressWatcher?.cancel()
+        progressWatcher = null
+        result = normalizeRuntimeError(result, ffmpegInfo)
+
+        if (shouldIgnoreTaskResult(taskId)) {
+          return@runCatching
+        }
+
+        if (result.optBoolean("success", false)) {
+          if (isCancelRequested(taskId)) {
+            markCancelled(taskId, "Cancellation confirmed after worker completion")
+            return@runCatching
+          }
+
+          val filename = result.optString("filename").ifBlank { null }
+          val filePath = result.optString("file_path").ifBlank { null }
+          val sizeMb = result.optDouble("size_mb", Double.NaN).takeIf { !it.isNaN() }
+          val timestampNormalized = if (result.has("timestamp_normalized")) {
+            result.optBoolean("timestamp_normalized")
+          } else {
+            null
+          }
+          val warningCode = result.optString("warning_code").ifBlank { null }
+          debug("Task[$taskId] success file=$filePath sizeMb=$sizeMb timestampNormalized=$timestampNormalized warning=$warningCode")
+
+          if (source != "manual" && filename != null && filePath != null) {
+            emitProgress(taskId, "PROGRESS", "saving", "Saving to gallery", 99.0)
+            runCatching {
+              val saveResult = saveToMediaStoreInternal(
+                filePath = filePath,
+                filename = filename,
+                mimeType = guessMimeType(filename),
+                dateTakenMs = System.currentTimeMillis(),
+              )
+              debug("Task[$taskId] background save success uri=${saveResult["uri"]}")
+            }.onFailure { saveError ->
+              val saveMessage = "Failed to save media to gallery: ${saveError.message ?: "unknown error"}"
+              updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "INTERNAL_ERROR", saveMessage)
+              emitProgress(taskId, "FAILURE", "error", saveMessage)
+              addError("BACKGROUND_SAVE_FAILED: task=$taskId message=$saveMessage")
+              return@runCatching
+            }
+          }
+
+          updateStatus(taskId, "SUCCESS", filename, filePath, sizeMb, null, null)
+          tasks[taskId]?.progressPercent = 100.0
+          tasks[taskId]?.timestampNormalized = timestampNormalized
+          tasks[taskId]?.warningCode = warningCode
+          persistTaskSnapshot()
+          if (warningCode != null) {
+            addError("$warningCode: task=$taskId")
+          }
+          emitProgress(taskId, "SUCCESS", "completed", filename ?: "Download completed", 100.0)
+        } else {
+          val code = result.optString("code", "INTERNAL_ERROR")
+          val message = result.optString("message", "Download failed")
+          debug("Task[$taskId] download failed code=$code message=$message")
+
+          if (isCancelRequested(taskId) || code == "DOWNLOAD_CANCELLED") {
+            markCancelled(taskId, message)
+            return@runCatching
+          }
+
+          updateStatus(taskId, "FAILURE", null, null, null, code, message)
+          emitProgress(taskId, "FAILURE", "error", message)
+          addError("$code: $message")
+        }
+      }.onFailure {
+        progressWatcher?.cancel()
+        if (shouldIgnoreTaskResult(taskId)) {
+          return@onFailure
+        }
+
+        if (isCancelRequested(taskId)) {
+          markCancelled(taskId, "Cancellation requested")
+          return@onFailure
+        }
+
+        Log.e(tag, "Task failed", it)
+        val message = it.message ?: "Unexpected error"
+        val code = extractKnownErrorCode(message) ?: "INTERNAL_ERROR"
+        debug("Task[$taskId] exception code=$code message=$message")
+        updateStatus(taskId, "FAILURE", null, null, null, code, message)
+        emitProgress(taskId, "FAILURE", "error", message)
+        addError("$code: $message")
+      }
+
+      debug("Task[$taskId] cleanup runtime cookie + cancel flag")
+      cleanupRuntimeCookieTemp(taskId)
+      clearCancelFlag(taskId)
+      clearProgressFile(progressFile)
+      onTaskFinished(taskId)
+    }
+
+    return mapOf(
+      "taskId" to taskId,
+      "estimatedSizeMb" to task.estimatedSizeMb
+    )
+  }
+
+  private fun onTaskFinished(taskId: String) {
+    if (activeTaskId == taskId) {
+      activeTaskId = null
+      activeJob = null
+      activeTaskUrl = null
+    }
+    val startedNext = startNextQueuedDownloadIfAny()
+    if (!startedNext) {
+      syncForegroundNotification("idle", "Ready for quick downloads")
+    }
+    emitBackgroundStateChanged()
+  }
+
+  private fun consumePendingQuickRequests() {
+    val pending = synchronized(pendingQuickRequests) {
+      if (pendingQuickRequests.isEmpty()) {
+        emptyList()
+      } else {
+        val copy = pendingQuickRequests.toList()
+        pendingQuickRequests.clear()
+        copy
+      }
+    }
+    if (pending.isEmpty()) {
+      return
+    }
+    pending.forEach { request ->
+      runCatching {
+        startQuickDownloadWithUrl(request.url, request.captureMode)
+      }.onFailure {
+        addError("PENDING_QUICK_REQUEST_FAILED: ${it.message}")
+      }
+    }
+  }
+
+  private fun startNextQueuedDownloadIfAny(): Boolean {
+    if (activeJob?.isActive == true) {
+      return false
+    }
+
+    val nextUrl = synchronized(queueLock) {
+      if (queuedQuickDownloads.isEmpty()) null else queuedQuickDownloads.removeFirst()
+    } ?: return false
+
+    emitBackgroundStateChanged()
+    return runCatching {
+      startDownloadInternal(
+        url = nextUrl,
+        cookiePlatform = detectCookiePlatform(nextUrl),
+        cookieProfile = null,
+        maxFileSizeMb = DEFAULT_MAX_FILE_SIZE_MB,
+        source = "queued",
+      )
+      true
+    }.getOrElse {
+      addError("QUICK_QUEUE_START_FAILED: ${it.message}")
+      false
+    }
+  }
+
+  private fun startQuickDownloadFromClipboard(): Map<String, Any?> {
+    val context = requireNotNull(appContext.reactContext)
+    if (!isNotificationPermissionGranted(context)) {
+      reportQuickActionReason("PERMISSION_REQUIRED")
+      return mapOf("accepted" to false, "reason" to "PERMISSION_REQUIRED")
+    }
+
+    val url = readUrlFromClipboard(context)
+      ?: run {
+        reportQuickActionReason("NO_CLIPBOARD_URL")
+        return mapOf("accepted" to false, "reason" to "NO_CLIPBOARD_URL")
+      }
+    return startQuickDownloadWithUrl(url, "clipboard")
+  }
+
+  private fun startQuickDownloadWithUrl(rawUrl: String, captureMode: String): Map<String, Any?> {
+    val context = requireNotNull(appContext.reactContext)
+    if (!isNotificationPermissionGranted(context)) {
+      reportQuickActionReason("PERMISSION_REQUIRED")
+      return mapOf("accepted" to false, "reason" to "PERMISSION_REQUIRED")
+    }
+
+    val normalizedUrl = normalizeClipboardUrl(rawUrl)
+      ?: run {
+        reportQuickActionReason("INVALID_QUICK_URL")
+        return mapOf("accepted" to false, "reason" to "INVALID_QUICK_URL")
+      }
+
+    if (activeJob?.isActive == true) {
+      val queueResult = enqueueQuickUrl(normalizedUrl)
+      if (!queueResult.accepted) {
+        return mapOf("accepted" to false, "reason" to queueResult.reason)
+      }
+      syncForegroundNotification("downloading", "Queued (${queueResult.queueSize}/$MAX_QUEUED_DOWNLOADS)")
+      emitBackgroundStateChanged()
+      reportQuickActionReason(null)
+      return mapOf(
+        "accepted" to true,
+        "queueSize" to queueResult.queueSize,
+        "queueMax" to MAX_QUEUED_DOWNLOADS,
+        "resolvedUrl" to normalizedUrl,
+        "captureMode" to captureMode
+      )
+    }
+
+    return runCatching {
+      val result = startDownloadInternal(
+        url = normalizedUrl,
+        cookiePlatform = detectCookiePlatform(normalizedUrl),
+        cookieProfile = null,
+        maxFileSizeMb = DEFAULT_MAX_FILE_SIZE_MB,
+        source = "quick",
+      )
+      reportQuickActionReason(null)
+      mapOf(
+        "accepted" to true,
+        "taskId" to result["taskId"],
+        "queueSize" to 0,
+        "queueMax" to MAX_QUEUED_DOWNLOADS,
+        "resolvedUrl" to normalizedUrl,
+        "captureMode" to captureMode
+      )
+    }.getOrElse {
+      val reason = when {
+        it.message?.contains("BACKGROUND_PERMISSION_REQUIRED") == true -> "PERMISSION_REQUIRED"
+        it.message?.contains("DOWNLOAD_ALREADY_IN_PROGRESS") == true -> "ALREADY_ACTIVE"
+        else -> "QUICK_DOWNLOAD_REJECTED"
+      }
+      reportQuickActionReason(reason)
+      mapOf("accepted" to false, "reason" to reason, "resolvedUrl" to normalizedUrl, "captureMode" to captureMode)
+    }
+  }
+
+  private data class QueueAttemptResult(
+    val accepted: Boolean,
+    val reason: String? = null,
+    val queueSize: Int = 0
+  )
+
+  private fun enqueueQuickUrl(url: String): QueueAttemptResult {
+    synchronized(queueLock) {
+      val now = System.currentTimeMillis()
+      pruneRecentQuickUrls(now)
+      val isDuplicate = url == activeTaskUrl || queuedQuickDownloads.any { it == url } || recentQuickUrls.containsKey(url)
+      if (isDuplicate) {
+        reportQuickActionReason("QUICK_DOWNLOAD_REJECTED")
+        return QueueAttemptResult(accepted = false, reason = "QUICK_DOWNLOAD_REJECTED")
+      }
+      if (queuedQuickDownloads.size >= MAX_QUEUED_DOWNLOADS) {
+        reportQuickActionReason("QUEUE_FULL")
+        return QueueAttemptResult(accepted = false, reason = "QUEUE_FULL")
+      }
+      queuedQuickDownloads.addLast(url)
+      recentQuickUrls[url] = now
+      return QueueAttemptResult(accepted = true, queueSize = queuedQuickDownloads.size)
+    }
+  }
+
+  private fun pruneRecentQuickUrls(nowMs: Long) {
+    val iterator = recentQuickUrls.entries.iterator()
+    while (iterator.hasNext()) {
+      val entry = iterator.next()
+      if (nowMs - entry.value > QUICK_DEDUP_WINDOW_MS) {
+        iterator.remove()
+      }
+    }
+  }
+
+  private fun readUrlFromClipboard(context: android.content.Context): String? {
+    val manager = context.getSystemService(ClipboardManager::class.java) ?: return null
+    val item = manager.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0) ?: return null
+
+    val uriValue = item.uri?.toString()?.trim()?.takeIf { it.isNotBlank() }
+    if (!uriValue.isNullOrBlank()) {
+      normalizeClipboardUrl(uriValue)?.let { return it }
+    }
+
+    val htmlText = item.htmlText?.toString()?.trim()?.takeIf { it.isNotBlank() }
+    if (!htmlText.isNullOrBlank()) {
+      normalizeClipboardUrl(htmlText)?.let { return it }
+    }
+
+    val text = item.coerceToText(context)?.toString()?.trim() ?: return null
+    if (text.isBlank()) {
+      return null
+    }
+    return normalizeClipboardUrl(text)
+  }
+
+  private fun normalizeClipboardUrl(raw: String?): String? {
+    return normalizeQuickUrl(raw)
+  }
+
+  private fun isNotificationPermissionGranted(context: android.content.Context): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+      return true
+    }
+    return ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+  }
+
+  private fun canAskForNotificationPermission(): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+      return true
+    }
+    val activity = appContext.currentActivity ?: return false
+    val granted = isNotificationPermissionGranted(requireNotNull(appContext.reactContext))
+    return !granted || ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.POST_NOTIFICATIONS)
+  }
+
+  private fun queueSize(): Int = synchronized(queueLock) { queuedQuickDownloads.size }
+
+  private fun backgroundStateMap(): Map<String, Any?> {
+    val context = appContext.reactContext
+    val granted = context?.let { isNotificationPermissionGranted(it) } ?: false
+    return mapOf(
+      "serviceRunning" to DownloadForegroundService.isRunning,
+      "activeTaskId" to activeTaskId,
+      "queueSize" to queueSize(),
+      "maxQueueSize" to MAX_QUEUED_DOWNLOADS,
+      "queuedUrls" to synchronized(queueLock) { queuedQuickDownloads.toList() },
+      "lastQuickReason" to lastQuickReason,
+      "notificationPhase" to notificationPhase,
+      "notificationPermissionRequired" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU),
+      "notificationPermissionGranted" to granted
+    )
+  }
+
+  private fun reportQuickActionReason(reason: String?) {
+    lastQuickReason = reason
+    lastQuickReasonFallback = reason
+    emitBackgroundStateChanged()
+  }
+
+  private fun emitBackgroundStateChanged() {
+    sendEvent("backgroundStateChanged", backgroundStateMap())
+  }
+
+  private fun syncForegroundNotification(phase: String, message: String?, explicitProgress: Double? = null) {
+    val context = appContext.reactContext ?: return
+    if (!isNotificationPermissionGranted(context)) {
+      return
+    }
+    notificationPhase = phase
+    val currentTask = activeTaskId
+    val progress = explicitProgress ?: currentTask?.let { tasks[it]?.progressPercent }
+    val state = BackgroundNotificationState(
+      activeTaskId = currentTask,
+      phase = phase,
+      message = message,
+      progressPercent = progress,
+      queueSize = queueSize(),
+      pinned = STICKY_NOTIFICATION_ENABLED,
+    )
+    if (state.shouldRunForeground) {
+      DownloadNotificationController.startOrUpdate(context, state)
+    } else {
+      DownloadNotificationController.stop(context)
+    }
+  }
+
+  private fun stopForegroundNotificationIfIdle() {
+    if (activeTaskId == null && queueSize() == 0) {
+      appContext.reactContext?.let { DownloadNotificationController.stop(it) }
+    }
+  }
+
+  private fun cancelFromNotificationAction() {
+    val taskId = activeTaskId ?: return
+    markCancelRequested(taskId)
+    ignoredTaskResults.add(taskId)
+    if (!isTerminalStatus(tasks[taskId]?.status)) {
+      markCancelled(taskId, "Cancellation requested from notification")
+    }
+    syncForegroundNotification("downloading", "Cancellation requested")
+    emitBackgroundStateChanged()
+  }
+
+  private fun quickFromNotificationAction() {
+    val result = startQuickDownloadFromClipboard()
+    if (result["accepted"] == true) {
+      val queueSize = (result["queueSize"] as? Number)?.toInt()
+      if (queueSize != null && queueSize > 0) {
+        syncForegroundNotification("downloading", "Queued ($queueSize/$MAX_QUEUED_DOWNLOADS)")
+      } else {
+        syncForegroundNotification("starting", "Quick download started")
+      }
+      return
+    }
+    val reason = result["reason"]?.toString().orEmpty()
+    syncForegroundNotification("error", quickReasonToMessage(reason))
+  }
+
   private fun emitProgress(taskId: String, status: String, state: String, message: String?, progressPercent: Double? = null) {
     sendEvent(
       "downloadProgress",
@@ -1082,6 +1427,9 @@ class LocalDownloaderModule : Module() {
         "progressPercent" to progressPercent?.coerceIn(0.0, 100.0)
       )
     )
+    if (taskId == activeTaskId) {
+      syncForegroundNotification(state, message, progressPercent)
+    }
   }
 
   private fun updateStatus(
@@ -1218,6 +1566,74 @@ class LocalDownloaderModule : Module() {
       "gif" -> "image/gif"
       else -> "video/mp4"
     }
+  }
+
+  private fun saveToMediaStoreInternal(
+    filePath: String,
+    filename: String,
+    mimeType: String,
+    dateTakenMs: Long
+  ): Map<String, Any?> {
+    val sourceFile = File(filePath)
+    if (!sourceFile.exists() || !sourceFile.isFile) {
+      throw IllegalArgumentException("FILE_NOT_FOUND")
+    }
+
+    val isVideo = mimeType.startsWith("video/")
+    val dateTakenColumn = if (isVideo) {
+      MediaStore.Video.VideoColumns.DATE_TAKEN
+    } else {
+      MediaStore.Images.ImageColumns.DATE_TAKEN
+    }
+    val nowSeconds = System.currentTimeMillis() / 1000L
+
+    val contentValues = ContentValues().apply {
+      put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+      put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+      put(MediaStore.MediaColumns.DATE_ADDED, nowSeconds)
+      put(MediaStore.MediaColumns.DATE_MODIFIED, nowSeconds)
+      put(dateTakenColumn, dateTakenMs)
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        put(
+          MediaStore.MediaColumns.RELATIVE_PATH,
+          if (isVideo) Environment.DIRECTORY_DCIM else Environment.DIRECTORY_PICTURES
+        )
+        put(MediaStore.MediaColumns.IS_PENDING, 1)
+      }
+    }
+
+    val resolver = requireNotNull(appContext.reactContext).contentResolver
+    val collection = if (isVideo) {
+      MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+    } else {
+      MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    }
+    val uri = resolver.insert(collection, contentValues) ?: throw IOException("MEDIASTORE_INSERT_FAILED")
+
+    runCatching {
+      resolver.openOutputStream(uri)?.use { output ->
+        sourceFile.inputStream().use { input ->
+          input.copyTo(output)
+        }
+      } ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_FAILED")
+    }.onFailure { error ->
+      runCatching { resolver.delete(uri, null, null) }
+      throw error
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      val finalizeValues = ContentValues().apply {
+        put(MediaStore.MediaColumns.IS_PENDING, 0)
+        put(MediaStore.MediaColumns.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
+        put(dateTakenColumn, dateTakenMs)
+      }
+      resolver.update(uri, finalizeValues, null, null)
+    }
+
+    return mapOf(
+      "uri" to uri.toString(),
+      "assetId" to uri.lastPathSegment
+    )
   }
 
   private fun prepareRuntimeCookiePath(
@@ -1910,6 +2326,11 @@ class LocalDownloaderModule : Module() {
       "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE",
       "IMPERSONATION_DEPENDENCY_MISSING",
       "IMPERSONATION_RUNTIME_UNAVAILABLE",
+      "BACKGROUND_PERMISSION_REQUIRED",
+      "NO_CLIPBOARD_URL",
+      "DOWNLOAD_QUEUE_FULL",
+      "BACKGROUND_SERVICE_START_FAILED",
+      "QUICK_DOWNLOAD_REJECTED",
       "COOKIE_DOMAIN_MISMATCH",
       "COOKIE_EMPTY_OR_EXPIRED",
       "TIMESTAMP_POSTPROCESS_FAILED",
@@ -2535,6 +2956,17 @@ class LocalDownloaderModule : Module() {
   }
 
   companion object {
+    @Volatile
+    private var activeModule: LocalDownloaderModule? = null
+
+    @Volatile
+    private var lastBackgroundServiceError: String? = null
+
+    @Volatile
+    private var lastQuickReasonFallback: String? = null
+
+    private val pendingQuickRequests: ArrayDeque<PendingQuickRequest> = ArrayDeque()
+
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val COOKIE_KEY_ALIAS = "arsivinyo.local.cookies.v1"
     private const val COOKIE_STORE_VERSION = "v1"
@@ -2554,7 +2986,12 @@ class LocalDownloaderModule : Module() {
     private const val DOWNLOAD_PROGRESS_DIRNAME = "local_download_progress"
     private const val DOWNLOAD_PROGRESS_POLL_MS = 400L
     private const val DEFAULT_COOKIE_PROFILE_FILENAME = ".default_profile"
+    private const val REQUEST_CODE_NOTIFICATIONS = 4491
+    private const val MAX_QUEUED_DOWNLOADS = 3
+    private const val MAX_PENDING_QUICK_REQUESTS = MAX_QUEUED_DOWNLOADS
     private const val MAX_ERROR_LOGS = 20
+    private const val STICKY_NOTIFICATION_ENABLED = true
+    private const val QUICK_DEDUP_WINDOW_MS = 20_000L
     private const val MB_IN_BYTES = 1024.0 * 1024.0
     private val SUPPORTED_PLATFORMS = setOf("youtube", "instagram", "facebook", "twitter", "reddit", "tiktok")
     private val PLATFORM_HOSTS = mapOf(
@@ -2569,5 +3006,247 @@ class LocalDownloaderModule : Module() {
     private val STRICT_COOKIE_PLATFORMS = setOf("instagram", "facebook", "tiktok", "reddit")
     private val IN_FLIGHT_STATUSES = setOf("PENDING", "STARTED", "PROGRESS")
     private val SUPPORTED_FFMPEG_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+
+    fun onNotificationCancelAction(context: Context) {
+      activeModule?.cancelFromNotificationAction() ?: run {
+        DownloadNotificationController.stop(context)
+      }
+    }
+
+    fun onNotificationQuickAction(context: Context) {
+      launchQuickCaptureActivity(context)
+    }
+
+    fun launchQuickCaptureActivity(context: Context) {
+      val intent = Intent(context, QuickDownloadCaptureActivity::class.java).apply {
+        putExtra(QuickDownloadCaptureActivity.EXTRA_AUTOSTART, true)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+      }
+      runCatching {
+        context.startActivity(intent)
+      }.onFailure {
+        reportQuickActionReason("QUICK_DOWNLOAD_REJECTED")
+      }
+    }
+
+    fun onQuickUrlCaptured(context: Context, rawUrl: String, captureMode: String): Map<String, Any?> {
+      if (!hasNotificationPermission(context)) {
+        reportQuickActionReason("PERMISSION_REQUIRED")
+        return mapOf("accepted" to false, "reason" to "PERMISSION_REQUIRED", "captureMode" to captureMode)
+      }
+
+      val module = activeModule
+      if (module != null) {
+        return runCatching {
+          module.startQuickDownloadWithUrl(rawUrl, captureMode)
+        }.getOrElse {
+          reportQuickActionReason("QUICK_DOWNLOAD_REJECTED")
+          mapOf("accepted" to false, "reason" to "QUICK_DOWNLOAD_REJECTED", "captureMode" to captureMode)
+        }
+      }
+
+      val normalized = normalizeQuickUrl(rawUrl)
+        ?: return mapOf("accepted" to false, "reason" to "INVALID_QUICK_URL", "captureMode" to captureMode)
+
+      val queueState = synchronized(pendingQuickRequests) {
+        val duplicate = pendingQuickRequests.any { it.url == normalized }
+        if (duplicate) {
+          return@synchronized Pair(false, pendingQuickRequests.size)
+        }
+        if (pendingQuickRequests.size >= MAX_PENDING_QUICK_REQUESTS) {
+          return@synchronized Pair(false, pendingQuickRequests.size)
+        }
+
+        pendingQuickRequests.addLast(PendingQuickRequest(normalized, captureMode, System.currentTimeMillis()))
+        Pair(true, pendingQuickRequests.size)
+      }
+
+      val accepted = queueState.first
+      val queueSize = queueState.second
+      if (!accepted) {
+        val reason = if (queueSize >= MAX_PENDING_QUICK_REQUESTS) "QUEUE_FULL" else "QUICK_DOWNLOAD_REJECTED"
+        reportQuickActionReason(reason)
+        return mapOf(
+          "accepted" to false,
+          "reason" to reason,
+          "captureMode" to captureMode,
+          "queueSize" to queueSize,
+          "queueMax" to MAX_PENDING_QUICK_REQUESTS
+        )
+      }
+
+      reportQuickActionReason(null)
+      DownloadNotificationController.startOrUpdate(
+        context,
+        BackgroundNotificationState(
+          activeTaskId = null,
+          phase = "starting",
+          message = if (queueSize > 1) "Queued ($queueSize/$MAX_PENDING_QUICK_REQUESTS)" else "Preparing quick download",
+          progressPercent = null,
+          queueSize = queueSize,
+          pinned = true
+        )
+      )
+      return mapOf(
+        "accepted" to true,
+        "queueSize" to queueSize,
+        "queueMax" to MAX_PENDING_QUICK_REQUESTS,
+        "resolvedUrl" to normalized,
+        "captureMode" to captureMode
+      )
+    }
+
+    fun reportQuickActionReason(reason: String?) {
+      lastQuickReasonFallback = reason
+      activeModule?.reportQuickActionReason(reason)
+    }
+
+    fun quickReasonToMessage(reason: String?): String {
+      return when (reason) {
+        "PERMISSION_REQUIRED" -> "Notification permission required"
+        "NO_CLIPBOARD_URL" -> "Clipboard URL not found"
+        "INVALID_QUICK_URL" -> "URL is invalid"
+        "QUEUE_FULL" -> "Queue full"
+        "QUICK_CAPTURE_CANCELLED" -> "Quick capture cancelled"
+        "QUICK_DOWNLOAD_REJECTED" -> "Quick download rejected"
+        else -> "Try another URL"
+      }
+    }
+
+    fun peekClipboardUrl(context: Context): String? {
+      return activeModule?.readUrlFromClipboard(context) ?: run {
+        val manager = context.getSystemService(ClipboardManager::class.java) ?: return null
+        val item = manager.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0) ?: return null
+        val uriValue = item.uri?.toString()?.trim()?.takeIf { it.isNotBlank() }
+        if (!uriValue.isNullOrBlank()) {
+          normalizeQuickUrl(uriValue)?.let { return it }
+        }
+        val htmlText = item.htmlText?.toString()?.trim()?.takeIf { it.isNotBlank() }
+        if (!htmlText.isNullOrBlank()) {
+          normalizeQuickUrl(htmlText)?.let { return it }
+        }
+        val text = item.coerceToText(context)?.toString()?.trim() ?: return null
+        normalizeQuickUrl(text)
+      }
+    }
+
+    private val explicitHttpUrlRegex = Regex("""(?i)\bhttps?://[^\s<>"']+""")
+    private val domainLikeUrlRegex = Regex(
+      """(?i)\b(?:www\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:/[^\s<>"']*)?"""
+    )
+    private val invisibleCharsRegex = Regex("""[\u200B\u200C\u200D\u2060\uFEFF\u00A0]""")
+
+    private fun trimUrlCandidate(raw: String): String {
+      var value = raw.trim()
+      if (value.isEmpty()) return value
+      value = value.trim('"', '\'', '`', '(', ')', '[', ']', '{', '}', '<', '>')
+      while (value.isNotEmpty() && value.last() in listOf('.', ',', ';', ':', '!', '?', ')', ']', '}', '>')) {
+        value = value.dropLast(1)
+      }
+      return value.trim()
+    }
+
+    private fun cleanClipboardText(raw: String?): String? {
+      val value = raw ?: return null
+      val cleaned = value
+        .replace(invisibleCharsRegex, "")
+        .replace("\u0000", "")
+        .trim()
+      return cleaned.ifBlank { null }
+    }
+
+    private fun parseHttpCandidate(candidate: String): String? {
+      val cleaned = trimUrlCandidate(candidate)
+      if (cleaned.isBlank()) return null
+      val withScheme = if (cleaned.contains("://")) cleaned else "https://$cleaned"
+      return runCatching {
+        val parsed = URI(withScheme)
+        val scheme = parsed.scheme?.lowercase() ?: return@runCatching null
+        if (scheme != "http" && scheme != "https") {
+          return@runCatching null
+        }
+        val host = parsed.host?.trim()
+        if (host.isNullOrBlank()) {
+          return@runCatching null
+        }
+        parsed.toString()
+      }.getOrNull()
+    }
+
+    private fun normalizeQuickUrl(raw: String?): String? {
+      val value = cleanClipboardText(raw) ?: return null
+
+      parseHttpCandidate(value)?.let { return it }
+
+      explicitHttpUrlRegex.find(value)?.value?.let { found ->
+        parseHttpCandidate(found)?.let { return it }
+      }
+
+      domainLikeUrlRegex.find(value)?.value?.let { found ->
+        parseHttpCandidate(found)?.let { return it }
+      }
+
+      return null
+    }
+
+    private fun hasNotificationPermission(context: Context): Boolean {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        return true
+      }
+      return ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun pendingQuickRequestsSnapshot(): List<PendingQuickRequest> {
+      return synchronized(pendingQuickRequests) { pendingQuickRequests.toList() }
+    }
+
+    fun clearPendingQuickRequests() {
+      synchronized(pendingQuickRequests) {
+        pendingQuickRequests.clear()
+      }
+    }
+
+    fun dequeuePendingQuickRequest(): PendingQuickRequest? {
+      return synchronized(pendingQuickRequests) {
+        if (pendingQuickRequests.isEmpty()) null else pendingQuickRequests.removeFirst()
+      }
+    }
+
+    fun queuePendingQuickRequest(url: String, captureMode: String): Boolean {
+      return synchronized(pendingQuickRequests) {
+        if (pendingQuickRequests.size >= MAX_PENDING_QUICK_REQUESTS) {
+          false
+        } else {
+          pendingQuickRequests.addLast(PendingQuickRequest(url, captureMode, System.currentTimeMillis()))
+          true
+        }
+      }
+    }
+
+    fun onNotificationRemoteUrl(context: Context, rawUrl: String): Map<String, Any?> {
+      return onQuickUrlCaptured(context, rawUrl, "manual")
+    }
+
+    fun onNotificationQuickActionFallback(context: Context) {
+      activeModule?.quickFromNotificationAction() ?: run {
+        DownloadNotificationController.startOrUpdate(
+          context,
+          BackgroundNotificationState(
+            activeTaskId = null,
+            phase = "error",
+            message = "App is not ready",
+            progressPercent = null,
+            queueSize = 0,
+            pinned = true
+          )
+        )
+      }
+    }
+
+    fun reportBackgroundServiceStartFailure(message: String) {
+      lastBackgroundServiceError = message
+      activeModule?.addError("BACKGROUND_SERVICE_START_FAILED: $message")
+      activeModule?.emitBackgroundStateChanged()
+    }
   }
 }

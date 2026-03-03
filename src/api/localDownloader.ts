@@ -1,6 +1,10 @@
 import { Platform } from 'react-native';
 import LocalDownloaderModule, {
+  addBackgroundStateListener,
   addDownloadProgressListener,
+  type LocalBackgroundPermissionResult,
+  type LocalBackgroundState,
+  type LocalBackgroundStateEvent,
   type LocalCookieProfile,
   type LocalCustomCookieImportInput,
   type LocalCustomCookieImportResult,
@@ -14,6 +18,7 @@ import LocalDownloaderModule, {
   type LocalSaveToMediaStoreInput,
   type LocalSaveToMediaStoreResult,
   type LocalPlatform,
+  type LocalQuickDownloadResult,
   type LocalTaskStatusResult,
 } from '../native/localDownloader';
 
@@ -26,6 +31,11 @@ function ensureAndroid(): void {
 export function listenDownloadProgress(listener: (event: LocalDownloadEvent) => void) {
   ensureAndroid();
   return addDownloadProgressListener(listener);
+}
+
+export function listenBackgroundState(listener: (event: LocalBackgroundStateEvent) => void) {
+  ensureAndroid();
+  return addBackgroundStateListener(listener);
 }
 
 export async function startLocalDownload(input: LocalDownloadStartInput): Promise<LocalDownloadStartResult> {
@@ -41,6 +51,26 @@ export async function getLocalTaskStatus(taskId: string): Promise<LocalTaskStatu
 export async function cancelLocalTask(taskId: string): Promise<{ success: boolean }> {
   ensureAndroid();
   return LocalDownloaderModule.cancelTask(taskId);
+}
+
+export async function getLocalBackgroundState(): Promise<LocalBackgroundState> {
+  ensureAndroid();
+  return LocalDownloaderModule.getBackgroundState();
+}
+
+export async function ensureLocalBackgroundPermission(): Promise<LocalBackgroundPermissionResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.ensureBackgroundPermission();
+}
+
+export async function startQuickLocalDownloadFromClipboard(): Promise<LocalQuickDownloadResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.startQuickDownloadFromClipboard();
+}
+
+export async function startQuickLocalDownloadWithUrl(url: string): Promise<LocalQuickDownloadResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.startQuickDownloadWithUrl({ url });
 }
 
 export async function importLocalCookie(input: {

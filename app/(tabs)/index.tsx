@@ -2,7 +2,7 @@ import { Sixtyfour_400Regular, useFonts } from '@expo-google-fonts/sixtyfour';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -14,7 +14,15 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { cancelTask, downloadMedia, DownloadProgress } from '@/src/api';
+import {
+  cancelTask,
+  downloadMedia,
+  DownloadProgress,
+  ensureLocalBackgroundPermission,
+  getLocalBackgroundState,
+  listenBackgroundState,
+  startQuickLocalDownloadFromClipboard,
+} from '@/src/api';
 import type { DownloadState } from '@/src/api/types';
 import { BannerAd, DownloadButton } from '@/src/components';
 import {
@@ -38,6 +46,9 @@ export default function HomeScreen() {
   const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [backgroundServiceRunning, setBackgroundServiceRunning] = useState(false);
+  const [backgroundQueueSize, setBackgroundQueueSize] = useState(0);
+  const [isQuickSubmitting, setIsQuickSubmitting] = useState(false);
 
   const isOngoingDownload =
     downloadState === 'starting' ||
@@ -54,6 +65,33 @@ export default function HomeScreen() {
     if (downloadState === 'saving') return 99;
     return 0;
   })();
+
+  useEffect(() => {
+    let mounted = true;
+    void getLocalBackgroundState()
+      .then((state) => {
+        if (!mounted) return;
+        setBackgroundServiceRunning(state.serviceRunning);
+        setBackgroundQueueSize(state.queueSize);
+      })
+      .catch(() => undefined);
+
+    const sub = (() => {
+      try {
+        return listenBackgroundState((state) => {
+          setBackgroundServiceRunning(Boolean(state.serviceRunning));
+          setBackgroundQueueSize(state.queueSize || 0);
+        });
+      } catch {
+        return { remove: () => undefined };
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      sub.remove();
+    };
+  }, []);
 
   const handleDownload = useCallback(async () => {
     try {
@@ -170,6 +208,43 @@ export default function HomeScreen() {
     router.push('/settings');
   }, [router]);
 
+  const handleQuickBackgroundDownload = useCallback(async () => {
+    setIsQuickSubmitting(true);
+    try {
+      const permission = await ensureLocalBackgroundPermission();
+      if (!permission.granted) {
+        setStatusMessage(t('errors.BACKGROUND_PERMISSION_REQUIRED'));
+        return;
+      }
+
+      const result = await startQuickLocalDownloadFromClipboard();
+      if (!result.accepted) {
+        const reasonMap: Record<string, string> = {
+          NO_CLIPBOARD_URL: 'NO_CLIPBOARD_URL',
+          INVALID_QUICK_URL: 'INVALID_QUICK_URL',
+          QUICK_CAPTURE_CANCELLED: 'QUICK_CAPTURE_CANCELLED',
+          QUEUE_FULL: 'DOWNLOAD_QUEUE_FULL',
+          PERMISSION_REQUIRED: 'BACKGROUND_PERMISSION_REQUIRED',
+          ALREADY_ACTIVE: 'DOWNLOAD_ALREADY_IN_PROGRESS',
+          QUICK_DOWNLOAD_REJECTED: 'QUICK_DOWNLOAD_REJECTED',
+        };
+        const code = reasonMap[result.reason || ''] || 'QUICK_DOWNLOAD_REJECTED';
+        setStatusMessage(t(`errors.${code}`));
+        return;
+      }
+
+      const bg = await getLocalBackgroundState();
+      setBackgroundServiceRunning(bg.serviceRunning);
+      setBackgroundQueueSize(bg.queueSize);
+      setStatusMessage(t('home.quickDownloadQueued'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('errors.QUICK_DOWNLOAD_REJECTED');
+      setStatusMessage(message);
+    } finally {
+      setIsQuickSubmitting(false);
+    }
+  }, [t]);
+
   return (
     <LinearGradient
       colors={[colors.background, colors.accent + '15', colors.background]}
@@ -210,11 +285,44 @@ export default function HomeScreen() {
 
         {/* Main Content */}
         <View style={styles.content}>
+          {backgroundServiceRunning ? (
+            <View style={[styles.backgroundChip, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Ionicons name="cloud-download-outline" size={14} color={colors.accent} />
+              <Text style={[styles.backgroundChipText, { color: colors.text }]}>
+                {t('home.backgroundActive', { count: backgroundQueueSize })}
+              </Text>
+            </View>
+          ) : null}
+
           <DownloadButton
             onPress={handleDownload}
             state={downloadState}
             disabled={downloadState !== 'idle' && downloadState !== 'error'}
           />
+
+          <Pressable
+            onPress={handleQuickBackgroundDownload}
+            disabled={isQuickSubmitting}
+            style={({ pressed }) => [
+              styles.quickButton,
+              {
+                backgroundColor: pressed ? colors.surfaceHover : colors.surface,
+                borderColor: colors.border,
+                opacity: isQuickSubmitting ? 0.7 : 1,
+              },
+            ]}
+          >
+            {isQuickSubmitting ? (
+              <ActivityIndicator size="small" color={colors.text} />
+            ) : (
+              <>
+                <Ionicons name="flash-outline" size={16} color={colors.text} />
+                <Text style={[styles.quickButtonText, { color: colors.text }]}>
+                  {t('home.quickBackgroundDownload')}
+                </Text>
+              </>
+            )}
+          </Pressable>
 
           {isOngoingDownload && progressValue !== null ? (
             <View style={styles.progressSection}>
@@ -374,6 +482,34 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingBottom: 60,
+  },
+  backgroundChip: {
+    marginBottom: 12,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  backgroundChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  quickButton: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  quickButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   statusMessage: {
     marginTop: 24,

@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 BUILD_GRADLE="$ROOT_DIR/android/build.gradle"
 APP_GRADLE="$ROOT_DIR/android/app/build.gradle"
 GRADLE_PROPERTIES="$ROOT_DIR/android/gradle.properties"
+ANDROID_MANIFEST="$ROOT_DIR/android/app/src/main/AndroidManifest.xml"
 MERGED_NATIVE_LIBS_DIR="$ROOT_DIR/android/app/build/intermediates/merged_native_libs/debug/mergeDebugNativeLibs/out/lib"
 WHEELS_DIR="$ROOT_DIR/modules/local-downloader/android/chaquopy-wheels"
 WHEEL_CHECKSUMS="$WHEELS_DIR/SHA256SUMS"
@@ -52,7 +53,7 @@ PY
 }
 
 verify_generated_files() {
-  if [[ ! -f "$BUILD_GRADLE" || ! -f "$APP_GRADLE" || ! -f "$GRADLE_PROPERTIES" ]]; then
+  if [[ ! -f "$BUILD_GRADLE" || ! -f "$APP_GRADLE" || ! -f "$GRADLE_PROPERTIES" || ! -f "$ANDROID_MANIFEST" ]]; then
     echo "[verify-local-downloader-prebuild] Android Gradle files were not generated"
     exit 1
   fi
@@ -63,6 +64,7 @@ verify_generated_files() {
   assert_once "// @generated begin local-downloader-python-config" "$APP_GRADLE"
   assert_once "// @generated begin local-downloader-impersonation-pip" "$APP_GRADLE"
   assert_once "// @generated begin local-downloader-sourceset-config" "$APP_GRADLE"
+  assert_once "// @generated begin local-downloader-abi-filter-config" "$APP_GRADLE"
 
   if ! grep -Fq 'apply plugin: "com.chaquo.python"' "$APP_GRADLE"; then
     echo "[verify-local-downloader-prebuild] Missing Chaquopy apply plugin in app/build.gradle"
@@ -73,9 +75,44 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] expo.useLegacyPackaging must be true in android/gradle.properties"
     exit 1
   fi
+  if ! grep -Fq 'reactNativeArchitectures=arm64-v8a' "$GRADLE_PROPERTIES"; then
+    echo "[verify-local-downloader-prebuild] reactNativeArchitectures must be arm64-v8a for current impersonation wheel coverage"
+    exit 1
+  fi
 
   if ! grep -Fq 'install("curl-cffi==' "$APP_GRADLE"; then
     echo "[verify-local-downloader-prebuild] Missing curl-cffi install line in app/build.gradle"
+    exit 1
+  fi
+  if ! grep -Fq 'abiFilters "arm64-v8a"' "$APP_GRADLE"; then
+    echo "[verify-local-downloader-prebuild] Missing arm64 abi filter for impersonation wheel compatibility"
+    exit 1
+  fi
+
+  for perm in \
+    'android.permission.FOREGROUND_SERVICE' \
+    'android.permission.FOREGROUND_SERVICE_DATA_SYNC' \
+    'android.permission.POST_NOTIFICATIONS'; do
+    if ! grep -Fq "$perm" "$ANDROID_MANIFEST"; then
+      echo "[verify-local-downloader-prebuild] Missing required permission in manifest: $perm"
+      exit 1
+    fi
+  done
+
+  if [[ "$(grep -F 'expo.modules.localdownloader.DownloadForegroundService' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "[verify-local-downloader-prebuild] DownloadForegroundService must exist exactly once in AndroidManifest.xml"
+    exit 1
+  fi
+  if [[ "$(grep -F 'expo.modules.localdownloader.DownloadActionReceiver' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "[verify-local-downloader-prebuild] DownloadActionReceiver must exist exactly once in AndroidManifest.xml"
+    exit 1
+  fi
+  if [[ "$(grep -F 'expo.modules.localdownloader.QuickDownloadCaptureActivity' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "[verify-local-downloader-prebuild] QuickDownloadCaptureActivity must exist exactly once in AndroidManifest.xml"
+    exit 1
+  fi
+  if ! grep -Fq 'android:foregroundServiceType="dataSync"' "$ANDROID_MANIFEST"; then
+    echo "[verify-local-downloader-prebuild] Foreground service type dataSync is required"
     exit 1
   fi
 }

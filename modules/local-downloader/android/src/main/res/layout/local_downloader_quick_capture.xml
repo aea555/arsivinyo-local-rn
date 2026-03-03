@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:padding="20dp"
+  android:background="#66000000">
+
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_gravity="center"
+    android:orientation="vertical"
+    android:background="@drawable/local_downloader_capture_panel"
+    android:padding="16dp">
+
+    <TextView
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:text="Quick Download"
+      android:textColor="#F2F2F2"
+      android:textSize="18sp"
+      android:textStyle="bold" />
+
+    <TextView
+      android:id="@+id/quick_capture_status"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="8dp"
+      android:text="Trying clipboard URL..."
+      android:textColor="#C7CDD3"
+      android:textSize="13sp" />
+
+    <EditText
+      android:id="@+id/quick_capture_input"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="12dp"
+      android:background="@drawable/local_downloader_capture_input"
+      android:hint="https://example.com/video"
+      android:inputType="textUri"
+      android:textColor="#F2F2F2"
+      android:textColorHint="#7F8994"
+      android:maxLines="3"
+      android:minLines="1" />
+
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="14dp"
+      android:orientation="horizontal"
+      android:gravity="end">
+
+      <Button
+        android:id="@+id/quick_capture_cancel"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:minHeight="40dp"
+        android:minWidth="96dp"
+        android:background="@drawable/local_downloader_notification_button"
+        android:text="Cancel"
+        android:textAllCaps="false"
+        android:textColor="#DFE4EA" />
+
+      <Button
+        android:id="@+id/quick_capture_download"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_marginStart="10dp"
+        android:minHeight="40dp"
+        android:minWidth="120dp"
+        android:background="@drawable/local_downloader_capture_button_primary"
+        android:text="Download"
+        android:textAllCaps="false"
+        android:textColor="#FFFFFF" />
+    </LinearLayout>
+  </LinearLayout>
+</FrameLayout>

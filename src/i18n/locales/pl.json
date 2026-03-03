@@ -29,7 +29,10 @@
         "cancelDownloadTitle": "Cancel current download?",
         "cancelDownloadMessage": "Are you sure you want to stop the current download?",
         "confirmCancelDownload": "Yes, cancel",
-        "cancelRequestFailed": "Could not request cancellation. Please try again."
+        "cancelRequestFailed": "Could not request cancellation. Please try again.",
+        "quickBackgroundDownload": "Quick background download",
+        "quickDownloadQueued": "Quick download accepted.",
+        "backgroundActive": "Background active • Queue: {{count}}"
     },
     "settings": {
         "title": "Ustawienia",
@@ -148,6 +151,13 @@
         "IMPERSONATION_RUNTIME_UNAVAILABLE": "Required impersonation target is unavailable in this build.",
         "IMPERSONATION_BOOTSTRAP_FAILED": "Impersonation runtime bootstrap failed.",
         "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE": "Required impersonation target for this source is unavailable in this build.",
-        "IMPERSONATION_DEPENDENCY_MISSING": "Impersonation dependency is missing (curl-cffi)."
+        "IMPERSONATION_DEPENDENCY_MISSING": "Impersonation dependency is missing (curl-cffi).",
+        "BACKGROUND_PERMISSION_REQUIRED": "Notification permission is required for background download mode.",
+        "NO_CLIPBOARD_URL": "No valid URL found in clipboard.",
+        "DOWNLOAD_QUEUE_FULL": "Background queue is full (max 3).",
+        "BACKGROUND_SERVICE_START_FAILED": "Background download service failed to start.",
+        "QUICK_DOWNLOAD_REJECTED": "Quick download was rejected.",
+        "INVALID_QUICK_URL": "The provided quick URL is invalid.",
+        "QUICK_CAPTURE_CANCELLED": "Quick capture was cancelled."
     }
 }

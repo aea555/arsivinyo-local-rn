@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/notification_root"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:orientation="vertical"
+  android:padding="12dp"
+  android:background="@drawable/local_downloader_notification_card">
+
+  <TextView
+    android:id="@+id/notification_title"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:textColor="#F7F7F7"
+    android:textSize="14sp"
+    android:textStyle="bold"
+    android:maxLines="1"
+    android:ellipsize="end" />
+
+  <TextView
+    android:id="@+id/notification_subtitle"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="4dp"
+    android:textColor="#D5D5D5"
+    android:textSize="12sp"
+    android:maxLines="1"
+    android:ellipsize="end" />
+
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="8dp"
+    android:orientation="horizontal"
+    android:gravity="center_vertical">
+
+    <ProgressBar
+      android:id="@+id/notification_progress"
+      style="?android:attr/progressBarStyleHorizontal"
+      android:layout_width="0dp"
+      android:layout_height="8dp"
+      android:layout_weight="1"
+      android:max="100"
+      android:progress="0"
+      android:progressTint="#4FD1A5"
+      android:indeterminateTint="#4FD1A5" />
+
+    <TextView
+      android:id="@+id/notification_progress_text"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_marginStart="8dp"
+      android:textColor="#EFEFEF"
+      android:textSize="12sp"
+      android:text="0%" />
+  </LinearLayout>
+
+  <TextView
+    android:id="@+id/notification_queue"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="6dp"
+    android:textColor="#BDBDBD"
+    android:textSize="11sp"
+    android:maxLines="1"
+    android:ellipsize="end" />
+
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="8dp"
+    android:orientation="horizontal"
+    android:gravity="end">
+
+    <TextView
+      android:id="@+id/notification_action_quick"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:background="@drawable/local_downloader_notification_button"
+      android:paddingHorizontal="12dp"
+      android:paddingVertical="8dp"
+      android:text="Quick"
+      android:textColor="#CFF8EA"
+      android:textSize="12sp"
+      android:textStyle="bold" />
+  </LinearLayout>
+</LinearLayout>

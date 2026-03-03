@@ -65,3 +65,5 @@ modules/local-downloader/android/src/main/assets/ffmpeg/*/*.o
 SHA256SUMS
 *.pyc
 __pycache__
+*.lck
+*.part

@@ -1,9 +1,12 @@
-const { createRunOncePlugin, withAppBuildGradle, withGradleProperties, withProjectBuildGradle } = require('expo/config-plugins');
+const { createRunOncePlugin, withAndroidManifest, withAppBuildGradle, withGradleProperties, withProjectBuildGradle } = require('expo/config-plugins');
 
 const CHAQUOPY_VERSION = '15.0.1';
 const YT_DLP_VERSION = '2026.2.4';
 const CURL_CFFI_VERSION = '0.14.0';
 const IMPERSONATION_WHEELS_DIR = 'modules/local-downloader/android/chaquopy-wheels';
+const DOWNLOAD_SERVICE_NAME = 'expo.modules.localdownloader.DownloadForegroundService';
+const DOWNLOAD_RECEIVER_NAME = 'expo.modules.localdownloader.DownloadActionReceiver';
+const QUICK_CAPTURE_ACTIVITY_NAME = 'expo.modules.localdownloader.QuickDownloadCaptureActivity';
 
 const TAGS = {
   buildscriptRepo: {
@@ -29,6 +32,10 @@ const TAGS = {
   sourceSetConfig: {
     begin: '// @generated begin local-downloader-sourceset-config',
     end: '// @generated end local-downloader-sourceset-config',
+  },
+  abiFilterConfig: {
+    begin: '// @generated begin local-downloader-abi-filter-config',
+    end: '// @generated end local-downloader-abi-filter-config',
   },
 };
 
@@ -142,28 +149,96 @@ function addAppGradleChanges(contents) {
   const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("yt-dlp==${YT_DLP_VERSION}")\n            install("tenacity==9.0.0")\n${impersonationPipBlock}\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
 
   const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
+  const abiFilterBlock = `${TAGS.abiFilterConfig.begin}\nandroid {\n    defaultConfig {\n        ndk {\n            abiFilters "arm64-v8a"\n        }\n    }\n}\n${TAGS.abiFilterConfig.end}`;
 
   next = stripTaggedBlock(next, TAGS.pythonConfig);
   next = stripTaggedBlock(next, TAGS.sourceSetConfig);
+  next = stripTaggedBlock(next, TAGS.abiFilterConfig);
 
-  next = `${next.trimEnd()}\n\n${pythonBlock}\n\n${sourceSetBlock}\n`;
+  next = `${next.trimEnd()}\n\n${pythonBlock}\n\n${sourceSetBlock}\n\n${abiFilterBlock}\n`;
 
   return next;
 }
 
-const withLocalDownloader = (config) => {
-  config = withGradleProperties(config, (config) => {
-    const key = 'expo.useLegacyPackaging';
-    const existing = config.modResults.find((item) => item.type === 'property' && item.key === key);
-    if (existing) {
-      existing.value = 'true';
-    } else {
-      config.modResults.push({
-        type: 'property',
-        key,
-        value: 'true',
-      });
+function ensureManifestPermission(manifest, name) {
+  const existing = manifest['uses-permission'] || [];
+  if (!existing.some((item) => item.$?.['android:name'] === name)) {
+    existing.push({ $: { 'android:name': name } });
+  }
+  manifest['uses-permission'] = existing;
+}
+
+function ensureApplicationEntry(mainApplication, key, androidName, extra = {}) {
+  const existing = mainApplication[key] || [];
+  const found = existing.find((item) => item.$?.['android:name'] === androidName);
+  if (found) {
+    found.$ = { ...(found.$ || {}), ...extra, 'android:name': androidName };
+  } else {
+    existing.push({
+      $: {
+        'android:name': androidName,
+        ...extra,
+      },
+    });
+  }
+  mainApplication[key] = existing;
+}
+
+function addAndroidManifestChanges(config) {
+  return withAndroidManifest(config, (modConfig) => {
+    const manifest = modConfig.modResults.manifest;
+    ensureManifestPermission(manifest, 'android.permission.FOREGROUND_SERVICE');
+    ensureManifestPermission(manifest, 'android.permission.FOREGROUND_SERVICE_DATA_SYNC');
+    ensureManifestPermission(manifest, 'android.permission.POST_NOTIFICATIONS');
+
+    const mainApplication = manifest.application?.[0];
+    if (!mainApplication) {
+      throw new Error('[local-downloader plugin] Could not find Android application block in AndroidManifest.xml');
     }
+
+    ensureApplicationEntry(mainApplication, 'service', DOWNLOAD_SERVICE_NAME, {
+      'android:exported': 'false',
+      'android:foregroundServiceType': 'dataSync',
+      'android:stopWithTask': 'false',
+    });
+
+    ensureApplicationEntry(mainApplication, 'receiver', DOWNLOAD_RECEIVER_NAME, {
+      'android:exported': 'false',
+    });
+
+    ensureApplicationEntry(mainApplication, 'activity', QUICK_CAPTURE_ACTIVITY_NAME, {
+      'android:exported': 'false',
+      'android:excludeFromRecents': 'true',
+      'android:noHistory': 'true',
+      'android:launchMode': 'singleTask',
+      'android:taskAffinity': '',
+      'android:theme': '@android:style/Theme.DeviceDefault.Dialog.NoActionBar',
+    });
+
+    return modConfig;
+  });
+}
+
+const withLocalDownloader = (config) => {
+  config = addAndroidManifestChanges(config);
+
+  config = withGradleProperties(config, (config) => {
+    const upsertProperty = (key, value) => {
+      const existing = config.modResults.find((item) => item.type === 'property' && item.key === key);
+      if (existing) {
+        existing.value = value;
+      } else {
+        config.modResults.push({
+          type: 'property',
+          key,
+          value,
+        });
+      }
+    };
+
+    upsertProperty('expo.useLegacyPackaging', 'true');
+    // Vendored impersonation wheel coverage is currently arm64-only.
+    upsertProperty('reactNativeArchitectures', 'arm64-v8a');
     return config;
   });
 

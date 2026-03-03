@@ -1,5 +1,5 @@
-import LocalDownloaderModule, { addDownloadProgressListener } from './LocalDownloaderModule';
+import LocalDownloaderModule, { addBackgroundStateListener, addDownloadProgressListener } from './LocalDownloaderModule';
 
 export * from './LocalDownloader.types';
-export { addDownloadProgressListener };
+export { addBackgroundStateListener, addDownloadProgressListener };
 export default LocalDownloaderModule;
