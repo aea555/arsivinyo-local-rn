@@ -8,7 +8,7 @@ import subprocess
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 import yt_dlp
@@ -83,6 +83,7 @@ YTDLP_PIN_BASELINE = "2026.2.4"
 URL_REDACTION_PATTERN = re.compile(r"/(?:data|storage|sdcard)/[^\s)]+", flags=re.IGNORECASE)
 TOKEN_REDACTION_PATTERN = re.compile(r"(po_token|visitor_data|authorization)=([^,&\\s]+)", flags=re.IGNORECASE)
 REDDIT_SHARE_PATH_PATTERN = re.compile(r"/r/[^/]+/s/[^/?#]+", flags=re.IGNORECASE)
+GENERIC_FAILURE_CODES = {"PREFLIGHT_FAILED", "DOWNLOAD_FAILED"}
 
 _RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
     "normalizedUrlLast": None,
@@ -380,7 +381,10 @@ def _normalize_input_url(url: str, platform: Optional[str], user_agent: str, deb
         final_url, error = _resolve_redirect_url(normalized_url, user_agent, debug_logging)
         if error:
             return None, error
-        return final_url, None
+        normalized_url = final_url or normalized_url
+
+    if platform == "tiktok":
+        return _canonicalize_tiktok_url(normalized_url), None
 
     if platform != "reddit" or host not in REDDIT_DOMAINS:
         return normalized_url, None
@@ -398,6 +402,21 @@ def _normalize_input_url(url: str, platform: Optional[str], user_agent: str, deb
         return None, f"resolved host is not reddit ({final_host})"
 
     return final_url, None
+
+
+def _canonicalize_tiktok_url(url: str) -> str:
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host.endswith("tiktok.com"):
+        return url
+
+    path = (parsed.path or "/").rstrip("/") or "/"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    # Drop tracking/query params (_r/_t etc.). TikTok video URLs are stable by path.
+    return urlunparse(("https", "www.tiktok.com", path, "", "", ""))
 
 
 def _inspect_cookie_file(cookie_file: Optional[str], platform: Optional[str]) -> Dict[str, Any]:
@@ -627,10 +646,10 @@ def _resolve_merge_capability(
 
 
 def _build_http_headers(url: str, user_agent: str, platform: Optional[str], include_reddit_context: bool = False) -> Dict[str, str]:
-    headers = {
-        "User-Agent": user_agent,
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    headers = {"Accept-Language": "en-US,en;q=0.9"}
+    # For TikTok, do not hard-force User-Agent; extractor/impersonation should control it.
+    if platform != "tiktok":
+        headers["User-Agent"] = user_agent
     host = _extract_host(url)
     parsed = urlparse(url)
     if include_reddit_context and platform == "reddit" and (host.endswith("reddit.com") or host.endswith("redd.it")):
@@ -641,6 +660,41 @@ def _build_http_headers(url: str, user_agent: str, platform: Optional[str], incl
         headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
         headers["Origin"] = f"{parsed.scheme}://{parsed.netloc}"
     return headers
+
+
+def _is_generic_failure(code: Optional[str], message: Optional[str]) -> bool:
+    normalized_code = (code or "").strip()
+    normalized_msg = (message or "").strip()
+    return normalized_code in GENERIC_FAILURE_CODES and (
+        not normalized_msg or normalized_msg == normalized_code
+    )
+
+
+def _should_replace_last_error(
+    prev_code: Optional[str],
+    prev_message: Optional[str],
+    new_code: Optional[str],
+    new_message: Optional[str],
+) -> bool:
+    if prev_code is None:
+        return True
+
+    prev_generic = _is_generic_failure(prev_code, prev_message)
+    new_generic = _is_generic_failure(new_code, new_message)
+    if not prev_generic and new_generic:
+        return False
+    if prev_generic and not new_generic:
+        return True
+
+    # Keep the strongest TikTok classification if we already have it.
+    if prev_code == "TIKTOK_API_STATUS_ZERO" and new_code != "TIKTOK_API_STATUS_ZERO":
+        return False
+    if new_code == "TIKTOK_API_STATUS_ZERO" and prev_code != "TIKTOK_API_STATUS_ZERO":
+        return True
+
+    if not new_message and prev_message:
+        return False
+    return True
 
 
 class _YdlLogger:
@@ -931,7 +985,6 @@ def _build_platform_attempts(
                             "label": f"tiktok-cookie-impersonate-{target}",
                             "use_cookie": True,
                             "impersonate": target,
-                            "extractor_args": {"tiktok": {"impersonate": [target]}},
                         }
                     )
                 attempts.append(
@@ -939,7 +992,6 @@ def _build_platform_attempts(
                         "label": f"tiktok-anon-impersonate-{target}",
                         "use_cookie": False,
                         "impersonate": target,
-                        "extractor_args": {"tiktok": {"impersonate": [target]}},
                     }
                 )
 
@@ -976,13 +1028,27 @@ def _build_platform_attempts(
                 },
             }
         )
+        # API-style anonymous fallback with minimal args can recover when cookie/session is noisy.
+        attempts.append(
+            {
+                "label": "tiktok-appinfo-anon-fallback",
+                "use_cookie": False,
+                "extractor_args": {
+                    "tiktok": {
+                        "app_info": [install_id],
+                        "device_id": [device_id],
+                        "api_hostname": [TIKTOK_API_HOSTNAME_CANDIDATES[0]],
+                    }
+                },
+            }
+        )
         if impersonation_available:
             attempts.append(
                 {
                     "label": "tiktok-generic-impersonate",
                     "use_cookie": False,
-                    "extractor_args": {"generic": {"impersonate": ["chrome"]}},
                     "impersonate": "chrome",
+                    "force_generic_extractor": True,
                 }
             )
         return attempts
@@ -1366,8 +1432,9 @@ def _perform_attempts(
                     "errorMessage": redacted,
                 }
             )
-            last_error_code = code
-            last_error_message = message
+            if _should_replace_last_error(last_error_code, last_error_message, code, message):
+                last_error_code = code
+                last_error_message = message
 
     return None, last_error_code, last_error_message, last_strategy
 

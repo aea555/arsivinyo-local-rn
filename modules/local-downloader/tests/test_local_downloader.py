@@ -66,6 +66,28 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         )
         self.assertEqual(targets, ["firefox", "chrome"])
 
+    def test_tiktok_url_is_canonicalized_without_tracking_query(self):
+        normalized, error = ld._normalize_input_url(
+            "https://www.tiktok.com/@sample/video/7612119485763374344?_r=1&_t=ZS-94NO5RAMPOH",
+            "tiktok",
+            ld.DEFAULT_HTTP_USER_AGENT,
+            debug_logging=False,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(
+            normalized,
+            "https://www.tiktok.com/@sample/video/7612119485763374344",
+        )
+
+    def test_error_replacement_keeps_specific_over_generic(self):
+        should_replace = ld._should_replace_last_error(
+            "TIKTOK_API_STATUS_ZERO",
+            "ERROR: [TikTok] Video not available, status code 0",
+            "PREFLIGHT_FAILED",
+            "PREFLIGHT_FAILED",
+        )
+        self.assertFalse(should_replace)
+
     def test_cancel_requested_detection(self):
         self.assertFalse(ld._is_cancel_requested(None))
 
