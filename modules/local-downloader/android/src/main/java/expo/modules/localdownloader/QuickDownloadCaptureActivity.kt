@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -15,13 +16,16 @@ class QuickDownloadCaptureActivity : Activity() {
   private var autoStartEnabled: Boolean = true
   private var autoAttemptScheduled: Boolean = false
   private var autoAttemptCount: Int = 0
+  private lateinit var rootView: View
   private lateinit var statusView: TextView
   private lateinit var inputView: EditText
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    overridePendingTransition(0, 0)
     setContentView(R.layout.local_downloader_quick_capture)
-    setFinishOnTouchOutside(false)
+    rootView = findViewById(R.id.quick_capture_root)
+    setFinishOnTouchOutside(true)
 
     statusView = findViewById(R.id.quick_capture_status)
     inputView = findViewById(R.id.quick_capture_input)
@@ -51,11 +55,12 @@ class QuickDownloadCaptureActivity : Activity() {
 
     autoStartEnabled = intent?.getBooleanExtra(EXTRA_AUTOSTART, true) ?: true
     if (!autoStartEnabled) {
-      statusView.text = "Paste a URL and tap Download."
+      showManualEntry("Paste a URL and tap Download.")
       return
     }
 
     statusView.text = "Trying clipboard URL..."
+    rootView.visibility = View.INVISIBLE
   }
 
   override fun onResume() {
@@ -70,10 +75,12 @@ class QuickDownloadCaptureActivity : Activity() {
     autoAttemptCount = 0
     autoAttemptScheduled = false
     if (!autoStartEnabled) {
-      statusView.text = "Paste a URL and tap Download."
+      showManualEntry("Paste a URL and tap Download.")
       return
     }
     statusView.text = "Trying clipboard URL..."
+    rootView.visibility = View.INVISIBLE
+    setFinishOnTouchOutside(true)
     scheduleClipboardAutoAttempt()
   }
 
@@ -103,7 +110,7 @@ class QuickDownloadCaptureActivity : Activity() {
       if (autoAttemptCount < MAX_CLIPBOARD_ATTEMPTS) {
         scheduleClipboardAutoAttempt()
       } else {
-        statusView.text = LocalDownloaderModule.quickReasonToMessage("NO_CLIPBOARD_URL")
+        showManualEntry(LocalDownloaderModule.quickReasonToMessage("NO_CLIPBOARD_URL"))
       }
       return
     }
@@ -123,7 +130,19 @@ class QuickDownloadCaptureActivity : Activity() {
       return
     }
 
-    statusView.text = LocalDownloaderModule.quickReasonToMessage(reason)
+    showManualEntry(LocalDownloaderModule.quickReasonToMessage(reason))
+  }
+
+  private fun showManualEntry(message: String?) {
+    rootView.visibility = View.VISIBLE
+    setFinishOnTouchOutside(false)
+    statusView.text = message ?: "Paste a URL and tap Download."
+    if (inputView.text?.isBlank() != false) {
+      val clipboardUrl = LocalDownloaderModule.peekClipboardUrl(this)
+      if (!clipboardUrl.isNullOrBlank()) {
+        inputView.setText(clipboardUrl)
+      }
+    }
   }
 
   private fun showResultToast(result: Map<String, Any?>) {
