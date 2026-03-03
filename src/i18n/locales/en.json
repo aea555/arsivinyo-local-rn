@@ -123,7 +123,7 @@
         "TASK_CANCELLED": "Task cancelled",
         "INTERNAL_ERROR": "Server error. Please try again.",
         "UNKNOWN_ERROR": "Unknown error",
-        "UNSUPPORTED_PLATFORM": "This platform is not supported. Supported: Twitter, Instagram, Facebook, Reddit, Youtube",
+        "UNSUPPORTED_PLATFORM": "No downloadable media stream was found for this URL.",
         "SERVER_ERROR": "Unexpected error. Please try again later.",
         "NETWORK_ERROR": "Connection error. Check your internet.",
         "COOKIE_STORE_ENCRYPT_FAILED": "Failed to securely store cookie profile.",

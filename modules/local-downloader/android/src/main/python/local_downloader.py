@@ -1,4 +1,5 @@
 import datetime
+import html
 import importlib
 import json
 import os
@@ -8,7 +9,7 @@ import subprocess
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 import yt_dlp
@@ -42,6 +43,18 @@ RETRYABLE_STATUS_MARKERS = (
 )
 
 VIDEO_TIMESTAMP_EXTENSIONS = {".mp4", ".mov", ".m4v", ".3gp"}
+GENERIC_UNSUPPORTED_MARKERS = (
+    "unsupported url",
+    "no video formats found",
+    "unable to extract",
+)
+GENERIC_MEDIA_EXTENSIONS = (".m3u8", ".mpd", ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".ts")
+GENERIC_URL_TOKEN_PATTERN = re.compile(r"(?:(?:https?:)?//[^\s\"'<>\\]+)", flags=re.IGNORECASE)
+GENERIC_MEDIA_RELATIVE_PATTERN = re.compile(
+    r"(?P<path>/(?:[^\"'<>\\\s]|\\.)+\.(?:m3u8|mpd|mp4|m4v|mov|webm|mkv|ts)(?:\?[^\"'<>\\\s]*)?)",
+    flags=re.IGNORECASE,
+)
+MAX_GENERIC_DISCOVERY_CANDIDATES = 4
 MAX_ATTEMPT_TRACE = 80
 ALLOW_REDDIT_PUBLIC_FALLBACK = True
 YTDLP_VERBOSE_DEV = True
@@ -419,6 +432,163 @@ def _canonicalize_tiktok_url(url: str) -> str:
     return urlunparse(("https", "www.tiktok.com", path, "", "", ""))
 
 
+def _is_generic_unsupported_error(message: Optional[str]) -> bool:
+    lower = (message or "").lower()
+    return any(marker in lower for marker in GENERIC_UNSUPPORTED_MARKERS)
+
+
+def _decode_embedded_web_text(text: str) -> str:
+    value = html.unescape(text or "")
+    value = value.replace("\\/", "/")
+
+    def _decode_unicode(match: re.Match[str]) -> str:
+        try:
+            return chr(int(match.group(1), 16))
+        except Exception:
+            return match.group(0)
+
+    value = re.sub(r"\\u([0-9a-fA-F]{4})", _decode_unicode, value)
+    value = re.sub(r"\\x([0-9a-fA-F]{2})", _decode_unicode, value)
+    return value
+
+
+def _is_generic_media_candidate(url: str) -> bool:
+    lower = (url or "").lower()
+    return any(ext in lower for ext in GENERIC_MEDIA_EXTENSIONS)
+
+
+def _normalize_candidate_url(candidate: str, page_url: str) -> Optional[str]:
+    raw = (candidate or "").strip().strip("\"'()[]{}.,;")
+    if not raw:
+        return None
+
+    normalized = _decode_embedded_web_text(raw).strip()
+    if normalized.startswith("//"):
+        base_scheme = urlparse(page_url).scheme or "https"
+        normalized = f"{base_scheme}:{normalized}"
+    elif normalized.startswith("/"):
+        normalized = urljoin(page_url, normalized)
+
+    if not normalized.startswith("http://") and not normalized.startswith("https://"):
+        return None
+    if not _is_generic_media_candidate(normalized):
+        return None
+
+    parsed = urlparse(normalized)
+    if not parsed.netloc:
+        return None
+    return normalized
+
+
+def _score_media_candidate(candidate_url: str, page_host: str) -> int:
+    lower = candidate_url.lower()
+    score = 0
+    if ".mp4" in lower:
+        score += 60
+    if ".m3u8" in lower or ".mpd" in lower:
+        score += 50
+    if ".webm" in lower or ".mkv" in lower:
+        score += 35
+    if "master" in lower or "playlist" in lower:
+        score += 10
+    candidate_host = _extract_host(candidate_url)
+    if candidate_host and page_host and (candidate_host == page_host or candidate_host.endswith(f".{page_host}")):
+        score += 15
+    return score
+
+
+def _fetch_page_text(url: str, user_agent: str, debug_logging: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    headers = {
+        "User-Agent": user_agent,
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        request = Request(url, headers=headers)
+        with urlopen(request, timeout=15) as response:
+            content = response.read(2 * 1024 * 1024)
+            charset = None
+            try:
+                charset = response.headers.get_content_charset()
+            except Exception:
+                charset = None
+            encoding = charset or "utf-8"
+            return content.decode(encoding, errors="replace"), None
+    except Exception as exc:
+        _debug_log(debug_logging, f"generic discovery fetch failed url={url} error={exc}")
+        return None, str(exc)
+
+
+def _discover_generic_media_candidates(url: str, user_agent: str, debug_logging: bool = False) -> List[str]:
+    page_text, fetch_error = _fetch_page_text(url, user_agent, debug_logging)
+    if fetch_error or not page_text:
+        return []
+
+    page_host = _extract_host(url)
+    candidates: List[str] = []
+    seen: set[str] = set()
+
+    def _maybe_add(raw_candidate: str) -> None:
+        normalized = _normalize_candidate_url(raw_candidate, url)
+        if not normalized:
+            return
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
+    decoded_text = _decode_embedded_web_text(page_text)
+    for blob in (page_text, decoded_text):
+        for match in GENERIC_URL_TOKEN_PATTERN.finditer(blob):
+            _maybe_add(match.group(0))
+        for match in GENERIC_MEDIA_RELATIVE_PATTERN.finditer(blob):
+            _maybe_add(match.group("path"))
+
+    if not candidates:
+        return []
+
+    ranked = sorted(candidates, key=lambda item: _score_media_candidate(item, page_host), reverse=True)
+    selected = ranked[:MAX_GENERIC_DISCOVERY_CANDIDATES]
+    _debug_log(debug_logging, f"generic discovery found {len(selected)} media candidate(s)")
+    for index, candidate in enumerate(selected, start=1):
+        _debug_log(debug_logging, f"generic discovery candidate[{index}]={candidate}")
+    return selected
+
+
+def _build_generic_discovery_attempts(
+    source_url: str,
+    selected_cookie_file: Optional[str],
+    user_agent: str,
+    debug_logging: bool = False,
+) -> List[Dict[str, Any]]:
+    candidates = _discover_generic_media_candidates(source_url, user_agent, debug_logging)
+    if not candidates:
+        return []
+
+    attempts: List[Dict[str, Any]] = []
+    cookie_modes = [True, False] if selected_cookie_file else [False]
+    for index, candidate in enumerate(candidates, start=1):
+        is_hls_like = ".m3u8" in candidate.lower() or ".mpd" in candidate.lower()
+        for use_cookie in cookie_modes:
+            prefix = "cookie" if use_cookie else "anon"
+            attempt: Dict[str, Any] = {
+                "label": f"generic-{prefix}-discovered-{index}",
+                "use_cookie": use_cookie,
+                "url_override": candidate,
+                "referer_url": source_url,
+                "format_override": "best",
+            }
+            if is_hls_like:
+                attempt["ydl_overrides"] = {
+                    "hls_prefer_native": False,
+                    "external_downloader": "ffmpeg",
+                    "abort_on_unavailable_fragments": True,
+                    "skip_unavailable_fragments": False,
+                }
+            attempts.append(attempt)
+
+    return attempts
+
+
 def _inspect_cookie_file(cookie_file: Optional[str], platform: Optional[str]) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "platform": platform,
@@ -645,7 +815,13 @@ def _resolve_merge_capability(
     return False, reason
 
 
-def _build_http_headers(url: str, user_agent: str, platform: Optional[str], include_reddit_context: bool = False) -> Dict[str, str]:
+def _build_http_headers(
+    url: str,
+    user_agent: str,
+    platform: Optional[str],
+    include_reddit_context: bool = False,
+    referer_url: Optional[str] = None,
+) -> Dict[str, str]:
     headers = {"Accept-Language": "en-US,en;q=0.9"}
     # For TikTok, do not hard-force User-Agent; extractor/impersonation should control it.
     if platform != "tiktok":
@@ -655,6 +831,11 @@ def _build_http_headers(url: str, user_agent: str, platform: Optional[str], incl
     if include_reddit_context and platform == "reddit" and (host.endswith("reddit.com") or host.endswith("redd.it")):
         headers["Referer"] = "https://www.reddit.com/"
         headers["Origin"] = "https://www.reddit.com"
+    elif referer_url:
+        referer_parsed = urlparse(referer_url)
+        if referer_parsed.scheme in {"http", "https"} and referer_parsed.netloc:
+            headers["Referer"] = referer_url
+            headers["Origin"] = f"{referer_parsed.scheme}://{referer_parsed.netloc}"
     elif platform is None and parsed.scheme in {"http", "https"} and parsed.netloc:
         # Generic fallback for non-built-in platforms: many tokenized HLS/CDN URLs expect same-site context.
         headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
@@ -753,11 +934,18 @@ def _common_ydl_opts(
     include_reddit_context: bool = False,
     impersonate: Optional[str] = None,
     disable_impersonation: bool = False,
+    referer_url: Optional[str] = None,
     debug_strategy_label: Optional[str] = None,
     debug_attempt_id: Optional[str] = None,
     debug_logging: bool = False,
 ) -> Dict[str, Any]:
-    headers = _build_http_headers(normalized_url, user_agent, platform, include_reddit_context=include_reddit_context)
+    headers = _build_http_headers(
+        normalized_url,
+        user_agent,
+        platform,
+        include_reddit_context=include_reddit_context,
+        referer_url=referer_url,
+    )
 
     opts: Dict[str, Any] = {
         "quiet": True,
@@ -922,6 +1110,9 @@ def _classify_exception(exc: Exception, default_code: str, platform: Optional[st
 
     if "ffmpeg is not installed" in lower or "ffprobe is not installed" in lower:
         return "MERGE_DEPENDENCY_MISSING", message
+
+    if _is_generic_unsupported_error(lower):
+        return "UNSUPPORTED_PLATFORM", message
 
     return default_code, message
 
@@ -1218,6 +1409,7 @@ def _perform_attempts(
     output_dir: Optional[str] = None,
     progress_hooks: Optional[List[Any]] = None,
     debug_logging: bool = False,
+    allow_discovery_fallback: bool = True,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str], Optional[str]]:
     last_error_code: Optional[str] = None
     last_error_message: Optional[str] = None
@@ -1241,11 +1433,13 @@ def _perform_attempts(
         force_generic_extractor = bool(strategy.get("force_generic_extractor", False))
         ydl_overrides = strategy.get("ydl_overrides") or {}
         format_override = strategy.get("format_override")
+        attempt_url = str(strategy.get("url_override") or normalized_url)
+        referer_url = strategy.get("referer_url")
         last_strategy = label
         _set_runtime_diag("platformStrategyLast", label)
 
         opts = _common_ydl_opts(
-            normalized_url,
+            attempt_url,
             platform,
             active_cookie,
             ffmpeg_location,
@@ -1254,6 +1448,7 @@ def _perform_attempts(
             include_reddit_context=include_reddit_context,
             impersonate=impersonate,
             disable_impersonation=disable_impersonation,
+            referer_url=referer_url,
             debug_strategy_label=label,
             debug_attempt_id=attempt_id,
             debug_logging=debug_logging,
@@ -1278,7 +1473,7 @@ def _perform_attempts(
                 "phase": phase,
                 "attemptId": attempt_id,
                 "strategy": label,
-                "url": normalized_url,
+                "url": attempt_url,
                 "platform": platform,
                 "cookieUsed": bool(active_cookie),
                 "retryIndex": index,
@@ -1293,7 +1488,7 @@ def _perform_attempts(
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = _extract_info_with_retry(
                     ydl,
-                    normalized_url,
+                    attempt_url,
                     download=download,
                     debug_logging=debug_logging,
                     strategy_label=label,
@@ -1344,7 +1539,7 @@ def _perform_attempts(
                 retry_label = f"{label}-no-impersonate-retry"
                 retry_extractor_args = _merge_extractor_args(extractor_args, forced_args)
                 retry_opts = _common_ydl_opts(
-                    normalized_url,
+                    attempt_url,
                     platform,
                     active_cookie,
                     ffmpeg_location,
@@ -1353,6 +1548,7 @@ def _perform_attempts(
                     include_reddit_context=include_reddit_context,
                     impersonate=None,
                     disable_impersonation=True,
+                    referer_url=referer_url,
                     debug_strategy_label=retry_label,
                     debug_attempt_id=retry_id,
                     debug_logging=debug_logging,
@@ -1375,7 +1571,7 @@ def _perform_attempts(
                         "phase": phase,
                         "attemptId": retry_id,
                         "strategy": retry_label,
-                        "url": normalized_url,
+                        "url": attempt_url,
                         "platform": platform,
                         "cookieUsed": bool(active_cookie),
                         "retryIndex": index,
@@ -1389,7 +1585,7 @@ def _perform_attempts(
                     with yt_dlp.YoutubeDL(retry_opts) as ydl:
                         retry_info = _extract_info_with_retry(
                             ydl,
-                            normalized_url,
+                            attempt_url,
                             download=download,
                             debug_logging=debug_logging,
                             strategy_label=retry_label,
@@ -1435,6 +1631,39 @@ def _perform_attempts(
             if _should_replace_last_error(last_error_code, last_error_message, code, message):
                 last_error_code = code
                 last_error_message = message
+
+    if allow_discovery_fallback and platform is None and _is_generic_unsupported_error(last_error_message):
+        discovery_attempts = _build_generic_discovery_attempts(
+            normalized_url,
+            selected_cookie_file,
+            user_agent,
+            debug_logging=debug_logging,
+        )
+        if discovery_attempts:
+            _debug_log(debug_logging, f"generic discovery retry attempts={len(discovery_attempts)}")
+            info, fail_code, fail_message, strategy = _perform_attempts(
+                phase=phase,
+                normalized_url=normalized_url,
+                platform=platform,
+                attempts=discovery_attempts,
+                selected_cookie_file=selected_cookie_file,
+                ffmpeg_location=ffmpeg_location,
+                user_agent=user_agent,
+                download=download,
+                max_file_size_mb=max_file_size_mb,
+                merge_capable=merge_capable,
+                impersonation_available=impersonation_available,
+                output_dir=output_dir,
+                progress_hooks=progress_hooks,
+                debug_logging=debug_logging,
+                allow_discovery_fallback=False,
+            )
+            if info is not None:
+                return info, None, None, strategy
+            if _should_replace_last_error(last_error_code, last_error_message, fail_code, fail_message):
+                last_error_code = fail_code
+                last_error_message = fail_message
+                last_strategy = strategy
 
     return None, last_error_code, last_error_message, last_strategy
 

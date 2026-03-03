@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+import unittest.mock
 import time
 
 try:
@@ -38,6 +39,13 @@ class LocalDownloaderUnitTests(unittest.TestCase):
 
         code, _ = ld._classify_exception(Exception("ffmpeg is not installed"), "DOWNLOAD_FAILED")
         self.assertEqual(code, "MERGE_DEPENDENCY_MISSING")
+
+        code, _ = ld._classify_exception(
+            Exception("ERROR: Unsupported URL: https://example.com/watch/123"),
+            "PREFLIGHT_FAILED",
+            platform=None,
+        )
+        self.assertEqual(code, "UNSUPPORTED_PLATFORM")
 
         code, _ = ld._classify_exception(
             Exception("ERROR: [TikTok] 123: Video not available, status code 0"),
@@ -87,6 +95,23 @@ class LocalDownloaderUnitTests(unittest.TestCase):
             "PREFLIGHT_FAILED",
         )
         self.assertFalse(should_replace)
+
+    def test_generic_media_candidate_discovery(self):
+        html_blob = """
+            <script>
+                const src = "https:\\/\\/cdn.example.com\\/video\\/master.m3u8?token=abc";
+            </script>
+            <video src="/media/fallback.mp4"></video>
+        """
+        with unittest.mock.patch.object(ld, "_fetch_page_text", return_value=(html_blob, None)):
+            candidates = ld._discover_generic_media_candidates(
+                "https://example.com/page",
+                ld.DEFAULT_HTTP_USER_AGENT,
+                debug_logging=False,
+            )
+        self.assertGreaterEqual(len(candidates), 2)
+        self.assertTrue(any(".m3u8" in item for item in candidates))
+        self.assertTrue(any(".mp4" in item for item in candidates))
 
     def test_cancel_requested_detection(self):
         self.assertFalse(ld._is_cancel_requested(None))

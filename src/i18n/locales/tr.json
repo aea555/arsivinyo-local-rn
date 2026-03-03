@@ -123,7 +123,7 @@
         "TASK_CANCELLED": "Görev iptal edildi",
         "INTERNAL_ERROR": "Sunucu hatası. Lütfen tekrar deneyin.",
         "UNKNOWN_ERROR": "Bilinmeyen hata",
-        "UNSUPPORTED_PLATFORM": "Bu platform desteklenmiyor. Desteklenen: Twitter, Instagram, Facebook, Reddit, Youtube",
+        "UNSUPPORTED_PLATFORM": "Bu URL için indirilebilir bir medya akışı bulunamadı.",
         "SERVER_ERROR": "Beklenmedik hata. Lütfen daha sonra tekrar deneyin.",
         "NETWORK_ERROR": "Bağlantı hatası. İnternetinizi kontrol edin.",
         "COOKIE_STORE_ENCRYPT_FAILED": "Cookie profili güvenli şekilde kaydedilemedi.",
