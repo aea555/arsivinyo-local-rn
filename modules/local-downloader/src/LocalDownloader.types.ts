@@ -4,6 +4,7 @@ export interface LocalDownloadStartInput {
   url: string;
   cookiePlatform?: LocalPlatform;
   cookieProfile?: string;
+  // 0 or undefined means unlimited file size.
   maxFileSizeMb?: number;
 }
 

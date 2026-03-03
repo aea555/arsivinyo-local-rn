@@ -165,7 +165,7 @@ class LocalDownloaderModule : Module() {
       val url = (input["url"] as? String)?.trim().orEmpty()
       val cookiePlatform = (input["cookiePlatform"] as? String)?.trim()?.lowercase()?.takeIf { SUPPORTED_PLATFORMS.contains(it) }
       val cookieProfile = (input["cookieProfile"] as? String)?.trim().orEmpty().ifEmpty { null }
-      val maxFileSizeMb = (input["maxFileSizeMb"] as? Number)?.toInt()?.coerceIn(1, 8192) ?: DEFAULT_MAX_FILE_SIZE_MB
+      val maxFileSizeMb = (input["maxFileSizeMb"] as? Number)?.toInt()?.coerceAtLeast(0) ?: DEFAULT_MAX_FILE_SIZE_MB
 
       if (url.isBlank()) {
         throw IllegalArgumentException("INVALID_URL")
@@ -2486,7 +2486,7 @@ class LocalDownloaderModule : Module() {
     private const val DISABLED_COOKIES_DIRNAME = "cookies_disabled"
     private const val DEFAULT_HTTP_USER_AGENT =
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
-    private const val DEFAULT_MAX_FILE_SIZE_MB = 2048
+    private const val DEFAULT_MAX_FILE_SIZE_MB = 0
     private const val TASK_SNAPSHOT_FILENAME = "local_downloader_tasks.json"
     private const val DEFAULT_COOKIE_PROFILE_FILENAME = ".default_profile"
     private const val MAX_ERROR_LOGS = 20

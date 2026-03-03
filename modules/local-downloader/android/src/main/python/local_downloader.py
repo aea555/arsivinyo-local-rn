@@ -38,6 +38,7 @@ RETRYABLE_STATUS_MARKERS = (
     "timed out",
     "connection reset",
     "network is unreachable",
+    "downloaded file is empty",
 )
 
 VIDEO_TIMESTAMP_EXTENSIONS = {".mp4", ".mov", ".m4v", ".3gp"}
@@ -631,9 +632,14 @@ def _build_http_headers(url: str, user_agent: str, platform: Optional[str], incl
         "Accept-Language": "en-US,en;q=0.9",
     }
     host = _extract_host(url)
+    parsed = urlparse(url)
     if include_reddit_context and platform == "reddit" and (host.endswith("reddit.com") or host.endswith("redd.it")):
         headers["Referer"] = "https://www.reddit.com/"
         headers["Origin"] = "https://www.reddit.com"
+    elif platform is None and parsed.scheme in {"http", "https"} and parsed.netloc:
+        # Generic fallback for non-built-in platforms: many tokenized HLS/CDN URLs expect same-site context.
+        headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+        headers["Origin"] = f"{parsed.scheme}://{parsed.netloc}"
     return headers
 
 
@@ -675,6 +681,10 @@ def _sanitize_opts_for_log(opts: Dict[str, Any]) -> Dict[str, Any]:
         "headers": list((opts.get("http_headers") or {}).keys()),
         "noplaylist": opts.get("noplaylist"),
         "retries": opts.get("retries"),
+        "hls_prefer_native": opts.get("hls_prefer_native"),
+        "external_downloader": opts.get("external_downloader"),
+        "abort_on_unavailable_fragments": opts.get("abort_on_unavailable_fragments"),
+        "skip_unavailable_fragments": opts.get("skip_unavailable_fragments"),
     }
     return safe
 
@@ -701,9 +711,13 @@ def _common_ydl_opts(
         "ignoreconfig": True,
         "noplaylist": True,
         "no_cache_dir": True,
-        "extractor_retries": 3,
-        "retries": 3,
-        "fragment_retries": 3,
+        "extractor_retries": 6,
+        "retries": 10,
+        "fragment_retries": 10,
+        "file_access_retries": 3,
+        # Avoid silently producing empty/partial outputs when a site CDN invalidates HLS fragments.
+        "abort_on_unavailable_fragments": True,
+        "skip_unavailable_fragments": False,
         # Keep output file timestamps at download time so gallery apps sort as latest.
         "updatetime": False,
     }
@@ -735,7 +749,13 @@ def _common_ydl_opts(
 
 
 def _build_format_selector(max_file_size_mb: int, merge_capable: bool) -> str:
-    limit_mb = max(1, int(max_file_size_mb))
+    limit_mb = int(max_file_size_mb)
+    unlimited = limit_mb <= 0
+
+    if unlimited:
+        if merge_capable:
+            return "bestvideo+bestaudio/best"
+        return "best[acodec!=none][vcodec!=none]/best"
 
     if merge_capable:
         return (
@@ -996,6 +1016,58 @@ def _build_platform_attempts(
         )
         return attempts
 
+    if platform is None:
+        cookie_modes = [True, False] if has_cookie and cookie_integrity_ok else [False]
+        for use_cookie in cookie_modes:
+            prefix = "cookie" if use_cookie else "anon"
+
+            attempts.append(
+                {
+                    "label": f"generic-{prefix}-progressive",
+                    "use_cookie": use_cookie,
+                    "format_override": "best[acodec!=none][vcodec!=none][protocol!*=m3u8]/best[protocol!*=m3u8]/best",
+                    "ydl_overrides": {
+                        "abort_on_unavailable_fragments": True,
+                        "skip_unavailable_fragments": False,
+                    },
+                }
+            )
+
+            if impersonation_available:
+                attempts.append(
+                    {
+                        "label": f"generic-{prefix}-progressive-impersonate-chrome",
+                        "use_cookie": use_cookie,
+                        "impersonate": "chrome",
+                        "format_override": "best[acodec!=none][vcodec!=none][protocol!*=m3u8]/best[protocol!*=m3u8]/best",
+                        "ydl_overrides": {
+                            "abort_on_unavailable_fragments": True,
+                            "skip_unavailable_fragments": False,
+                        },
+                    }
+                )
+
+            attempts.append(
+                {
+                    "label": f"generic-{prefix}-default",
+                    "use_cookie": use_cookie,
+                }
+            )
+
+            attempts.append(
+                {
+                    "label": f"generic-{prefix}-hls-ffmpeg-strict",
+                    "use_cookie": use_cookie,
+                    "ydl_overrides": {
+                        "hls_prefer_native": False,
+                        "external_downloader": "ffmpeg",
+                        "abort_on_unavailable_fragments": True,
+                        "skip_unavailable_fragments": False,
+                    },
+                }
+            )
+        return attempts
+
     attempts.append({"label": "default-primary", "use_cookie": has_cookie and cookie_integrity_ok})
     if not impersonation_available:
         attempts.append(
@@ -1101,6 +1173,8 @@ def _perform_attempts(
             impersonate = None
         include_reddit_context = bool(strategy.get("include_reddit_context", False))
         force_generic_extractor = bool(strategy.get("force_generic_extractor", False))
+        ydl_overrides = strategy.get("ydl_overrides") or {}
+        format_override = strategy.get("format_override")
         last_strategy = label
         _set_runtime_diag("platformStrategyLast", label)
 
@@ -1118,9 +1192,11 @@ def _perform_attempts(
             debug_attempt_id=attempt_id,
             debug_logging=debug_logging,
         )
-        opts["format"] = _build_format_selector(max_file_size_mb, merge_capable)
+        opts["format"] = format_override or _build_format_selector(max_file_size_mb, merge_capable)
         if merge_capable:
             opts["merge_output_format"] = "mp4"
+        if ydl_overrides:
+            opts.update(ydl_overrides)
         if output_dir:
             opts["outtmpl"] = os.path.join(output_dir, "%(title)s.%(ext)s")
         if progress_hooks:
@@ -1143,6 +1219,7 @@ def _perform_attempts(
                 "extractorArgs": extractor_args or {},
                 "impersonate": impersonate,
                 "forceGenericExtractor": force_generic_extractor,
+                "format": opts.get("format"),
             }
         )
 
@@ -1158,6 +1235,12 @@ def _perform_attempts(
                 )
                 if "entries" in info and info["entries"]:
                     info = info["entries"][0]
+                if download:
+                    downloaded_file = _resolve_downloaded_file(info, output_dir)
+                    if not downloaded_file or not os.path.exists(downloaded_file):
+                        raise RuntimeError("Download finished but output file could not be found")
+                    if os.path.getsize(downloaded_file) <= 0:
+                        raise RuntimeError("The downloaded file is empty")
                 _set_runtime_diag("lastExtractorKey", info.get("extractor_key"))
                 if impersonate:
                     _set_runtime_diag("impersonationResolvedTargetLast", impersonate)
@@ -1208,9 +1291,11 @@ def _perform_attempts(
                     debug_attempt_id=retry_id,
                     debug_logging=debug_logging,
                 )
-                retry_opts["format"] = _build_format_selector(max_file_size_mb, merge_capable)
+                retry_opts["format"] = format_override or _build_format_selector(max_file_size_mb, merge_capable)
                 if merge_capable:
                     retry_opts["merge_output_format"] = "mp4"
+                if ydl_overrides:
+                    retry_opts.update(ydl_overrides)
                 if output_dir:
                     retry_opts["outtmpl"] = os.path.join(output_dir, "%(title)s.%(ext)s")
                 if progress_hooks:
@@ -1290,6 +1375,31 @@ def _perform_attempts(
 def _sanitize_filename(name: str) -> str:
     name = re.sub(r"[^a-zA-Z0-9._-]", "_", name).strip("._")
     return name[:200] if name else "download"
+
+
+def _resolve_downloaded_file(info: Dict[str, Any], output_dir: Optional[str]) -> Optional[str]:
+    downloaded_file = None
+    req = info.get("requested_downloads") or []
+    for item in reversed(req):
+        fp = item.get("filepath")
+        if fp and os.path.exists(fp):
+            downloaded_file = fp
+            break
+
+    if not downloaded_file:
+        fallback = info.get("filepath") or info.get("_filename")
+        if fallback and os.path.exists(fallback):
+            downloaded_file = fallback
+
+    if not downloaded_file and output_dir:
+        candidate = os.path.join(output_dir, f"{_sanitize_filename(info.get('title') or 'download')}.{info.get('ext') or 'mp4'}")
+        base, _ = os.path.splitext(candidate)
+        mp4_candidate = f"{base}.mp4"
+        downloaded_file = mp4_candidate if os.path.exists(mp4_candidate) else candidate
+
+    if downloaded_file and os.path.exists(downloaded_file):
+        return downloaded_file
+    return None
 
 
 def _normalize_video_timestamp(file_path: str, ffmpeg_location: Optional[str], debug_logging: bool = False) -> bool:
@@ -1402,7 +1512,7 @@ def preflight(
     url: str,
     cookies_dir: str,
     cookie_profile: Optional[str] = None,
-    max_file_size_mb: int = 2048,
+    max_file_size_mb: int = 0,
     ffmpeg_path: Optional[str] = None,
     cookie_file: Optional[str] = None,
     force_no_cookie: bool = False,
@@ -1478,7 +1588,7 @@ def preflight(
             )
 
         size_mb, _ = _estimate_file_size_mb(info)
-        if size_mb > 0 and size_mb > max_file_size_mb:
+        if max_file_size_mb > 0 and size_mb > 0 and size_mb > max_file_size_mb:
             return _result(
                 False,
                 "FILE_TOO_LARGE",
@@ -1518,7 +1628,7 @@ def run_download(
     output_dir: str,
     cookies_dir: str,
     cookie_profile: Optional[str] = None,
-    max_file_size_mb: int = 2048,
+    max_file_size_mb: int = 0,
     cancel_flag_path: Optional[str] = None,
     ffmpeg_path: Optional[str] = None,
     cookie_file: Optional[str] = None,
@@ -1610,7 +1720,7 @@ def run_download(
             )
 
         estimated_mb, _ = _estimate_file_size_mb(info)
-        if estimated_mb > 0 and estimated_mb > max_file_size_mb:
+        if max_file_size_mb > 0 and estimated_mb > 0 and estimated_mb > max_file_size_mb:
             return _result(
                 False,
                 "FILE_TOO_LARGE",
@@ -1648,26 +1758,8 @@ def run_download(
         if _is_cancel_requested(cancel_flag_path):
             return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
 
-        downloaded_file = None
-        req = info.get("requested_downloads") or []
-        for item in reversed(req):
-            fp = item.get("filepath")
-            if fp and os.path.exists(fp):
-                downloaded_file = fp
-                break
-
+        downloaded_file = _resolve_downloaded_file(info, output_dir)
         if not downloaded_file:
-            fallback = info.get("filepath") or info.get("_filename")
-            if fallback and os.path.exists(fallback):
-                downloaded_file = fallback
-
-        if not downloaded_file:
-            candidate = os.path.join(output_dir, f"{_sanitize_filename(info.get('title') or 'download')}.{info.get('ext') or 'mp4'}")
-            base, _ = os.path.splitext(candidate)
-            mp4_candidate = f"{base}.mp4"
-            downloaded_file = mp4_candidate if os.path.exists(mp4_candidate) else candidate
-
-        if not downloaded_file or not os.path.exists(downloaded_file):
             return _result(False, "FILE_NOT_FOUND", "Download finished but output file could not be found")
 
         basename = _sanitize_filename(os.path.basename(downloaded_file))

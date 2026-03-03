@@ -19,8 +19,7 @@ const POLLING_INTERVALS = {
   slow: 6000,
 };
 
-const MAX_POLLING_ATTEMPTS = 120;
-const DEFAULT_MAX_FILE_SIZE_MB = 2048;
+const DEFAULT_MAX_FILE_SIZE_MB = 0;
 
 function extractErrorCode(error: unknown): ApiErrorCode {
   if (!(error instanceof Error)) {
@@ -111,9 +110,8 @@ export async function pollTaskStatus(
   onProgress?: (status: TaskStatusResponse) => void
 ): Promise<TaskStatusResponse> {
   const startTime = Date.now();
-  let attempts = 0;
 
-  while (attempts < MAX_POLLING_ATTEMPTS) {
+  while (true) {
     const status = await checkTaskStatus(taskId);
     onProgress?.(status);
 
@@ -131,10 +129,7 @@ export async function pollTaskStatus(
     const elapsed = Date.now() - startTime;
     const interval = getPollingInterval(elapsed);
     await new Promise((resolve) => setTimeout(resolve, interval));
-    attempts += 1;
   }
-
-  throw new Error(getErrorMessage('UNKNOWN_ERROR'));
 }
 
 export async function downloadMedia(

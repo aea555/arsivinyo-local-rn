@@ -23,6 +23,12 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         self.assertIn("bestvideo+bestaudio", merged_selector)
         self.assertIn("acodec!=none", progressive_selector)
 
+    def test_build_format_selector_unlimited(self):
+        merged_selector = ld._build_format_selector(0, True)
+        progressive_selector = ld._build_format_selector(0, False)
+        self.assertEqual(merged_selector, "bestvideo+bestaudio/best")
+        self.assertEqual(progressive_selector, "best[acodec!=none][vcodec!=none]/best")
+
     def test_failure_classification(self):
         code, _ = ld._classify_exception(Exception("HTTP Error 403: Blocked"), "DOWNLOAD_FAILED")
         self.assertEqual(code, "SITE_BLOCKED_403")
