@@ -6,12 +6,13 @@ from urllib.parse import urlparse
 
 import yt_dlp
 
-SUPPORTED_PLATFORMS = {
+COOKIE_PLATFORMS = {
     "twitter": ["twitter.com", "x.com"],
     "instagram": ["instagram.com"],
     "facebook": ["facebook.com", "fb.watch"],
     "reddit": ["reddit.com", "v.redd.it"],
     "youtube": ["youtube.com", "youtu.be"],
+    "tiktok": ["tiktok.com", "vm.tiktok.com"],
 }
 
 
@@ -25,20 +26,23 @@ def _result(success: bool, code: str, message: Optional[str] = None, **kwargs: A
     return json.dumps(payload)
 
 
-def _validate_supported_platform(url: str) -> str:
+def _detect_cookie_platform(url: str) -> Optional[str]:
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
     if domain.startswith("www."):
         domain = domain[4:]
 
-    for platform, domains in SUPPORTED_PLATFORMS.items():
+    for platform, domains in COOKIE_PLATFORMS.items():
         if any(d in domain for d in domains):
             return platform
 
-    raise ValueError("Bu platform desteklenmiyor. Desteklenen platformlar: Twitter, Instagram, Facebook, Reddit, Youtube")
+    return None
 
 
-def _resolve_cookie_file(cookies_dir: str, platform: str, cookie_profile: Optional[str]) -> Optional[str]:
+def _resolve_cookie_file(cookies_dir: str, platform: Optional[str], cookie_profile: Optional[str]) -> Optional[str]:
+    if not platform:
+        return None
+
     platform_dir = os.path.join(cookies_dir, platform)
     if not os.path.isdir(platform_dir):
         return None
@@ -94,6 +98,8 @@ def _common_ydl_opts(cookie_file: Optional[str], ffmpeg_path: Optional[str]) -> 
         "no_warnings": True,
         "noplaylist": True,
         "no_cache_dir": True,
+        # Keep output file timestamps at download time so gallery apps sort as latest.
+        "updatetime": False,
     }
 
     if cookie_file:
@@ -123,7 +129,7 @@ def preflight(
     ffmpeg_path: Optional[str] = None,
 ) -> str:
     try:
-        platform = _validate_supported_platform(url)
+        platform = _detect_cookie_platform(url)
         cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
 
         opts = _common_ydl_opts(cookie_file, ffmpeg_path)
@@ -155,8 +161,6 @@ def preflight(
             estimated_size_mb=round(size_mb, 1) if size_mb > 0 else None,
             platform=platform,
         )
-    except ValueError as exc:
-        return _result(False, "UNSUPPORTED_PLATFORM", str(exc))
     except Exception as exc:
         return _result(False, "PREFLIGHT_FAILED", str(exc))
 
@@ -174,7 +178,7 @@ def run_download(
         if _is_cancel_requested(cancel_flag_path):
             return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
 
-        platform = _validate_supported_platform(url)
+        platform = _detect_cookie_platform(url)
         cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
 
         os.makedirs(output_dir, exist_ok=True)
@@ -251,6 +255,11 @@ def run_download(
             if downloaded_file != final_path:
                 os.replace(downloaded_file, final_path)
 
+            try:
+                os.utime(final_path, None)
+            except OSError:
+                pass
+
             size_mb = os.path.getsize(final_path) / (1024 * 1024)
             return _result(
                 True,
@@ -260,8 +269,6 @@ def run_download(
                 filename=basename,
                 size_mb=round(size_mb, 2),
             )
-    except ValueError as exc:
-        return _result(False, "UNSUPPORTED_PLATFORM", str(exc))
     except Exception as exc:
         if "DOWNLOAD_CANCELLED" in str(exc):
             return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")

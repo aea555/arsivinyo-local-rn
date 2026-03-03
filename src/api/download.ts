@@ -11,7 +11,7 @@ import type {
   DownloadStartResponse,
   TaskStatusResponse,
 } from './types';
-import { getDefaultCookieProfile, isSupportedPlatformUrl, isValidUrl, getPlatformFromUrl } from '../services';
+import { getDefaultCookieProfile, isValidUrl, getPlatformFromUrl } from '../services';
 
 const POLLING_INTERVALS = {
   initial: 1500,
@@ -114,16 +114,6 @@ export async function downloadMedia(
 ): Promise<{ taskId: string; localPath: string; filename: string }> {
   if (!isValidUrl(url)) {
     const errorCode = 'INVALID_URL' as ApiErrorCode;
-    onProgressChange?.({
-      state: 'error',
-      errorCode,
-      errorMessage: getErrorMessage(errorCode),
-    });
-    throw new Error(getErrorMessage(errorCode));
-  }
-
-  if (!isSupportedPlatformUrl(url)) {
-    const errorCode = 'UNSUPPORTED_PLATFORM' as ApiErrorCode;
     onProgressChange?.({
       state: 'error',
       errorCode,

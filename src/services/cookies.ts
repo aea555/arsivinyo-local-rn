@@ -1,7 +1,7 @@
-import ExpoFileSystem from 'expo-file-system/build/ExpoFileSystem';
+import { File } from 'expo-file-system';
 import LocalDownloaderModule, { type LocalCookieProfile, type LocalPlatform } from '../native/localDownloader';
 
-export const LOCAL_COOKIE_PLATFORMS: LocalPlatform[] = ['youtube', 'instagram', 'facebook', 'twitter', 'reddit'];
+export const LOCAL_COOKIE_PLATFORMS: LocalPlatform[] = ['youtube', 'instagram', 'facebook', 'twitter', 'reddit', 'tiktok'];
 export type CookiePlatform = LocalPlatform;
 export type CookieProfile = LocalCookieProfile;
 
@@ -14,14 +14,20 @@ export async function importCookieProfile(platform: CookiePlatform): Promise<{
   profileName?: string;
   path?: string;
 }> {
-  let pickedFile;
+  let pickedUri: string | undefined;
   try {
-    pickedFile = await ExpoFileSystem.pickFileAsync(undefined, 'text/*');
+    const fileApi = File as unknown as { pickFileAsync: (initialUri?: string, mimeType?: string) => Promise<{ uri: string }> };
+    const pickedFile = await fileApi.pickFileAsync(undefined, 'text/*');
+    pickedUri = pickedFile?.uri;
   } catch {
     return { imported: false };
   }
 
-  const inferredName = ((pickedFile.uri.split('/').pop() || `profile_${Date.now()}`))
+  if (!pickedUri) {
+    return { imported: false };
+  }
+
+  const inferredName = ((pickedUri.split('/').pop() || `profile_${Date.now()}`))
     .replace(/\.[^.]+$/, '')
     .trim()
     .toLowerCase()
@@ -29,7 +35,7 @@ export async function importCookieProfile(platform: CookiePlatform): Promise<{
 
   const imported = await LocalDownloaderModule.importCookie({
     platform,
-    uri: pickedFile.uri,
+    uri: pickedUri,
     profileName: inferredName,
   });
 

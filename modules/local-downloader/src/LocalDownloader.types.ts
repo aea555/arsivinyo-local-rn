@@ -1,4 +1,4 @@
-export type LocalPlatform = 'youtube' | 'instagram' | 'facebook' | 'twitter' | 'reddit';
+export type LocalPlatform = 'youtube' | 'instagram' | 'facebook' | 'twitter' | 'reddit' | 'tiktok';
 
 export interface LocalDownloadStartInput {
   url: string;

@@ -51,17 +51,31 @@ function upsertTaggedInSection(contents, sectionRegex, block, tag, sectionName) 
 }
 
 function ensureChaquopyApplyPlugin(contents) {
-  if (contents.includes('apply plugin: "com.chaquo.python"')) {
+  if (
+    contents.includes('apply plugin: "com.chaquo.python"') ||
+    contents.includes("apply plugin: 'com.chaquo.python'") ||
+    contents.includes('id("com.chaquo.python")') ||
+    contents.includes("id 'com.chaquo.python'")
+  ) {
     return contents;
   }
 
-  const replaced = contents.replace(
-    /apply plugin: "com\.android\.application"/,
-    'apply plugin: "com.android.application"\napply plugin: "com.chaquo.python"'
+  let replaced = contents.replace(
+    /apply plugin:\s*["']com\.android\.application["']/,
+    (match) => `${match}\napply plugin: "com.chaquo.python"`
+  );
+
+  if (replaced !== contents) {
+    return replaced;
+  }
+
+  replaced = contents.replace(
+    /(plugins\s*\{[\s\S]*?id\s*\(?["']com\.android\.application["']\)?[\s\S]*?)(\n\})/m,
+    (_match, beforeEnd, closing) => `${beforeEnd}\n    id("com.chaquo.python")${closing}`
   );
 
   if (replaced === contents) {
-    throw new Error('[local-downloader plugin] Could not find android application plugin line in app/build.gradle');
+    throw new Error('[local-downloader plugin] Could not find a supported android application plugin anchor in app/build.gradle');
   }
 
   return replaced;
@@ -71,7 +85,8 @@ function cleanLegacyInjectedBlocks(contents) {
   let next = contents;
 
   next = next.replace(/\npython\s*\{[\s\S]*?yt-dlp==2025\.01\.12[\s\S]*?\n\}\n?/g, '\n');
-  next = next.replace(/\nandroid\s*\{\s*\n\s*sourceSets\s*\{[\s\S]*?python\.srcDir\s+"\.\.\/\.\.\/modules\/local-downloader\/android\/src\/main\/python"[\s\S]*?\n\s*\}\s*\n\}\n?/g, '\n');
+  next = next.replace(/\nchaquopy\s*\{[\s\S]*?yt-dlp==2025\.01\.12[\s\S]*?\n\}\n?/g, '\n');
+  next = next.replace(/\nandroid\s*\{\s*\n\s*sourceSets\s*\{[\s\S]*?python\.srcDir\s+\(?["']\.\.\/\.\.\/modules\/local-downloader\/android\/src\/main\/python["']\)?[\s\S]*?\n\s*\}\s*\n\}\n?/g, '\n');
 
   return next;
 }
@@ -115,9 +130,9 @@ function addAppGradleChanges(contents) {
 
   next = ensureChaquopyApplyPlugin(next);
 
-  const pythonBlock = `${TAGS.pythonConfig.begin}\npython {\n    version "3.11"\n    pip {\n        install "yt-dlp==2025.01.12"\n        install "tenacity==9.0.0"\n    }\n}\n${TAGS.pythonConfig.end}`;
+  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("yt-dlp==2025.01.12")\n            install("tenacity==9.0.0")\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
 
-  const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            python.srcDir "../../modules/local-downloader/android/src/main/python"\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
+  const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
 
   next = stripTaggedBlock(next, TAGS.pythonConfig);
   next = stripTaggedBlock(next, TAGS.sourceSetConfig);

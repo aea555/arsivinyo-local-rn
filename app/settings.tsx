@@ -32,13 +32,11 @@ export default function SettingsScreen() {
     const { colors } = useTheme();
     const router = useRouter();
 
-    const [cookieSummary, setCookieSummary] = useState<Record<CookiePlatform, { count: number; defaultProfile: string | null }>>({
-        youtube: { count: 0, defaultProfile: null },
-        instagram: { count: 0, defaultProfile: null },
-        facebook: { count: 0, defaultProfile: null },
-        twitter: { count: 0, defaultProfile: null },
-        reddit: { count: 0, defaultProfile: null },
-    });
+    const [cookieSummary, setCookieSummary] = useState<Record<CookiePlatform, { count: number; defaultProfile: string | null }>>(
+        Object.fromEntries(
+            LOCAL_COOKIE_PLATFORMS.map((platform) => [platform, { count: 0, defaultProfile: null }])
+        ) as Record<CookiePlatform, { count: number; defaultProfile: string | null }>
+    );
     const [selectorPlatform, setSelectorPlatform] = useState<CookiePlatform | null>(null);
     const [selectorProfiles, setSelectorProfiles] = useState<CookieProfile[]>([]);
     const [selectorDefaultProfile, setSelectorDefaultProfile] = useState<string | null>(null);

@@ -47,7 +47,8 @@
             "instagram": "Instagram cookie dosyaları",
             "facebook": "Facebook cookie dosyaları",
             "twitter": "X / Twitter cookie dosyaları",
-            "reddit": "Reddit cookie dosyaları"
+            "reddit": "Reddit cookie dosyaları",
+            "tiktok": "TikTok cookie dosyaları"
         },
         "cookiePlatformHint": "Profil: {{count}} • Varsayılan: {{defaultProfile}}",
         "noDefaultCookie": "yok",

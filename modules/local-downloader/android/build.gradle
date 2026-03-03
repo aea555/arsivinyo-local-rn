@@ -10,11 +10,12 @@ android {
   defaultConfig {
     minSdkVersion rootProject.ext.minSdkVersion
     targetSdkVersion rootProject.ext.targetSdkVersion
+    versionCode 1
+    versionName "1.0.0"
   }
 }
 
 dependencies {
-  implementation 'expo.modules:core'
   implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
-  implementation "com.chaquo.python:runtime:15.0.1"
+  compileOnly "com.chaquo.python.runtime:chaquopy_java:15.0.1"
 }

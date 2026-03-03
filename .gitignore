@@ -47,3 +47,8 @@ app-example
 
 local.properties.*
 ffmpeg-kit-*
+
+# local-downloader generated artifacts
+modules/local-downloader/android/build/
+modules/local-downloader/android/src/main/python/__pycache__/
+modules/local-downloader/android/src/main/python/**/*.pyc

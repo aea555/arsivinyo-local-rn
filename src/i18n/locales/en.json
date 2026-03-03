@@ -47,7 +47,8 @@
             "instagram": "Instagram cookies",
             "facebook": "Facebook cookies",
             "twitter": "X / Twitter cookies",
-            "reddit": "Reddit cookies"
+            "reddit": "Reddit cookies",
+            "tiktok": "TikTok cookies"
         },
         "cookiePlatformHint": "Profiles: {{count}} • Default: {{defaultProfile}}",
         "noDefaultCookie": "none",

@@ -2,7 +2,7 @@ import * as Clipboard from 'expo-clipboard';
 import { SUPPORTED_PLATFORM_HOSTS, type SupportedPlatform } from '../constants/supportedPlatforms';
 
 /**
- * Regex for supported social media platforms (Twitter, Instagram, Facebook, Reddit only)
+ * Known platform hostnames used for optional cookie-profile matching.
  */
 const SUPPORTED_HOSTS = Object.values(SUPPORTED_PLATFORM_HOSTS).flat();
 
@@ -33,7 +33,7 @@ export function isValidUrl(text: string): boolean {
 }
 
 /**
- * Check if URL is from a supported social media platform
+ * Check if URL matches one of the known platform hostnames.
  */
 export function isSupportedPlatformUrl(url: string): boolean {
     try {
