@@ -18,6 +18,11 @@ type DiagnosticsState = {
   ffmpegVersion?: string | null;
   ffmpegExists: boolean;
   ffmpegExecutable?: boolean;
+  secureCookieStoreEnabled: boolean;
+  cookieEncryptionVersion: string;
+  cookieProfilesEncryptedCount: number;
+  cookieLegacyPlaintextCount: number;
+  cookieMigrationStatus: 'not_needed' | 'migrated' | 'partial' | 'failed';
   activeTaskId: string | null;
   lastErrors: string[];
   cookieCounts: Record<string, number>;
@@ -32,6 +37,11 @@ const initialState: DiagnosticsState = {
   ffmpegVersion: null,
   ffmpegExists: false,
   ffmpegExecutable: false,
+  secureCookieStoreEnabled: false,
+  cookieEncryptionVersion: 'v1',
+  cookieProfilesEncryptedCount: 0,
+  cookieLegacyPlaintextCount: 0,
+  cookieMigrationStatus: 'not_needed',
   activeTaskId: null,
   lastErrors: [],
   cookieCounts: {},
@@ -63,6 +73,11 @@ export default function DiagnosticsScreen() {
       ffmpegVersion: diag.ffmpegVersion,
       ffmpegExists: diag.ffmpegExists,
       ffmpegExecutable: diag.ffmpegExecutable,
+      secureCookieStoreEnabled: diag.secureCookieStoreEnabled,
+      cookieEncryptionVersion: diag.cookieEncryptionVersion,
+      cookieProfilesEncryptedCount: diag.cookieProfilesEncryptedCount,
+      cookieLegacyPlaintextCount: diag.cookieLegacyPlaintextCount,
+      cookieMigrationStatus: diag.cookieMigrationStatus,
       activeTaskId: diag.activeTaskId,
       lastErrors: diag.lastErrors,
       cookieCounts: Object.fromEntries(cookieCounts),
@@ -100,6 +115,11 @@ export default function DiagnosticsScreen() {
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg version: {state.ffmpegVersion ?? 'unknown'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg available: {state.ffmpegExists ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg executable: {state.ffmpegExecutable ? 'yes' : 'no'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Secure cookie store: {state.secureCookieStoreEnabled ? 'yes' : 'no'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Cookie encryption: {state.cookieEncryptionVersion}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Encrypted cookie profiles: {state.cookieProfilesEncryptedCount}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Legacy plaintext cookies: {state.cookieLegacyPlaintextCount}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Cookie migration status: {state.cookieMigrationStatus}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Active task: {state.activeTaskId ?? 'none'}</Text>
         </View>
 

@@ -2,6 +2,7 @@ export type LocalPlatform = 'youtube' | 'instagram' | 'facebook' | 'twitter' | '
 
 export interface LocalDownloadStartInput {
   url: string;
+  cookiePlatform?: LocalPlatform;
   cookieProfile?: string;
   maxFileSizeMb?: number;
 }
@@ -46,6 +47,11 @@ export interface LocalDiagnostics {
   ffmpegVersion?: string | null;
   ffmpegExists: boolean;
   ffmpegExecutable?: boolean;
+  secureCookieStoreEnabled: boolean;
+  cookieEncryptionVersion: string;
+  cookieProfilesEncryptedCount: number;
+  cookieLegacyPlaintextCount: number;
+  cookieMigrationStatus: 'not_needed' | 'migrated' | 'partial' | 'failed';
   activeTaskId: string | null;
   lastErrors: string[];
 }

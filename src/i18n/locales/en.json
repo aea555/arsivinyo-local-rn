@@ -96,6 +96,10 @@
         "UNKNOWN_ERROR": "Unknown error",
         "UNSUPPORTED_PLATFORM": "This platform is not supported. Supported: Twitter, Instagram, Facebook, Reddit, Youtube",
         "SERVER_ERROR": "Unexpected error. Please try again later.",
-        "NETWORK_ERROR": "Connection error. Check your internet."
+        "NETWORK_ERROR": "Connection error. Check your internet.",
+        "COOKIE_STORE_ENCRYPT_FAILED": "Failed to securely store cookie profile.",
+        "COOKIE_STORE_DECRYPT_FAILED": "Failed to decrypt cookie profile.",
+        "COOKIE_MIGRATION_FAILED": "Failed to migrate legacy cookie profiles securely.",
+        "COOKIE_PROFILE_NOT_FOUND": "Selected cookie profile was not found."
     }
 }

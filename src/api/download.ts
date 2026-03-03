@@ -38,6 +38,10 @@ function extractErrorCode(error: unknown): ApiErrorCode {
     'TASK_CANCELLED',
     'TASK_CANCEL_TIMEOUT',
     'PROCESS_RESTARTED',
+    'COOKIE_STORE_ENCRYPT_FAILED',
+    'COOKIE_STORE_DECRYPT_FAILED',
+    'COOKIE_MIGRATION_FAILED',
+    'COOKIE_PROFILE_NOT_FOUND',
     'PREFLIGHT_FAILED',
     'INTERNAL_ERROR',
     'FILE_NOT_FOUND',
@@ -61,6 +65,7 @@ export async function startDownload(url: string, maxFileSizeMb: number = DEFAULT
 
   const result = await startLocalDownload({
     url,
+    cookiePlatform: platform ?? undefined,
     cookieProfile: cookieProfile ?? undefined,
     maxFileSizeMb,
   });
@@ -96,7 +101,9 @@ export async function pollTaskStatus(
 
     if (status.status === 'FAILURE' || status.status === 'CANCELLED') {
       const code = (status.errorCode || 'INTERNAL_ERROR') as ApiErrorCode;
-      throw new Error(getErrorMessage(code));
+      const translated = getErrorMessage(code);
+      const details = status.errorMessage?.trim();
+      throw new Error(details ? `${translated} (${details})` : translated);
     }
 
     const elapsed = Date.now() - startTime;

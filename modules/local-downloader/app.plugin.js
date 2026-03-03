@@ -1,6 +1,7 @@
 const { createRunOncePlugin, withAppBuildGradle, withProjectBuildGradle } = require('expo/config-plugins');
 
 const CHAQUOPY_VERSION = '15.0.1';
+const YT_DLP_VERSION = '2026.02.21';
 
 const TAGS = {
   buildscriptRepo: {
@@ -84,8 +85,8 @@ function ensureChaquopyApplyPlugin(contents) {
 function cleanLegacyInjectedBlocks(contents) {
   let next = contents;
 
-  next = next.replace(/\npython\s*\{[\s\S]*?yt-dlp==2025\.01\.12[\s\S]*?\n\}\n?/g, '\n');
-  next = next.replace(/\nchaquopy\s*\{[\s\S]*?yt-dlp==2025\.01\.12[\s\S]*?\n\}\n?/g, '\n');
+  next = next.replace(/\npython\s*\{[\s\S]*?yt-dlp==\d{4}\.\d{2}\.\d{2}[\s\S]*?\n\}\n?/g, '\n');
+  next = next.replace(/\nchaquopy\s*\{[\s\S]*?yt-dlp==\d{4}\.\d{2}\.\d{2}[\s\S]*?\n\}\n?/g, '\n');
   next = next.replace(/\nandroid\s*\{\s*\n\s*sourceSets\s*\{[\s\S]*?python\.srcDir\s+\(?["']\.\.\/\.\.\/modules\/local-downloader\/android\/src\/main\/python["']\)?[\s\S]*?\n\s*\}\s*\n\}\n?/g, '\n');
 
   return next;
@@ -130,7 +131,7 @@ function addAppGradleChanges(contents) {
 
   next = ensureChaquopyApplyPlugin(next);
 
-  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("yt-dlp==2025.01.12")\n            install("tenacity==9.0.0")\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
+  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("yt-dlp==${YT_DLP_VERSION}")\n            install("tenacity==9.0.0")\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
 
   const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
 

@@ -127,15 +127,19 @@ def preflight(
     cookie_profile: Optional[str] = None,
     max_file_size_mb: int = 2048,
     ffmpeg_path: Optional[str] = None,
+    cookie_file: Optional[str] = None,
+    force_no_cookie: bool = False,
 ) -> str:
     try:
+        selected_cookie_file = cookie_file if cookie_file and os.path.exists(cookie_file) else None
         platform = _detect_cookie_platform(url)
-        cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
+        if not selected_cookie_file and not force_no_cookie:
+            selected_cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
 
-        opts = _common_ydl_opts(cookie_file, ffmpeg_path)
+        opts = _common_ydl_opts(selected_cookie_file, ffmpeg_path)
         opts["extractor_args"] = {
             "youtube": {
-                "player_client": ["android", "ios", "web"],
+                "player_client": ["android", "ios"],
             }
         }
 
@@ -173,17 +177,21 @@ def run_download(
     max_file_size_mb: int = 2048,
     cancel_flag_path: Optional[str] = None,
     ffmpeg_path: Optional[str] = None,
+    cookie_file: Optional[str] = None,
+    force_no_cookie: bool = False,
 ) -> str:
     try:
         if _is_cancel_requested(cancel_flag_path):
             return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
 
         platform = _detect_cookie_platform(url)
-        cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
+        selected_cookie_file = cookie_file if cookie_file and os.path.exists(cookie_file) else None
+        if not selected_cookie_file and not force_no_cookie:
+            selected_cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
 
         os.makedirs(output_dir, exist_ok=True)
 
-        opts = _common_ydl_opts(cookie_file, ffmpeg_path)
+        opts = _common_ydl_opts(selected_cookie_file, ffmpeg_path)
         opts.update(
             {
                 "format": _build_format_selector(max_file_size_mb),
@@ -191,7 +199,7 @@ def run_download(
                 "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
                 "extractor_args": {
                     "youtube": {
-                        "player_client": ["android", "ios", "web"],
+                        "player_client": ["android", "ios"],
                     }
                 },
             }
