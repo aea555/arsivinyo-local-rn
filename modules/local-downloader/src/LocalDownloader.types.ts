@@ -81,6 +81,33 @@ export interface LocalDiagnostics {
   ytDlpVersion: string;
   ytDlpAvailable: boolean;
   pythonReady: boolean;
+  normalizedUrlLast?: string | null;
+  attemptTraceCount?: number;
+  attemptTrace?: Array<{
+    timeMs?: number;
+    phase?: string;
+    attemptId?: string;
+    strategy?: string;
+    status?: string;
+    platform?: string;
+    cookieUsed?: boolean;
+    retryIndex?: number;
+    extractorKey?: string;
+    errorCode?: string;
+    errorMessage?: string;
+    impersonate?: string;
+  }>;
+  lastExtractorKey?: string | null;
+  lastRawYtDlpError?: string | null;
+  lastCookieCheck?: {
+    platform?: string;
+    hasCookieFile: boolean;
+    domainCoverage: string[];
+    unexpiredCount: number;
+  } | null;
+  ytDlpVersionAgeDays?: number | null;
+  platformStrategyLast?: string | null;
+  impersonationRuntimeAvailable?: boolean | null;
   ffmpegPath: string | null;
   ffprobePath: string | null;
   ffmpegAbi?: string | null;

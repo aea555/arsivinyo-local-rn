@@ -13,6 +13,19 @@ type DiagnosticsState = {
   ytDlpVersion: string;
   ytDlpAvailable: boolean;
   pythonReady: boolean;
+  normalizedUrlLast?: string | null;
+  attemptTraceCount?: number;
+  lastExtractorKey?: string | null;
+  lastRawYtDlpError?: string | null;
+  lastCookieCheck?: {
+    platform?: string;
+    hasCookieFile: boolean;
+    domainCoverage: string[];
+    unexpiredCount: number;
+  } | null;
+  ytDlpVersionAgeDays?: number | null;
+  platformStrategyLast?: string | null;
+  impersonationRuntimeAvailable?: boolean | null;
   ffmpegPath: string | null;
   ffprobePath: string | null;
   ffmpegAbi?: string | null;
@@ -50,6 +63,14 @@ const initialState: DiagnosticsState = {
   ytDlpVersion: 'unknown',
   ytDlpAvailable: false,
   pythonReady: false,
+  normalizedUrlLast: null,
+  attemptTraceCount: 0,
+  lastExtractorKey: null,
+  lastRawYtDlpError: null,
+  lastCookieCheck: null,
+  ytDlpVersionAgeDays: null,
+  platformStrategyLast: null,
+  impersonationRuntimeAvailable: null,
   ffmpegPath: null,
   ffprobePath: null,
   ffmpegAbi: null,
@@ -100,6 +121,14 @@ export default function DiagnosticsScreen() {
       ytDlpVersion: diag.ytDlpVersion,
       ytDlpAvailable: diag.ytDlpAvailable,
       pythonReady: diag.pythonReady,
+      normalizedUrlLast: diag.normalizedUrlLast ?? null,
+      attemptTraceCount: diag.attemptTraceCount ?? 0,
+      lastExtractorKey: diag.lastExtractorKey ?? null,
+      lastRawYtDlpError: diag.lastRawYtDlpError ?? null,
+      lastCookieCheck: diag.lastCookieCheck ?? null,
+      ytDlpVersionAgeDays: diag.ytDlpVersionAgeDays ?? null,
+      platformStrategyLast: diag.platformStrategyLast ?? null,
+      impersonationRuntimeAvailable: diag.impersonationRuntimeAvailable ?? null,
       ffmpegPath: diag.ffmpegPath,
       ffprobePath: diag.ffprobePath,
       ffmpegAbi: diag.ffmpegAbi,
@@ -155,7 +184,22 @@ export default function DiagnosticsScreen() {
           <Text style={[styles.title, { color: colors.text }]}>Runtime</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Python ready: {state.pythonReady ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp: {state.ytDlpVersion}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp age days: {state.ytDlpVersionAgeDays ?? 'unknown'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp import: {state.ytDlpAvailable ? 'ok' : 'failed'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Normalized URL (last): {state.normalizedUrlLast ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Attempt traces: {state.attemptTraceCount ?? 0}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Strategy (last): {state.platformStrategyLast ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>
+            Impersonation runtime: {state.impersonationRuntimeAvailable == null ? 'unknown' : state.impersonationRuntimeAvailable ? 'available' : 'unavailable'}
+          </Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Extractor key (last): {state.lastExtractorKey ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Raw yt-dlp error (last): {state.lastRawYtDlpError ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>
+            Cookie check (last): {state.lastCookieCheck
+              ? `${state.lastCookieCheck.platform ?? 'n/a'} | has=${state.lastCookieCheck.hasCookieFile ? 'yes' : 'no'} | ` +
+                `unexpired=${state.lastCookieCheck.unexpiredCount} | domains=${state.lastCookieCheck.domainCoverage.join(', ') || 'none'}`
+              : 'none'}
+          </Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg path: {state.ffmpegPath ?? 'not bundled'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFprobe path: {state.ffprobePath ?? 'not bundled'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>FFmpeg ABI: {state.ffmpegAbi ?? 'unknown'}</Text>

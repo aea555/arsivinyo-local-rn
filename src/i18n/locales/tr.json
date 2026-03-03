@@ -132,6 +132,13 @@
         "INVALID_CUSTOM_DOMAIN": "Geçersiz özel alan adı formatı.",
         "CUSTOM_COOKIE_NO_DOMAIN_DETECTED": "Cookie dosyasında alan adı bulunamadı.",
         "CUSTOM_COOKIE_DOMAIN_NOT_FOUND": "Özel cookie alanı bulunamadı.",
-        "CUSTOM_COOKIE_PROFILE_NOT_FOUND": "Bu alan için özel cookie profili bulunamadı."
+        "CUSTOM_COOKIE_PROFILE_NOT_FOUND": "Bu alan için özel cookie profili bulunamadı.",
+        "REDDIT_SHARE_URL_RESOLUTION_FAILED": "Reddit paylaşım bağlantısı çözümlenemedi.",
+        "REDDIT_EXTRACTOR_ROUTE_FAILED": "Bu URL için Reddit çıkarıcı rotası başarısız oldu.",
+        "TIKTOK_API_STATUS_ZERO": "TikTok API bu video için status code 0 döndürdü.",
+        "TIKTOK_EXTRACTOR_UNSTABLE": "TikTok çıkarıcısı şu anda bu video için kararsız.",
+        "COOKIE_DOMAIN_MISMATCH": "Cookie dosyasındaki alanlar bu platformla eşleşmiyor.",
+        "COOKIE_EMPTY_OR_EXPIRED": "Cookie dosyasında geçerli ve süresi dolmamış kayıt yok.",
+        "IMPERSONATION_RUNTIME_UNAVAILABLE": "Bu sürümde gerekli impersonation hedefi mevcut değil."
     }
 }

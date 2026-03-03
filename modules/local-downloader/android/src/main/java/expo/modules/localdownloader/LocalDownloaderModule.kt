@@ -202,15 +202,6 @@ class LocalDownloaderModule : Module() {
           var effectiveCookiePath = runtimeCookiePath
           debug("Task[$taskId] runtimeCookiePath=${runtimeCookiePath ?: "none"}")
 
-          if (effectivePlatform == "reddit" && effectiveCookiePath == null) {
-            val msg = "Reddit download requires a valid Reddit cookie profile in local mode."
-            debug("Task[$taskId] reddit cookie-first policy blocked anonymous attempt")
-            updateStatus(taskId, "FAILURE", null, null, null, "REDDIT_COOKIE_REQUIRED", msg)
-            emitProgress(taskId, "FAILURE", "error", msg)
-            addError("REDDIT_COOKIE_REQUIRED: $msg")
-            return@runCatching
-          }
-
           val ffmpegInfo = getOrResolveFfmpegInfo(forceRefresh = true)
           debug("Task[$taskId] ffmpeg info before preflight: ${summarizeFfmpegInfo(ffmpegInfo)}")
           var preflightResult = callPythonPreflight(
@@ -883,6 +874,15 @@ class LocalDownloaderModule : Module() {
       var ytDlpVersion = "unknown"
       var ytDlpAvailable = false
       var pythonReady = Python.isStarted()
+      var normalizedUrlLast: String? = null
+      var attemptTraceCount = 0
+      var attemptTrace: List<Map<String, Any?>> = emptyList()
+      var lastExtractorKey: String? = null
+      var lastRawYtDlpError: String? = null
+      var platformStrategyLast: String? = null
+      var ytDlpVersionAgeDays: Int? = null
+      var lastCookieCheck: Map<String, Any?>? = null
+      var impersonationRuntimeAvailable: Boolean? = null
 
       runCatching {
         ensurePythonReady()
@@ -890,6 +890,53 @@ class LocalDownloaderModule : Module() {
         val py = Python.getInstance()
         ytDlpVersion = py.getModule("yt_dlp.version").get("__version__").toString()
         ytDlpAvailable = true
+
+        val runtimeDiagRaw = py.getModule("local_downloader").callAttr("get_runtime_diagnostics").toString()
+        val runtimeDiag = JSONObject(runtimeDiagRaw)
+        normalizedUrlLast = runtimeDiag.optString("normalizedUrlLast").takeIf { it.isNotBlank() && it != "null" }
+        attemptTraceCount = runtimeDiag.optInt("attemptTraceCount", 0)
+        lastExtractorKey = runtimeDiag.optString("lastExtractorKey").takeIf { it.isNotBlank() && it != "null" }
+        lastRawYtDlpError = runtimeDiag.optString("lastRawYtDlpError").takeIf { it.isNotBlank() && it != "null" }
+        platformStrategyLast = runtimeDiag.optString("platformStrategyLast").takeIf { it.isNotBlank() && it != "null" }
+        ytDlpVersionAgeDays = runtimeDiag.opt("ytDlpVersionAgeDays")?.toString()?.toIntOrNull()
+        if (runtimeDiag.has("impersonationRuntimeAvailable") && !runtimeDiag.isNull("impersonationRuntimeAvailable")) {
+          impersonationRuntimeAvailable = runtimeDiag.optBoolean("impersonationRuntimeAvailable")
+        }
+
+        val traceArray = runtimeDiag.optJSONArray("attemptTrace")
+        attemptTrace = if (traceArray == null) {
+          emptyList()
+        } else {
+          (0 until traceArray.length()).mapNotNull { idx ->
+            val item = traceArray.optJSONObject(idx) ?: return@mapNotNull null
+            mapOf(
+              "timeMs" to item.opt("timeMs"),
+              "phase" to item.optString("phase", ""),
+              "attemptId" to item.optString("attemptId", ""),
+              "strategy" to item.optString("strategy", ""),
+              "status" to item.optString("status", ""),
+              "platform" to item.optString("platform", ""),
+              "cookieUsed" to item.opt("cookieUsed"),
+              "retryIndex" to item.opt("retryIndex"),
+              "extractorKey" to item.optString("extractorKey", ""),
+              "errorCode" to item.optString("errorCode", ""),
+              "errorMessage" to item.optString("errorMessage", ""),
+              "impersonate" to item.optString("impersonate", ""),
+            )
+          }
+        }
+
+        val cookieCheck = runtimeDiag.optJSONObject("lastCookieCheck")
+        lastCookieCheck = cookieCheck?.let {
+          mapOf(
+            "platform" to it.optString("platform", ""),
+            "hasCookieFile" to it.optBoolean("hasCookieFile", false),
+            "domainCoverage" to (it.optJSONArray("domainCoverage")?.let { arr ->
+              (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf { value -> value.isNotBlank() } }
+            } ?: emptyList<String>()),
+            "unexpiredCount" to it.optInt("unexpiredCount", 0),
+          )
+        }
       }.onFailure {
         addError("YT_DLP_IMPORT_ERROR: ${it.message}")
       }
@@ -921,6 +968,15 @@ class LocalDownloaderModule : Module() {
         "customProfilesCount" to countCustomProfiles(),
         "cookieLegacyPlaintextCount" to countLegacyCookieProfiles(),
         "cookieMigrationStatus" to cookieMigrationStatus,
+        "normalizedUrlLast" to normalizedUrlLast,
+        "attemptTraceCount" to attemptTraceCount,
+        "attemptTrace" to attemptTrace,
+        "lastExtractorKey" to lastExtractorKey,
+        "lastRawYtDlpError" to lastRawYtDlpError,
+        "lastCookieCheck" to lastCookieCheck,
+        "ytDlpVersionAgeDays" to ytDlpVersionAgeDays,
+        "platformStrategyLast" to platformStrategyLast,
+        "impersonationRuntimeAvailable" to impersonationRuntimeAvailable,
         "customDomainMatchLast" to lastCustomDomainMatch?.let {
           mapOf(
             "urlHost" to it.urlHost,
@@ -1780,6 +1836,13 @@ class LocalDownloaderModule : Module() {
       "MERGE_DEPENDENCY_MISSING",
       "SITE_BLOCKED_403",
       "COOKIE_STALE_OR_INVALID",
+      "REDDIT_SHARE_URL_RESOLUTION_FAILED",
+      "REDDIT_EXTRACTOR_ROUTE_FAILED",
+      "TIKTOK_API_STATUS_ZERO",
+      "TIKTOK_EXTRACTOR_UNSTABLE",
+      "IMPERSONATION_RUNTIME_UNAVAILABLE",
+      "COOKIE_DOMAIN_MISMATCH",
+      "COOKIE_EMPTY_OR_EXPIRED",
       "TIMESTAMP_POSTPROCESS_FAILED",
       "INVALID_URL",
       "DOWNLOAD_ALREADY_IN_PROGRESS",
