@@ -65,6 +65,16 @@
     android:maxLines="1"
     android:ellipsize="end" />
 
+  <TextView
+    android:id="@+id/notification_mode"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="4dp"
+    android:textColor="#BDBDBD"
+    android:textSize="11sp"
+    android:maxLines="1"
+    android:ellipsize="end" />
+
   <LinearLayout
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
@@ -94,6 +104,19 @@
       android:paddingVertical="8dp"
       android:text="Quick"
       android:textColor="#CFF8EA"
+      android:textSize="12sp"
+      android:textStyle="bold" />
+
+    <TextView
+      android:id="@+id/notification_action_private"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_marginStart="8dp"
+      android:background="@drawable/local_downloader_notification_button"
+      android:paddingHorizontal="12dp"
+      android:paddingVertical="8dp"
+      android:text="Private OFF"
+      android:textColor="#F8EACF"
       android:textSize="12sp"
       android:textStyle="bold" />
   </LinearLayout>

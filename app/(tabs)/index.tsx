@@ -15,12 +15,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
+  getLocalPrivateModeState,
   cancelTask,
   downloadMedia,
   DownloadProgress,
   ensureLocalBackgroundPermission,
   getLocalBackgroundState,
   listenBackgroundState,
+  setLocalPrivateModeEnabled,
   startQuickLocalDownloadFromClipboard,
 } from '@/src/api';
 import type { DownloadState } from '@/src/api/types';
@@ -49,6 +51,8 @@ export default function HomeScreen() {
   const [backgroundServiceRunning, setBackgroundServiceRunning] = useState(false);
   const [backgroundQueueSize, setBackgroundQueueSize] = useState(0);
   const [isQuickSubmitting, setIsQuickSubmitting] = useState(false);
+  const [privateModeEnabled, setPrivateModeEnabled] = useState(false);
+  const [isPrivateToggleBusy, setIsPrivateToggleBusy] = useState(false);
 
   const isOngoingDownload =
     downloadState === 'starting' ||
@@ -73,6 +77,14 @@ export default function HomeScreen() {
         if (!mounted) return;
         setBackgroundServiceRunning(state.serviceRunning);
         setBackgroundQueueSize(state.queueSize);
+        setPrivateModeEnabled(Boolean(state.privateModeEnabled));
+      })
+      .catch(() => undefined);
+
+    void getLocalPrivateModeState()
+      .then((state) => {
+        if (!mounted) return;
+        setPrivateModeEnabled(Boolean(state.enabled));
       })
       .catch(() => undefined);
 
@@ -81,6 +93,9 @@ export default function HomeScreen() {
         return listenBackgroundState((state) => {
           setBackgroundServiceRunning(Boolean(state.serviceRunning));
           setBackgroundQueueSize(state.queueSize || 0);
+          if (typeof state.privateModeEnabled === 'boolean') {
+            setPrivateModeEnabled(state.privateModeEnabled);
+          }
         });
       } catch {
         return { remove: () => undefined };
@@ -128,21 +143,25 @@ export default function HomeScreen() {
         if (progress.errorMessage) {
           setStatusMessage(progress.errorMessage);
         }
-      });
+      }, privateModeEnabled ? 'private' : 'public');
 
       console.info('Download response:', result);
 
-      // Save local file to device gallery
-      setDownloadState('saving');
-      console.log('[HomeScreen] localPath:', result.localPath);
-      console.log('[HomeScreen] filename:', result.filename);
-
-      const saveResult = await downloadAndSaveFile(result.localPath, result.filename);
-      console.log('[HomeScreen] downloadAndSaveFile returned:', saveResult);
+      if (!result.isPrivate) {
+        // Save local file to device gallery
+        setDownloadState('saving');
+        if (!result.localPath) {
+          throw new Error(t('errors.FILE_NOT_FOUND'));
+        }
+        console.log('[HomeScreen] localPath:', result.localPath);
+        console.log('[HomeScreen] filename:', result.filename);
+        const saveResult = await downloadAndSaveFile(result.localPath, result.filename);
+        console.log('[HomeScreen] downloadAndSaveFile returned:', saveResult);
+      }
 
       // Success!
       setDownloadState('completed');
-      setStatusMessage(result.filename);
+      setStatusMessage(result.isPrivate ? t('home.privateSaved') : result.filename);
       setDownloadPercent(100);
 
       // Reset after delay
@@ -173,7 +192,7 @@ export default function HomeScreen() {
       setDownloadPercent(null);
       setTimeout(() => setDownloadState('idle'), 3000);
     }
-  }, [t]);
+  }, [privateModeEnabled, t]);
 
   const openCancelConfirm = useCallback(() => {
     if (!activeTaskId || !isOngoingDownload) return;
@@ -208,6 +227,28 @@ export default function HomeScreen() {
     router.push('/settings');
   }, [router]);
 
+  const openPrivateVideos = useCallback(() => {
+    router.push('/private-videos');
+  }, [router]);
+
+  const handleTogglePrivateMode = useCallback(async () => {
+    if (isPrivateToggleBusy) return;
+    setIsPrivateToggleBusy(true);
+    try {
+      const nextEnabled = !privateModeEnabled;
+      const result = await setLocalPrivateModeEnabled(nextEnabled);
+      setPrivateModeEnabled(Boolean(result.enabled));
+      setStatusMessage(
+        result.enabled ? t('home.privateModeEnabled') : t('home.privateModeDisabled')
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR');
+      setStatusMessage(message);
+    } finally {
+      setIsPrivateToggleBusy(false);
+    }
+  }, [isPrivateToggleBusy, privateModeEnabled, t]);
+
   const handleQuickBackgroundDownload = useCallback(async () => {
     setIsQuickSubmitting(true);
     try {
@@ -219,15 +260,16 @@ export default function HomeScreen() {
 
       const result = await startQuickLocalDownloadFromClipboard();
       if (!result.accepted) {
-        const reasonMap: Record<string, string> = {
-          NO_CLIPBOARD_URL: 'NO_CLIPBOARD_URL',
-          INVALID_QUICK_URL: 'INVALID_QUICK_URL',
-          QUICK_CAPTURE_CANCELLED: 'QUICK_CAPTURE_CANCELLED',
-          QUEUE_FULL: 'DOWNLOAD_QUEUE_FULL',
-          PERMISSION_REQUIRED: 'BACKGROUND_PERMISSION_REQUIRED',
-          ALREADY_ACTIVE: 'DOWNLOAD_ALREADY_IN_PROGRESS',
-          QUICK_DOWNLOAD_REJECTED: 'QUICK_DOWNLOAD_REJECTED',
-        };
+          const reasonMap: Record<string, string> = {
+            NO_CLIPBOARD_URL: 'NO_CLIPBOARD_URL',
+            INVALID_QUICK_URL: 'INVALID_QUICK_URL',
+            QUICK_CAPTURE_CANCELLED: 'QUICK_CAPTURE_CANCELLED',
+            QUEUE_FULL: 'DOWNLOAD_QUEUE_FULL',
+            PERMISSION_REQUIRED: 'BACKGROUND_PERMISSION_REQUIRED',
+            ALREADY_ACTIVE: 'DOWNLOAD_ALREADY_IN_PROGRESS',
+            QUICK_DOWNLOAD_REJECTED: 'QUICK_DOWNLOAD_REJECTED',
+            PRIVATE_MODE_UNAVAILABLE: 'PRIVATE_MODE_UNAVAILABLE',
+          };
         const code = reasonMap[result.reason || ''] || 'QUICK_DOWNLOAD_REJECTED';
         setStatusMessage(t(`errors.${code}`));
         return;
@@ -315,6 +357,46 @@ export default function HomeScreen() {
                 </Text>
               </>
             )}
+          </Pressable>
+
+          <Pressable
+            onPress={handleTogglePrivateMode}
+            disabled={isPrivateToggleBusy}
+            style={({ pressed }) => [
+              styles.quickButton,
+              {
+                backgroundColor: privateModeEnabled ? colors.accent + '22' : (pressed ? colors.surfaceHover : colors.surface),
+                borderColor: privateModeEnabled ? colors.accent : colors.border,
+                opacity: isPrivateToggleBusy ? 0.7 : 1,
+              },
+            ]}
+          >
+            {isPrivateToggleBusy ? (
+              <ActivityIndicator size="small" color={colors.text} />
+            ) : (
+              <>
+                <Ionicons name={privateModeEnabled ? 'lock-closed' : 'lock-open-outline'} size={16} color={colors.text} />
+                <Text style={[styles.quickButtonText, { color: colors.text }]}>
+                  {privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
+                </Text>
+              </>
+            )}
+          </Pressable>
+
+          <Pressable
+            onPress={openPrivateVideos}
+            style={({ pressed }) => [
+              styles.quickButton,
+              {
+                backgroundColor: pressed ? colors.surfaceHover : colors.surface,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <Ionicons name="shield-checkmark-outline" size={16} color={colors.text} />
+            <Text style={[styles.quickButtonText, { color: colors.text }]}>
+              {t('home.privateVault')}
+            </Text>
           </Pressable>
         </View>
 

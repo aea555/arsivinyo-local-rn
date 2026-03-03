@@ -22,6 +22,8 @@ export interface TaskStatusResponse {
     status: TaskStatus;
     filePath?: string;
     filename?: string;
+    isPrivate?: boolean;
+    privateVideoId?: string;
     sizeMb?: number;
     progressPercent?: number;
     errorCode?: string;
@@ -81,6 +83,14 @@ export type ApiErrorCode =
     | 'DOWNLOAD_QUEUE_FULL'
     | 'BACKGROUND_SERVICE_START_FAILED'
     | 'QUICK_DOWNLOAD_REJECTED'
+    | 'PRIVATE_AUTH_REQUIRED'
+    | 'PRIVATE_AUTH_FAILED'
+    | 'PRIVATE_STORAGE_WRITE_FAILED'
+    | 'PRIVATE_LEGACY_VAULT_UNSUPPORTED'
+    | 'PRIVATE_VIDEO_NOT_FOUND'
+    | 'PRIVATE_EXPORT_FAILED'
+    | 'PRIVATE_EXPORT_DISABLED'
+    | 'PRIVATE_MODE_UNAVAILABLE'
     | 'COOKIE_DOMAIN_MISMATCH'
     | 'COOKIE_EMPTY_OR_EXPIRED'
     | 'TIMESTAMP_POSTPROCESS_FAILED'

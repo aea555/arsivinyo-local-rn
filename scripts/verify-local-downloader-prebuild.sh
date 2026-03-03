@@ -92,7 +92,8 @@ verify_generated_files() {
   for perm in \
     'android.permission.FOREGROUND_SERVICE' \
     'android.permission.FOREGROUND_SERVICE_DATA_SYNC' \
-    'android.permission.POST_NOTIFICATIONS'; do
+    'android.permission.POST_NOTIFICATIONS' \
+    'android.permission.USE_BIOMETRIC'; do
     if ! grep -Fq "$perm" "$ANDROID_MANIFEST"; then
       echo "[verify-local-downloader-prebuild] Missing required permission in manifest: $perm"
       exit 1
@@ -109,6 +110,10 @@ verify_generated_files() {
   fi
   if [[ "$(grep -F 'expo.modules.localdownloader.QuickDownloadCaptureActivity' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
     echo "[verify-local-downloader-prebuild] QuickDownloadCaptureActivity must exist exactly once in AndroidManifest.xml"
+    exit 1
+  fi
+  if [[ "$(grep -F 'expo.modules.localdownloader.PrivateVideoPlayerActivity' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "[verify-local-downloader-prebuild] PrivateVideoPlayerActivity must exist exactly once in AndroidManifest.xml"
     exit 1
   fi
   if ! grep -Fq 'android:foregroundServiceType="dataSync"' "$ANDROID_MANIFEST"; then

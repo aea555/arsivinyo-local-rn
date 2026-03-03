@@ -20,6 +20,7 @@ const POLLING_INTERVALS = {
 };
 
 const DEFAULT_MAX_FILE_SIZE_MB = 0;
+type DownloadVisibility = 'public' | 'private';
 
 class DownloadCancelledError extends Error {
   code: ApiErrorCode;
@@ -77,6 +78,14 @@ function extractErrorCode(error: unknown): ApiErrorCode {
     'DOWNLOAD_QUEUE_FULL',
     'BACKGROUND_SERVICE_START_FAILED',
     'QUICK_DOWNLOAD_REJECTED',
+    'PRIVATE_AUTH_REQUIRED',
+    'PRIVATE_AUTH_FAILED',
+    'PRIVATE_STORAGE_WRITE_FAILED',
+    'PRIVATE_LEGACY_VAULT_UNSUPPORTED',
+    'PRIVATE_VIDEO_NOT_FOUND',
+    'PRIVATE_EXPORT_FAILED',
+    'PRIVATE_EXPORT_DISABLED',
+    'PRIVATE_MODE_UNAVAILABLE',
     'COOKIE_DOMAIN_MISMATCH',
     'COOKIE_EMPTY_OR_EXPIRED',
     'TIMESTAMP_POSTPROCESS_FAILED',
@@ -97,7 +106,11 @@ function getPollingInterval(elapsedMs: number): number {
   return POLLING_INTERVALS.slow;
 }
 
-export async function startDownload(url: string, maxFileSizeMb: number = DEFAULT_MAX_FILE_SIZE_MB): Promise<DownloadStartResponse> {
+export async function startDownload(
+  url: string,
+  maxFileSizeMb: number = DEFAULT_MAX_FILE_SIZE_MB,
+  visibility: DownloadVisibility = 'public'
+): Promise<DownloadStartResponse> {
   const platform = getPlatformFromUrl(url);
   const cookieProfile = platform ? await getDefaultCookieProfile(platform) : null;
 
@@ -106,6 +119,7 @@ export async function startDownload(url: string, maxFileSizeMb: number = DEFAULT
     cookiePlatform: platform ?? undefined,
     cookieProfile: cookieProfile ?? undefined,
     maxFileSizeMb,
+    visibility,
   });
 
   return {
@@ -158,8 +172,9 @@ export async function pollTaskStatus(
 
 export async function downloadMedia(
   url: string,
-  onProgressChange?: (progress: DownloadProgress) => void
-): Promise<{ taskId: string; localPath: string; filename: string }> {
+  onProgressChange?: (progress: DownloadProgress) => void,
+  visibility: DownloadVisibility = 'public'
+): Promise<{ taskId: string; localPath?: string; filename: string; isPrivate: boolean; privateVideoId?: string }> {
   if (!isValidUrl(url)) {
     const errorCode = 'INVALID_URL' as ApiErrorCode;
     onProgressChange?.({
@@ -174,7 +189,7 @@ export async function downloadMedia(
 
   let startResult: DownloadStartResponse;
   try {
-    startResult = await startDownload(url, DEFAULT_MAX_FILE_SIZE_MB);
+    startResult = await startDownload(url, DEFAULT_MAX_FILE_SIZE_MB, visibility);
   } catch (error) {
     const errorCode = extractErrorCode(error);
     const errorMessage = getErrorMessage(errorCode);
@@ -219,6 +234,21 @@ export async function downloadMedia(
 
     const filename = finalStatus.filename;
     const localPath = finalStatus.filePath;
+    const isPrivate = Boolean(finalStatus.isPrivate);
+    const privateVideoId = finalStatus.privateVideoId;
+
+    if (isPrivate) {
+      if (!filename || !privateVideoId) {
+        throw new Error(getErrorMessage('FILE_NOT_FOUND'));
+      }
+      onProgressChange?.({ state: 'completed', taskId, filename });
+      return {
+        taskId,
+        filename,
+        isPrivate: true,
+        privateVideoId,
+      };
+    }
 
     if (!filename || !localPath) {
       throw new Error(getErrorMessage('FILE_NOT_FOUND'));
@@ -230,6 +260,7 @@ export async function downloadMedia(
       taskId,
       localPath,
       filename,
+      isPrivate: false,
     };
   } finally {
     subscription.remove();

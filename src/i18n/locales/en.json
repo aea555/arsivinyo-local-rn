@@ -32,7 +32,28 @@
         "cancelRequestFailed": "Could not request cancellation. Please try again.",
         "quickBackgroundDownload": "Quick background download",
         "quickDownloadQueued": "Quick download accepted.",
-        "backgroundActive": "Background active • Queue: {{count}}"
+        "backgroundActive": "Background active • Queue: {{count}}",
+        "privateModeOn": "Private mode: ON",
+        "privateModeOff": "Private mode: OFF",
+        "privateModeEnabled": "Private mode enabled.",
+        "privateModeDisabled": "Private mode disabled.",
+        "privateVault": "Private vault",
+        "privateSaved": "Saved to private vault."
+    },
+    "privateVault": {
+        "title": "Private Vault",
+        "subtitle": "Biometric or device credential is required for private media actions.",
+        "unlocking": "Verifying identity...",
+        "lockedMessage": "Private vault is locked.",
+        "unlockAction": "Unlock",
+        "empty": "No private videos yet.",
+        "createdAt": "Created: {{value}}",
+        "size": "Encrypted size: {{value}}",
+        "playAction": "Play",
+        "makePublic": "Make non-private",
+        "deleteAction": "Delete permanently",
+        "deleteTitle": "Delete private video?",
+        "deleteMessage": "Delete \"{{title}}\" permanently from private vault?"
     },
     "settings": {
         "title": "Settings",
@@ -158,6 +179,14 @@
         "BACKGROUND_SERVICE_START_FAILED": "Background download service failed to start.",
         "QUICK_DOWNLOAD_REJECTED": "Quick download was rejected.",
         "INVALID_QUICK_URL": "The provided quick URL is invalid.",
-        "QUICK_CAPTURE_CANCELLED": "Quick capture was cancelled."
+        "QUICK_CAPTURE_CANCELLED": "Quick capture was cancelled.",
+        "PRIVATE_AUTH_REQUIRED": "Identity verification is required for private media.",
+        "PRIVATE_AUTH_FAILED": "Identity verification failed or was cancelled.",
+        "PRIVATE_STORAGE_WRITE_FAILED": "Private vault write failed.",
+        "PRIVATE_LEGACY_VAULT_UNSUPPORTED": "This private video uses a legacy vault format. Delete it and download again to store it in the new fast format.",
+        "PRIVATE_VIDEO_NOT_FOUND": "Private video was not found.",
+        "PRIVATE_EXPORT_FAILED": "Could not move private video to public gallery.",
+        "PRIVATE_EXPORT_DISABLED": "Moving private videos to public gallery is disabled in this build.",
+        "PRIVATE_MODE_UNAVAILABLE": "Private mode requires a secure lock screen or biometric setup."
     }
 }

@@ -13,6 +13,10 @@ import type {
   LocalDownloadEvent,
   LocalDownloadStartInput,
   LocalDownloadStartResult,
+  LocalPrivateAuthPurpose,
+  LocalPrivateAuthResult,
+  LocalPrivateModeState,
+  LocalPrivateVideoItem,
   LocalImpersonationSelfTestResult,
   LocalSaveToMediaStoreInput,
   LocalSaveToMediaStoreResult,
@@ -29,6 +33,15 @@ type LocalDownloaderNativeModule = {
   ensureBackgroundPermission(): Promise<LocalBackgroundPermissionResult>;
   startQuickDownloadFromClipboard(): Promise<LocalQuickDownloadResult>;
   startQuickDownloadWithUrl(input: { url: string }): Promise<LocalQuickDownloadResult>;
+  getPrivateModeState(): Promise<LocalPrivateModeState>;
+  setPrivateModeEnabled(input: { enabled: boolean }): Promise<LocalPrivateModeState>;
+  authenticatePrivateAccess(input: { purpose: LocalPrivateAuthPurpose }): Promise<LocalPrivateAuthResult>;
+  listPrivateVideos(): Promise<LocalPrivateVideoItem[]>;
+  deletePrivateVideo(input: { id: string }): Promise<{ success: boolean }>;
+  makeVideoPublic(input: { id: string }): Promise<{ success: boolean; uri?: string; code?: string; message?: string }>;
+  preparePrivatePlayback(input: { id: string; traceId?: string }): Promise<{ success: boolean; tempUri?: string; mimeType?: string }>;
+  openPrivatePlayback(input: { tempUri: string; title?: string; traceId?: string }): Promise<{ success: boolean }>;
+  clearPrivatePlaybackCache(): Promise<void>;
   importCookie(input: { platform: LocalPlatform; uri: string; profileName: string }): Promise<{ profileName: string; path: string }>;
   listCookieProfiles(platform: LocalPlatform): Promise<LocalCookieProfile[]>;
   setCookieDefault(input: { platform: LocalPlatform; profileName: string }): Promise<{ success: boolean }>;
@@ -58,6 +71,15 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       ensureBackgroundPermission: async () => unsupported(),
       startQuickDownloadFromClipboard: async () => unsupported(),
       startQuickDownloadWithUrl: async () => unsupported(),
+      getPrivateModeState: async () => unsupported(),
+      setPrivateModeEnabled: async () => unsupported(),
+      authenticatePrivateAccess: async () => unsupported(),
+      listPrivateVideos: async () => unsupported(),
+      deletePrivateVideo: async () => unsupported(),
+      makeVideoPublic: async () => unsupported(),
+      preparePrivatePlayback: async () => unsupported(),
+      openPrivatePlayback: async () => unsupported(),
+      clearPrivatePlaybackCache: async () => unsupported(),
       importCookie: async () => unsupported(),
       listCookieProfiles: async () => unsupported(),
       setCookieDefault: async () => unsupported(),

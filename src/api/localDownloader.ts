@@ -15,6 +15,10 @@ import LocalDownloaderModule, {
   type LocalDownloadStartInput,
   type LocalDownloadStartResult,
   type LocalImpersonationSelfTestResult,
+  type LocalPrivateAuthPurpose,
+  type LocalPrivateAuthResult,
+  type LocalPrivateModeState,
+  type LocalPrivateVideoItem,
   type LocalSaveToMediaStoreInput,
   type LocalSaveToMediaStoreResult,
   type LocalPlatform,
@@ -71,6 +75,58 @@ export async function startQuickLocalDownloadFromClipboard(): Promise<LocalQuick
 export async function startQuickLocalDownloadWithUrl(url: string): Promise<LocalQuickDownloadResult> {
   ensureAndroid();
   return LocalDownloaderModule.startQuickDownloadWithUrl({ url });
+}
+
+export async function getLocalPrivateModeState(): Promise<LocalPrivateModeState> {
+  ensureAndroid();
+  return LocalDownloaderModule.getPrivateModeState();
+}
+
+export async function setLocalPrivateModeEnabled(enabled: boolean): Promise<LocalPrivateModeState> {
+  ensureAndroid();
+  return LocalDownloaderModule.setPrivateModeEnabled({ enabled });
+}
+
+export async function authenticateLocalPrivateAccess(purpose: LocalPrivateAuthPurpose): Promise<LocalPrivateAuthResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.authenticatePrivateAccess({ purpose });
+}
+
+export async function listLocalPrivateVideos(): Promise<LocalPrivateVideoItem[]> {
+  ensureAndroid();
+  return LocalDownloaderModule.listPrivateVideos();
+}
+
+export async function deleteLocalPrivateVideo(id: string): Promise<{ success: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.deletePrivateVideo({ id });
+}
+
+export async function makeLocalVideoPublic(id: string): Promise<{ success: boolean; uri?: string; code?: string; message?: string }> {
+  ensureAndroid();
+  return LocalDownloaderModule.makeVideoPublic({ id });
+}
+
+export async function prepareLocalPrivatePlayback(
+  id: string,
+  traceId?: string
+): Promise<{ success: boolean; tempUri?: string; mimeType?: string }> {
+  ensureAndroid();
+  return LocalDownloaderModule.preparePrivatePlayback({ id, traceId });
+}
+
+export async function openLocalPrivatePlayback(
+  tempUri: string,
+  title?: string,
+  traceId?: string
+): Promise<{ success: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.openPrivatePlayback({ tempUri, title, traceId });
+}
+
+export async function clearLocalPrivatePlaybackCache(): Promise<void> {
+  ensureAndroid();
+  return LocalDownloaderModule.clearPrivatePlaybackCache();
 }
 
 export async function importLocalCookie(input: {

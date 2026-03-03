@@ -6,6 +6,7 @@ export interface LocalDownloadStartInput {
   cookieProfile?: string;
   // 0 or undefined means unlimited file size.
   maxFileSizeMb?: number;
+  visibility?: 'public' | 'private';
 }
 
 export interface LocalDownloadStartResult {
@@ -21,6 +22,7 @@ export interface LocalBackgroundState {
   queuedUrls: string[];
   lastQuickReason?: string | null;
   notificationPhase?: string;
+  privateModeEnabled?: boolean;
   notificationPermissionRequired: boolean;
   notificationPermissionGranted: boolean;
 }
@@ -32,11 +34,12 @@ export interface LocalBackgroundPermissionResult {
 
 export interface LocalQuickDownloadResult {
   accepted: boolean;
-  reason?: 'NO_CLIPBOARD_URL' | 'INVALID_QUICK_URL' | 'QUEUE_FULL' | 'PERMISSION_REQUIRED' | 'ALREADY_ACTIVE' | 'QUICK_DOWNLOAD_REJECTED' | 'QUICK_CAPTURE_CANCELLED';
+  reason?: 'NO_CLIPBOARD_URL' | 'INVALID_QUICK_URL' | 'QUEUE_FULL' | 'PERMISSION_REQUIRED' | 'ALREADY_ACTIVE' | 'QUICK_DOWNLOAD_REJECTED' | 'QUICK_CAPTURE_CANCELLED' | 'PRIVATE_MODE_UNAVAILABLE';
   taskId?: string;
   queueSize?: number;
   queueMax?: number;
   resolvedUrl?: string | null;
+  visibility?: 'public' | 'private';
   captureMode?: 'clipboard' | 'manual';
 }
 
@@ -59,6 +62,8 @@ export interface LocalTaskStatusResult {
   status: LocalTaskStatus;
   filename?: string;
   filePath?: string;
+  isPrivate?: boolean;
+  privateVideoId?: string;
   sizeMb?: number;
   progressPercent?: number;
   errorCode?: string;
@@ -108,6 +113,28 @@ export interface LocalDownloadEvent {
 }
 
 export interface LocalBackgroundStateEvent extends LocalBackgroundState {}
+
+export interface LocalPrivateModeState {
+  enabled: boolean;
+}
+
+export type LocalPrivateAuthPurpose = 'view' | 'delete' | 'unprivate';
+
+export interface LocalPrivateAuthResult {
+  granted: boolean;
+  reason?: string;
+}
+
+export interface LocalPrivateVideoItem {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  mimeType: string;
+  durationSec?: number | null;
+  sizeBytesEncrypted: number;
+  cipherVersion: string;
+}
 
 export interface LocalDiagnostics {
   ytDlpVersion: string;
@@ -166,6 +193,13 @@ export interface LocalDiagnostics {
   activeHttpUserAgent: string;
   serviceRunning?: boolean;
   queuedDownloadCount?: number;
+  privateModeEnabled?: boolean;
+  privateVaultCount?: number;
+  privateVaultCipherActive?: 'v1' | 'v2';
+  privateVaultLegacyCount?: number;
+  privateLastEncryptMs?: number | null;
+  privateLastDecryptMs?: number | null;
+  privateLastThroughputMbps?: number | null;
   lastBackgroundServiceError?: string | null;
   secureCookieStoreEnabled: boolean;
   cookieEncryptionVersion: string;

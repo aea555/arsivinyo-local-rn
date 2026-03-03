@@ -18,6 +18,7 @@ internal data class BackgroundNotificationState(
   val message: String?,
   val progressPercent: Double?,
   val queueSize: Int,
+  val privateModeEnabled: Boolean,
   val pinned: Boolean = false,
 ) {
   val hasWork: Boolean
@@ -42,6 +43,7 @@ internal object DownloadNotificationController {
   private const val EXTRA_MESSAGE = "extra_message"
   private const val EXTRA_PROGRESS_PERCENT = "extra_progress_percent"
   private const val EXTRA_QUEUE_SIZE = "extra_queue_size"
+  private const val EXTRA_PRIVATE_MODE_ENABLED = "extra_private_mode_enabled"
   private const val EXTRA_PINNED = "extra_pinned"
 
   fun startOrUpdate(context: Context, state: BackgroundNotificationState) {
@@ -53,6 +55,7 @@ internal object DownloadNotificationController {
       putExtra(EXTRA_MESSAGE, state.message)
       putExtra(EXTRA_PROGRESS_PERCENT, state.progressPercent)
       putExtra(EXTRA_QUEUE_SIZE, state.queueSize)
+      putExtra(EXTRA_PRIVATE_MODE_ENABLED, state.privateModeEnabled)
       putExtra(EXTRA_PINNED, state.pinned)
     }
     ContextCompat.startForegroundService(context, intent)
@@ -72,6 +75,7 @@ internal object DownloadNotificationController {
       message = intent?.getStringExtra(EXTRA_MESSAGE),
       progressPercent = intent?.getDoubleExtra(EXTRA_PROGRESS_PERCENT, Double.NaN)?.takeIf { !it.isNaN() },
       queueSize = intent?.getIntExtra(EXTRA_QUEUE_SIZE, 0) ?: 0,
+      privateModeEnabled = intent?.getBooleanExtra(EXTRA_PRIVATE_MODE_ENABLED, false) ?: false,
       pinned = intent?.getBooleanExtra(EXTRA_PINNED, false) ?: false,
     )
   }
@@ -96,6 +100,7 @@ internal object DownloadNotificationController {
         else -> if (state.queueSize > 0) "Tap to queue from clipboard" else "Tap to download from clipboard"
       }
     val queueLabel = "Queue: ${state.queueSize}/3"
+    val modeLabel = if (state.privateModeEnabled) "Mode: Private" else "Mode: Public"
 
     val progress = state.progressPercent?.toInt()?.coerceIn(0, 100)
     val showIndeterminate = hasActiveTask && (state.phase == "starting" || state.phase == "processing" || progress == null)
@@ -110,6 +115,7 @@ internal object DownloadNotificationController {
       setTextViewText(R.id.notification_title, title)
       setTextViewText(R.id.notification_subtitle, subtitle)
       setTextViewText(R.id.notification_queue, queueLabel)
+      setTextViewText(R.id.notification_mode, modeLabel)
       if (showIndeterminate) {
         setProgressBar(R.id.notification_progress, 100, 0, true)
         setTextViewText(R.id.notification_progress_text, progressText)
@@ -118,12 +124,15 @@ internal object DownloadNotificationController {
         setTextViewText(R.id.notification_progress_text, progressText)
       }
       setOnClickPendingIntent(R.id.notification_action_quick, buildQuickCapturePendingIntent(context, 40))
+      setOnClickPendingIntent(R.id.notification_action_private, buildActionPendingIntent(context, DownloadActionReceiver.ACTION_TOGGLE_PRIVATE_MODE, 45))
+      setTextViewText(R.id.notification_action_private, if (state.privateModeEnabled) "Private ON" else "Private OFF")
     }
 
     val expanded = RemoteViews(context.packageName, R.layout.local_downloader_notification_expanded).apply {
       setTextViewText(R.id.notification_title, title)
       setTextViewText(R.id.notification_subtitle, subtitle)
       setTextViewText(R.id.notification_queue, queueLabel)
+      setTextViewText(R.id.notification_mode, modeLabel)
       if (showIndeterminate) {
         setProgressBar(R.id.notification_progress, 100, 0, true)
         setTextViewText(R.id.notification_progress_text, progressText)
@@ -138,6 +147,8 @@ internal object DownloadNotificationController {
         setViewVisibility(R.id.notification_action_cancel, android.view.View.GONE)
       }
       setOnClickPendingIntent(R.id.notification_action_quick, buildQuickCapturePendingIntent(context, 42))
+      setOnClickPendingIntent(R.id.notification_action_private, buildActionPendingIntent(context, DownloadActionReceiver.ACTION_TOGGLE_PRIVATE_MODE, 46))
+      setTextViewText(R.id.notification_action_private, if (state.privateModeEnabled) "Private ON" else "Private OFF")
     }
 
     val addUrlRemoteInput = RemoteInput.Builder(REMOTE_INPUT_URL_KEY)
