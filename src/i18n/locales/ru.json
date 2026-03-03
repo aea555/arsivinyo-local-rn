@@ -32,7 +32,14 @@
         "cancelRequestFailed": "Could not request cancellation. Please try again.",
         "quickBackgroundDownload": "Quick background download",
         "quickDownloadQueued": "Quick download accepted.",
-        "backgroundActive": "Background active • Queue: {{count}}"
+        "backgroundActive": "Background active • Queue: {{count}}",
+        "backgroundInactive": "Background inactive",
+        "quickBackgroundDownloadHint": "Queues the URL currently in clipboard.",
+        "privateModeHintOn": "New downloads will be stored in the private vault.",
+        "privateModeHintOff": "New downloads will be saved to device storage.",
+        "privateVaultHint": "Open vault and manage private videos.",
+        "privateModeBadgeOn": "ON",
+        "privateModeBadgeOff": "OFF"
     },
     "settings": {
         "title": "Настройки",

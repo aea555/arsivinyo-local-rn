@@ -38,7 +38,14 @@
         "privateModeEnabled": "Gizli mod etkinleştirildi.",
         "privateModeDisabled": "Gizli mod kapatıldı.",
         "privateVault": "Gizli kasa",
-        "privateSaved": "Video gizli kasaya kaydedildi."
+        "privateSaved": "Video gizli kasaya kaydedildi.",
+        "backgroundInactive": "Arka plan pasif",
+        "quickBackgroundDownloadHint": "Panodaki URL'yi kuyruğa ekler.",
+        "privateModeHintOn": "Yeni indirmeler gizli kasaya kaydedilir.",
+        "privateModeHintOff": "Yeni indirmeler cihaz depolamasına kaydedilir.",
+        "privateVaultHint": "Gizli videoları açın ve yönetin.",
+        "privateModeBadgeOn": "AÇIK",
+        "privateModeBadgeOff": "KAPALI"
     },
     "privateVault": {
         "title": "Gizli Kasa",

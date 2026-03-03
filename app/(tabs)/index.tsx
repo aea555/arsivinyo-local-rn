@@ -325,78 +325,153 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        <View style={styles.topControls}>
-          {backgroundServiceRunning ? (
-            <View style={[styles.backgroundChip, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <Ionicons name="cloud-download-outline" size={14} color={colors.accent} />
-              <Text style={[styles.backgroundChipText, { color: colors.text }]}>
-                {t('home.backgroundActive', { count: backgroundQueueSize })}
-              </Text>
-            </View>
-          ) : null}
-
-          <Pressable
-            onPress={handleQuickBackgroundDownload}
-            disabled={isQuickSubmitting}
-            style={({ pressed }) => [
-              styles.quickButton,
+        <View style={styles.controlsPanel}>
+          <View
+            style={[
+              styles.statusStrip,
               {
-                backgroundColor: pressed ? colors.surfaceHover : colors.surface,
-                borderColor: colors.border,
-                opacity: isQuickSubmitting ? 0.7 : 1,
+                backgroundColor: backgroundServiceRunning ? colors.surface : colors.surface + 'AA',
+                borderColor: backgroundServiceRunning ? colors.accent + '55' : colors.borderSubtle,
               },
             ]}
           >
-            {isQuickSubmitting ? (
-              <ActivityIndicator size="small" color={colors.text} />
-            ) : (
-              <>
-                <Ionicons name="flash-outline" size={16} color={colors.text} />
-                <Text style={[styles.quickButtonText, { color: colors.text }]}>
+            <View style={styles.statusIconWrap}>
+              <Ionicons
+                name={backgroundServiceRunning ? 'cloud-download-outline' : 'cloud-offline-outline'}
+                size={15}
+                color={backgroundServiceRunning ? colors.accent : colors.textMuted}
+              />
+            </View>
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.statusStripText,
+                { color: backgroundServiceRunning ? colors.text : colors.textMuted },
+              ]}
+            >
+              {backgroundServiceRunning
+                ? t('home.backgroundActive', { count: backgroundQueueSize })
+                : t('home.backgroundInactive')}
+            </Text>
+          </View>
+
+          <View style={styles.primaryActionsColumn}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('home.quickBackgroundDownload')}
+              accessibilityHint={t('home.quickBackgroundDownloadHint')}
+              onPress={handleQuickBackgroundDownload}
+              disabled={isQuickSubmitting}
+              style={({ pressed }) => [
+                styles.actionRow,
+                {
+                  backgroundColor: pressed ? colors.surfaceHover : colors.surface,
+                  borderColor: colors.border,
+                  opacity: isQuickSubmitting ? 0.7 : 1,
+                },
+              ]}
+            >
+              <View style={styles.actionLeading}>
+                {isQuickSubmitting ? (
+                  <ActivityIndicator size="small" color={colors.text} />
+                ) : (
+                  <Ionicons name="flash-outline" size={18} color={colors.text} />
+                )}
+              </View>
+              <View style={styles.actionTextBlock}>
+                <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
                   {t('home.quickBackgroundDownload')}
                 </Text>
-              </>
-            )}
-          </Pressable>
+                <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
+                  {t('home.quickBackgroundDownloadHint')}
+                </Text>
+              </View>
+            </Pressable>
 
-          <Pressable
-            onPress={handleTogglePrivateMode}
-            disabled={isPrivateToggleBusy}
-            style={({ pressed }) => [
-              styles.quickButton,
-              {
-                backgroundColor: privateModeEnabled ? colors.accent + '22' : (pressed ? colors.surfaceHover : colors.surface),
-                borderColor: privateModeEnabled ? colors.accent : colors.border,
-                opacity: isPrivateToggleBusy ? 0.7 : 1,
-              },
-            ]}
-          >
-            {isPrivateToggleBusy ? (
-              <ActivityIndicator size="small" color={colors.text} />
-            ) : (
-              <>
-                <Ionicons name={privateModeEnabled ? 'lock-closed' : 'lock-open-outline'} size={16} color={colors.text} />
-                <Text style={[styles.quickButtonText, { color: colors.text }]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
+              accessibilityHint={privateModeEnabled ? t('home.privateModeHintOn') : t('home.privateModeHintOff')}
+              onPress={handleTogglePrivateMode}
+              disabled={isPrivateToggleBusy}
+              style={({ pressed }) => [
+                styles.actionRow,
+                {
+                  backgroundColor: privateModeEnabled
+                    ? colors.accent + '16'
+                    : (pressed ? colors.surfaceHover : colors.surface),
+                  borderColor: privateModeEnabled ? colors.accent : colors.border,
+                  opacity: isPrivateToggleBusy ? 0.7 : 1,
+                },
+              ]}
+            >
+              <View style={styles.actionLeading}>
+                {isPrivateToggleBusy ? (
+                  <ActivityIndicator size="small" color={colors.text} />
+                ) : (
+                  <Ionicons
+                    name={privateModeEnabled ? 'lock-closed' : 'lock-open-outline'}
+                    size={18}
+                    color={colors.text}
+                  />
+                )}
+              </View>
+              <View style={styles.actionTextBlock}>
+                <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
                   {privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
                 </Text>
-              </>
-            )}
-          </Pressable>
+                <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
+                  {privateModeEnabled ? t('home.privateModeHintOn') : t('home.privateModeHintOff')}
+                </Text>
+              </View>
+              <View style={styles.actionTrailing}>
+                <View
+                  style={[
+                    styles.modeBadge,
+                    {
+                      backgroundColor: privateModeEnabled ? colors.accent + '28' : colors.surface,
+                      borderColor: privateModeEnabled ? colors.accent : colors.borderSubtle,
+                    },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={[
+                      styles.modeBadgeText,
+                      { color: privateModeEnabled ? colors.accent : colors.textMuted },
+                    ]}
+                  >
+                    {privateModeEnabled ? t('home.privateModeBadgeOn') : t('home.privateModeBadgeOff')}
+                  </Text>
+                </View>
+              </View>
+            </Pressable>
+          </View>
 
           <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('home.privateVault')}
+            accessibilityHint={t('home.privateVaultHint')}
             onPress={openPrivateVideos}
             style={({ pressed }) => [
-              styles.quickButton,
+              styles.secondaryActionRow,
               {
-                backgroundColor: pressed ? colors.surfaceHover : colors.surface,
-                borderColor: colors.border,
+                backgroundColor: pressed ? colors.surfaceHover : colors.surface + 'CC',
+                borderColor: colors.borderSubtle,
               },
             ]}
           >
-            <Ionicons name="shield-checkmark-outline" size={16} color={colors.text} />
-            <Text style={[styles.quickButtonText, { color: colors.text }]}>
-              {t('home.privateVault')}
-            </Text>
+            <View style={styles.actionLeading}>
+              <Ionicons name="shield-checkmark-outline" size={18} color={colors.text} />
+            </View>
+            <View style={styles.actionTextBlock}>
+              <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
+                {t('home.privateVault')}
+              </Text>
+              <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
+                {t('home.privateVaultHint')}
+              </Text>
+            </View>
           </Pressable>
         </View>
 
@@ -567,46 +642,88 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingBottom: 60,
   },
-  topControls: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    flexWrap: 'wrap',
-    gap: 10,
+  controlsPanel: {
     paddingHorizontal: 20,
     marginTop: 4,
     marginBottom: 6,
+    gap: 10,
   },
-  backgroundChip: {
+  statusStrip: {
+    minHeight: 42,
     borderWidth: 1,
-    borderRadius: 999,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusIconWrap: {
+    width: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  statusStripText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  primaryActionsColumn: {
+    gap: 8,
+  },
+  actionRow: {
+    minHeight: 56,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  secondaryActionRow: {
+    minHeight: 52,
+    borderWidth: 1,
+    borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    maxWidth: '100%',
-    flexShrink: 1,
   },
-  backgroundChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    flexShrink: 1,
-  },
-  quickButton: {
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    flexDirection: 'row',
+  actionLeading: {
+    width: 24,
     alignItems: 'center',
-    gap: 8,
-    maxWidth: '100%',
-    flexShrink: 1,
+    justifyContent: 'center',
+    marginRight: 10,
   },
-  quickButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    flexShrink: 1,
+  actionTextBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  actionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  actionSubtitle: {
+    fontSize: 11.5,
+    fontWeight: '500',
+  },
+  actionTrailing: {
+    marginLeft: 10,
+  },
+  modeBadge: {
+    minWidth: 58,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modeBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.25,
   },
   statusMessage: {
     marginTop: 24,

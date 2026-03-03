@@ -38,7 +38,14 @@
         "privateModeEnabled": "Private mode enabled.",
         "privateModeDisabled": "Private mode disabled.",
         "privateVault": "Private vault",
-        "privateSaved": "Saved to private vault."
+        "privateSaved": "Saved to private vault.",
+        "backgroundInactive": "Background inactive",
+        "quickBackgroundDownloadHint": "Queues the URL currently in clipboard.",
+        "privateModeHintOn": "New downloads will be stored in the private vault.",
+        "privateModeHintOff": "New downloads will be saved to device storage.",
+        "privateVaultHint": "Open vault and manage private videos.",
+        "privateModeBadgeOn": "ON",
+        "privateModeBadgeOff": "OFF"
     },
     "privateVault": {
         "title": "Private Vault",
