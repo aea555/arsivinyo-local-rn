@@ -23,7 +23,13 @@
         "tryAgain": "Réessayer",
         "rateLimitExceeded": "Limite de requêtes dépassée. Veuillez patienter.",
         "fileTooLarge": "Limite de taille de fichier dépassée (max 50 Mo)",
-        "networkError": "Erreur de connexion. Vérifiez votre connexion Internet."
+        "networkError": "Erreur de connexion. Vérifiez votre connexion Internet.",
+        "downloadProgress": "Download progress: {{percent}}%",
+        "cancelDownload": "Cancel download",
+        "cancelDownloadTitle": "Cancel current download?",
+        "cancelDownloadMessage": "Are you sure you want to stop the current download?",
+        "confirmCancelDownload": "Yes, cancel",
+        "cancelRequestFailed": "Could not request cancellation. Please try again."
     },
     "settings": {
         "title": "Paramètres",

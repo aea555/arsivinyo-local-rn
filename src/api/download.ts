@@ -21,6 +21,16 @@ const POLLING_INTERVALS = {
 
 const DEFAULT_MAX_FILE_SIZE_MB = 0;
 
+class DownloadCancelledError extends Error {
+  code: ApiErrorCode;
+
+  constructor(message: string, code: ApiErrorCode = 'DOWNLOAD_CANCELLED') {
+    super(message);
+    this.name = 'DownloadCancelledError';
+    this.code = code;
+  }
+}
+
 function extractErrorCode(error: unknown): ApiErrorCode {
   if (!(error instanceof Error)) {
     return 'UNKNOWN_ERROR';
@@ -119,7 +129,14 @@ export async function pollTaskStatus(
       return status;
     }
 
-    if (status.status === 'FAILURE' || status.status === 'CANCELLED') {
+    if (status.status === 'CANCELLED') {
+      const code = (status.errorCode || 'DOWNLOAD_CANCELLED') as ApiErrorCode;
+      const translated = getErrorMessage(code);
+      const details = status.errorMessage?.trim();
+      throw new DownloadCancelledError(details ? `${translated} (${details})` : translated, code);
+    }
+
+    if (status.status === 'FAILURE') {
       const code = (status.errorCode || 'INTERNAL_ERROR') as ApiErrorCode;
       const translated = getErrorMessage(code);
       const details = status.errorMessage?.trim();
@@ -173,7 +190,7 @@ export async function downloadMedia(
     }
 
     if (event.state === 'downloading') {
-      onProgressChange?.({ state: 'downloading', taskId });
+      onProgressChange?.({ state: 'downloading', taskId, progressPercent: event.progressPercent });
       return;
     }
 
@@ -184,8 +201,12 @@ export async function downloadMedia(
 
   try {
     const finalStatus = await pollTaskStatus(taskId, (status) => {
-      if (status.status === 'STARTED' || status.status === 'PROGRESS') {
-        onProgressChange?.({ state: 'processing', taskId });
+      if (status.status === 'STARTED') {
+        onProgressChange?.({ state: 'starting', taskId, progressPercent: status.progressPercent });
+        return;
+      }
+      if (status.status === 'PROGRESS') {
+        onProgressChange?.({ state: 'downloading', taskId, progressPercent: status.progressPercent });
       }
     });
 

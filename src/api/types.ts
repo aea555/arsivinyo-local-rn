@@ -23,6 +23,7 @@ export interface TaskStatusResponse {
     filePath?: string;
     filename?: string;
     sizeMb?: number;
+    progressPercent?: number;
     errorCode?: string;
     errorMessage?: string;
     estimatedSizeMb?: number | null;
@@ -101,6 +102,7 @@ export interface DownloadProgress {
     state: DownloadState;
     taskId?: string;
     filename?: string;
+    progressPercent?: number;
     errorCode?: ApiErrorCode;
     errorMessage?: string;
 }

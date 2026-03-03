@@ -23,7 +23,13 @@
         "tryAgain": "Spróbuj ponownie",
         "rateLimitExceeded": "Przekroczono limit żądań. Proszę czekać.",
         "fileTooLarge": "Przekroczono limit rozmiaru pliku (maks. 50MB)",
-        "networkError": "Błąd połączenia. Sprawdź połączenie internetowe."
+        "networkError": "Błąd połączenia. Sprawdź połączenie internetowe.",
+        "downloadProgress": "Download progress: {{percent}}%",
+        "cancelDownload": "Cancel download",
+        "cancelDownloadTitle": "Cancel current download?",
+        "cancelDownloadMessage": "Are you sure you want to stop the current download?",
+        "confirmCancelDownload": "Yes, cancel",
+        "cancelRequestFailed": "Could not request cancellation. Please try again."
     },
     "settings": {
         "title": "Ustawienia",

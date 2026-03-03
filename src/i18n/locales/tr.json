@@ -23,7 +23,13 @@
         "tryAgain": "Tekrar deneyin",
         "rateLimitExceeded": "İstek limiti aşıldı. Lütfen biraz bekleyin.",
         "fileTooLarge": "Dosya boyutu sınırı aşıldı (maksimum 50MB)",
-        "networkError": "Bağlantı hatası. İnternet bağlantınızı kontrol edin."
+        "networkError": "Bağlantı hatası. İnternet bağlantınızı kontrol edin.",
+        "downloadProgress": "İndirme ilerlemesi: %{{percent}}",
+        "cancelDownload": "İndirmeyi iptal et",
+        "cancelDownloadTitle": "Mevcut indirme iptal edilsin mi?",
+        "cancelDownloadMessage": "Devam eden indirmeyi durdurmak istediğinize emin misiniz?",
+        "confirmCancelDownload": "Evet, iptal et",
+        "cancelRequestFailed": "İptal isteği gönderilemedi. Lütfen tekrar deneyin."
     },
     "settings": {
         "title": "Ayarlar",

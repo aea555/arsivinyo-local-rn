@@ -23,7 +23,13 @@
         "tryAgain": "Riprova",
         "rateLimitExceeded": "Limite di richieste superato. Attendere prego.",
         "fileTooLarge": "Limite dimensione file superato (max 50MB)",
-        "networkError": "Errore di connessione. Controlla la tua connessione Internet."
+        "networkError": "Errore di connessione. Controlla la tua connessione Internet.",
+        "downloadProgress": "Download progress: {{percent}}%",
+        "cancelDownload": "Cancel download",
+        "cancelDownloadTitle": "Cancel current download?",
+        "cancelDownloadMessage": "Are you sure you want to stop the current download?",
+        "confirmCancelDownload": "Yes, cancel",
+        "cancelRequestFailed": "Could not request cancellation. Please try again."
     },
     "settings": {
         "title": "Impostazioni",

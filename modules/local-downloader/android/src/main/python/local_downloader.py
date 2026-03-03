@@ -1402,6 +1402,29 @@ def _resolve_downloaded_file(info: Dict[str, Any], output_dir: Optional[str]) ->
     return None
 
 
+def _write_progress(progress_file_path: Optional[str], progress_percent: Optional[float], message: str, status: str) -> None:
+    if not progress_file_path:
+        return
+    try:
+        payload: Dict[str, Any] = {
+            "message": message,
+            "status": status,
+        }
+        if progress_percent is not None:
+            payload["progressPercent"] = max(0.0, min(100.0, float(progress_percent)))
+
+        target_dir = os.path.dirname(progress_file_path)
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
+        tmp_path = f"{progress_file_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp_path, progress_file_path)
+    except Exception:
+        # Progress reporting should never fail the download.
+        return
+
+
 def _normalize_video_timestamp(file_path: str, ffmpeg_location: Optional[str], debug_logging: bool = False) -> bool:
     _, ext = os.path.splitext(file_path)
     ext = ext.lower()
@@ -1630,6 +1653,7 @@ def run_download(
     cookie_profile: Optional[str] = None,
     max_file_size_mb: int = 0,
     cancel_flag_path: Optional[str] = None,
+    progress_file_path: Optional[str] = None,
     ffmpeg_path: Optional[str] = None,
     cookie_file: Optional[str] = None,
     force_no_cookie: bool = False,
@@ -1644,6 +1668,7 @@ def run_download(
             f"download start url={url} output_dir={output_dir} ffmpeg_path={ffmpeg_path} "
             f"cookie_file={'yes' if cookie_file else 'no'} force_no_cookie={force_no_cookie} merge_capable={merge_capable}",
         )
+        _write_progress(progress_file_path, 0.0, "Preparing download", "starting")
         if _is_cancel_requested(cancel_flag_path):
             return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
 
@@ -1682,9 +1707,27 @@ def run_download(
         if platform == "reddit" and not attempts:
             return _result(False, "REDDIT_COOKIE_REQUIRED", "Reddit download requires a valid Reddit cookie profile.")
 
-        def _progress_hook(_: Dict[str, Any]) -> None:
+        def _progress_hook(progress: Dict[str, Any]) -> None:
             if _is_cancel_requested(cancel_flag_path):
                 raise RuntimeError("DOWNLOAD_CANCELLED")
+            status = str(progress.get("status") or "").lower()
+            if status == "downloading":
+                percent: Optional[float] = None
+                downloaded = progress.get("downloaded_bytes")
+                total = progress.get("total_bytes") or progress.get("total_bytes_estimate")
+                try:
+                    if isinstance(downloaded, (int, float)) and isinstance(total, (int, float)) and float(total) > 0:
+                        percent = (float(downloaded) / float(total)) * 100.0
+                    else:
+                        percent_str = str(progress.get("_percent_str") or "").strip().replace("%", "")
+                        if percent_str:
+                            percent = float(percent_str)
+                except (TypeError, ValueError):
+                    percent = None
+                if percent is not None:
+                    _write_progress(progress_file_path, percent, "Downloading media", "downloading")
+            elif status == "finished":
+                _write_progress(progress_file_path, 99.0, "Processing media", "processing")
 
         preflight_info, preflight_fail_code, preflight_fail_message, preflight_strategy = _perform_attempts(
             phase="preflight",
@@ -1700,6 +1743,8 @@ def run_download(
             impersonation_available=impersonation_available,
             debug_logging=debug_logging,
         )
+        if _is_cancel_requested(cancel_flag_path):
+            return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
         if preflight_info is None:
             return _result(
                 False,
@@ -1747,6 +1792,8 @@ def run_download(
             progress_hooks=[_progress_hook],
             debug_logging=debug_logging,
         )
+        if _is_cancel_requested(cancel_flag_path):
+            return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
         if info is None:
             return _result(
                 False,
@@ -1783,6 +1830,7 @@ def run_download(
                 _debug_log(debug_logging, f"timestamp warning for file={final_path}")
 
         size_mb = os.path.getsize(final_path) / (1024 * 1024)
+        _write_progress(progress_file_path, 100.0, "Completed", "completed")
         return _result(
             True,
             "DOWNLOAD_COMPLETED",

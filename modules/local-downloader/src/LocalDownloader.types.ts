@@ -33,6 +33,7 @@ export interface LocalTaskStatusResult {
   filename?: string;
   filePath?: string;
   sizeMb?: number;
+  progressPercent?: number;
   errorCode?: string;
   errorMessage?: string;
   estimatedSizeMb?: number | null;
@@ -76,6 +77,7 @@ export interface LocalDownloadEvent {
   status: LocalTaskStatus;
   state: 'starting' | 'downloading' | 'processing' | 'saving' | 'completed' | 'error';
   message?: string;
+  progressPercent?: number;
 }
 
 export interface LocalDiagnostics {

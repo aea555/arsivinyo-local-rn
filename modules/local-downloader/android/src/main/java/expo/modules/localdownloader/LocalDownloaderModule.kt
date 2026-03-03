@@ -17,9 +17,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -44,6 +45,7 @@ data class TaskState(
   var filename: String? = null,
   var filePath: String? = null,
   var sizeMb: Double? = null,
+  var progressPercent: Double? = null,
   var errorCode: String? = null,
   var errorMessage: String? = null,
   var estimatedSizeMb: Double? = null,
@@ -96,6 +98,7 @@ data class DownloadPythonInput(
   val cookieProfile: String?,
   val maxFileSizeMb: Int,
   val cancelFlagPath: String?,
+  val progressFilePath: String?,
   val ffmpegPath: String?,
   val cookieFilePath: String?,
   val forceNoCookie: Boolean = false,
@@ -188,11 +191,13 @@ class LocalDownloaderModule : Module() {
       val cookiesDir = File(reactContext.filesDir, LEGACY_COOKIES_DIRNAME).apply { mkdirs() }
       val disabledCookiesDir = File(reactContext.filesDir, DISABLED_COOKIES_DIRNAME)
       val cancelFlag = createCancelFlag(taskId)
+      val progressFile = createProgressFile(taskId)
       val effectivePlatform = cookiePlatform ?: detectCookiePlatform(url)
 
       activeTaskId = taskId
       activeJob = scope.launch {
         var runtimeCookiePath: String? = null
+        var progressWatcher: Job? = null
         runCatching {
           debug("Task[$taskId] START url=$url platform=$effectivePlatform profile=$cookieProfile maxMb=$maxFileSizeMb")
           updateStatus(taskId, "STARTED", null, null, null, null, null)
@@ -290,8 +295,12 @@ class LocalDownloaderModule : Module() {
             return@runCatching
           }
 
-          emitProgress(taskId, "PROGRESS", "downloading", "Downloading media")
+          tasks[taskId]?.progressPercent = 0.0
+          emitProgress(taskId, "PROGRESS", "downloading", "Downloading media", 0.0)
           updateStatus(taskId, "PROGRESS", null, null, null, null, null)
+          progressWatcher = launch {
+            observeProgressFile(taskId, progressFile)
+          }
 
           var result = callPythonDownload(
             DownloadPythonInput(
@@ -301,6 +310,7 @@ class LocalDownloaderModule : Module() {
               cookieProfile = cookieProfile,
               maxFileSizeMb = maxFileSizeMb,
               cancelFlagPath = cancelFlag.absolutePath,
+              progressFilePath = progressFile.absolutePath,
               ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
               cookieFilePath = effectiveCookiePath,
               forceNoCookie = false,
@@ -316,6 +326,8 @@ class LocalDownloaderModule : Module() {
             emitProgress(taskId, "PROGRESS", "downloading", "Retrying without cookies")
             cleanupRuntimeCookieTemp(taskId)
             effectiveCookiePath = null
+            clearProgressFile(progressFile)
+            tasks[taskId]?.progressPercent = 0.0
             result = callPythonDownload(
               DownloadPythonInput(
                 url = url,
@@ -324,6 +336,7 @@ class LocalDownloaderModule : Module() {
                 cookieProfile = null,
                 maxFileSizeMb = maxFileSizeMb,
                 cancelFlagPath = cancelFlag.absolutePath,
+                progressFilePath = progressFile.absolutePath,
                 ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
                 cookieFilePath = null,
                 forceNoCookie = true,
@@ -334,6 +347,8 @@ class LocalDownloaderModule : Module() {
             )
             debug("Task[$taskId] download retry(no-cookie) result=$result")
           }
+          progressWatcher?.cancel()
+          progressWatcher = null
           result = normalizeRuntimeError(result, ffmpegInfo)
 
           if (shouldIgnoreTaskResult(taskId)) {
@@ -358,19 +373,20 @@ class LocalDownloaderModule : Module() {
             debug("Task[$taskId] success file=$filePath sizeMb=$sizeMb timestampNormalized=$timestampNormalized warning=$warningCode")
 
             updateStatus(taskId, "SUCCESS", filename, filePath, sizeMb, null, null)
+            tasks[taskId]?.progressPercent = 100.0
             tasks[taskId]?.timestampNormalized = timestampNormalized
             tasks[taskId]?.warningCode = warningCode
             persistTaskSnapshot()
             if (warningCode != null) {
               addError("$warningCode: task=$taskId")
             }
-            emitProgress(taskId, "SUCCESS", "completed", filename ?: "Download completed")
+            emitProgress(taskId, "SUCCESS", "completed", filename ?: "Download completed", 100.0)
           } else {
             val code = result.optString("code", "INTERNAL_ERROR")
             val message = result.optString("message", "Download failed")
             debug("Task[$taskId] download failed code=$code message=$message")
 
-            if (code == "DOWNLOAD_CANCELLED") {
+            if (isCancelRequested(taskId) || code == "DOWNLOAD_CANCELLED") {
               markCancelled(taskId, message)
               return@runCatching
             }
@@ -380,7 +396,13 @@ class LocalDownloaderModule : Module() {
             addError("$code: $message")
           }
         }.onFailure {
+          progressWatcher?.cancel()
           if (shouldIgnoreTaskResult(taskId)) {
+            return@onFailure
+          }
+
+          if (isCancelRequested(taskId)) {
+            markCancelled(taskId, "Cancellation requested")
             return@onFailure
           }
 
@@ -396,6 +418,7 @@ class LocalDownloaderModule : Module() {
         debug("Task[$taskId] cleanup runtime cookie + cancel flag")
         cleanupRuntimeCookieTemp(taskId)
         clearCancelFlag(taskId)
+        clearProgressFile(progressFile)
         if (activeTaskId == taskId) {
           activeTaskId = null
           activeJob = null
@@ -426,38 +449,16 @@ class LocalDownloaderModule : Module() {
       }
 
       markCancelRequested(taskId)
-      val job = activeJob
-      val confirmed = runBlocking {
-        withTimeoutOrNull(CANCEL_CONFIRM_TIMEOUT_MS) {
-          job?.join()
-          true
-        } ?: false
+      ignoredTaskResults.add(taskId)
+      if (!isTerminalStatus(tasks[taskId]?.status)) {
+        markCancelled(taskId, "Cancellation requested")
       }
-
-      if (confirmed) {
-        if (!isTerminalStatus(tasks[taskId]?.status)) {
-          markCancelled(taskId, "Task cancelled")
-        }
-      } else {
-        ignoredTaskResults.add(taskId)
-        updateStatus(
-          taskId,
-          "FAILURE",
-          null,
-          null,
-          null,
-          "TASK_CANCEL_TIMEOUT",
-          "Cancellation requested, but downloader did not stop in time."
-        )
-        emitProgress(taskId, "FAILURE", "error", "Cancellation timed out")
-        addError("TASK_CANCEL_TIMEOUT: task=$taskId")
-        activeTaskId = null
-        activeJob = null
-      }
+      debug("Task[$taskId] cancellation requested; task marked cancelled immediately")
 
       mapOf(
         "success" to true,
-        "confirmed" to confirmed
+        "confirmed" to true,
+        "pending" to true
       )
     }
 
@@ -1070,14 +1071,15 @@ class LocalDownloaderModule : Module() {
     }
   }
 
-  private fun emitProgress(taskId: String, status: String, state: String, message: String?) {
+  private fun emitProgress(taskId: String, status: String, state: String, message: String?, progressPercent: Double? = null) {
     sendEvent(
       "downloadProgress",
       mapOf(
         "taskId" to taskId,
         "status" to status,
         "state" to state,
-        "message" to message
+        "message" to message,
+        "progressPercent" to progressPercent?.coerceIn(0.0, 100.0)
       )
     )
   }
@@ -1144,6 +1146,7 @@ class LocalDownloaderModule : Module() {
       input.cookieProfile,
       input.maxFileSizeMb,
       input.cancelFlagPath,
+      input.progressFilePath,
       input.ffmpegPath,
       input.cookieFilePath,
       input.forceNoCookie,
@@ -2305,6 +2308,64 @@ class LocalDownloaderModule : Module() {
     return flagFile
   }
 
+  private fun createProgressFile(taskId: String): File {
+    val context = requireNotNull(appContext.reactContext)
+    val progressDir = File(context.cacheDir, DOWNLOAD_PROGRESS_DIRNAME).apply { mkdirs() }
+    val progressFile = File(progressDir, "$taskId.json")
+    clearProgressFile(progressFile)
+    return progressFile
+  }
+
+  private fun clearProgressFile(progressFile: File?) {
+    if (progressFile == null) return
+    runCatching {
+      if (progressFile.exists()) {
+        progressFile.delete()
+      }
+      val tmp = File("${progressFile.absolutePath}.tmp")
+      if (tmp.exists()) {
+        tmp.delete()
+      }
+    }
+  }
+
+  private suspend fun observeProgressFile(taskId: String, progressFile: File) {
+    var lastProgressBucket = -1
+    while (currentCoroutineContext().isActive) {
+      if (activeTaskId != taskId || shouldIgnoreTaskResult(taskId) || isTerminalStatus(tasks[taskId]?.status)) {
+        return
+      }
+
+      runCatching {
+        if (!progressFile.exists()) {
+          return@runCatching
+        }
+        val raw = progressFile.readText()
+        if (raw.isBlank()) {
+          return@runCatching
+        }
+        val json = JSONObject(raw)
+        val percent = json.optDouble("progressPercent", Double.NaN)
+          .takeIf { !it.isNaN() }
+          ?.coerceIn(0.0, 100.0)
+          ?: return@runCatching
+        val bucket = percent.toInt()
+        if (bucket == lastProgressBucket) {
+          return@runCatching
+        }
+
+        lastProgressBucket = bucket
+        tasks[taskId]?.progressPercent = percent
+        val message = json.optString("message").ifBlank { "Downloading media" }
+        emitProgress(taskId, "PROGRESS", "downloading", message, percent)
+      }.onFailure {
+        debug("Task[$taskId] progress file parse failed: ${it.message}")
+      }
+
+      delay(DOWNLOAD_PROGRESS_POLL_MS)
+    }
+  }
+
   private fun markCancelRequested(taskId: String) {
     val flag = cancelFlags[taskId] ?: return
     runCatching {
@@ -2432,6 +2493,7 @@ class LocalDownloaderModule : Module() {
           filename = obj.optString("filename").ifBlank { null },
           filePath = obj.optString("filePath").ifBlank { null },
           sizeMb = obj.optDouble("sizeMb", Double.NaN).takeIf { !it.isNaN() },
+          progressPercent = obj.optDouble("progressPercent", Double.NaN).takeIf { !it.isNaN() },
           errorCode = if (wasInFlight) "PROCESS_RESTARTED" else obj.optString("errorCode").ifBlank { null },
           errorMessage = if (wasInFlight) {
             "Download was interrupted because app process restarted."
@@ -2463,6 +2525,7 @@ class LocalDownloaderModule : Module() {
       "filename" to filename,
       "filePath" to filePath,
       "sizeMb" to sizeMb,
+      "progressPercent" to progressPercent,
       "errorCode" to errorCode,
       "errorMessage" to errorMessage,
       "estimatedSizeMb" to estimatedSizeMb,
@@ -2488,11 +2551,11 @@ class LocalDownloaderModule : Module() {
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
     private const val DEFAULT_MAX_FILE_SIZE_MB = 0
     private const val TASK_SNAPSHOT_FILENAME = "local_downloader_tasks.json"
+    private const val DOWNLOAD_PROGRESS_DIRNAME = "local_download_progress"
+    private const val DOWNLOAD_PROGRESS_POLL_MS = 400L
     private const val DEFAULT_COOKIE_PROFILE_FILENAME = ".default_profile"
     private const val MAX_ERROR_LOGS = 20
     private const val MB_IN_BYTES = 1024.0 * 1024.0
-    private const val CANCEL_CONFIRM_TIMEOUT_MS = 2500L
-
     private val SUPPORTED_PLATFORMS = setOf("youtube", "instagram", "facebook", "twitter", "reddit", "tiktok")
     private val PLATFORM_HOSTS = mapOf(
       "youtube" to listOf("youtube.com", "youtu.be"),

@@ -23,7 +23,13 @@
         "tryAgain": "حاول مرة أخرى",
         "rateLimitExceeded": "تم تجاوز حد الطلبات. يرجى الانتظار.",
         "fileTooLarge": "تم تجاوز حد حجم الملف (الحد الأقصى 50 ميجابايت)",
-        "networkError": "خطأ في الاتصال. تحقق من اتصالك بالإنترنت."
+        "networkError": "خطأ في الاتصال. تحقق من اتصالك بالإنترنت.",
+        "downloadProgress": "Download progress: {{percent}}%",
+        "cancelDownload": "Cancel download",
+        "cancelDownloadTitle": "Cancel current download?",
+        "cancelDownloadMessage": "Are you sure you want to stop the current download?",
+        "confirmCancelDownload": "Yes, cancel",
+        "cancelRequestFailed": "Could not request cancellation. Please try again."
     },
     "settings": {
         "title": "الإعدادات",
