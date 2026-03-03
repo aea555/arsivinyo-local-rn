@@ -139,6 +139,9 @@
         "TIKTOK_EXTRACTOR_UNSTABLE": "TikTok extractor is unstable for this video right now.",
         "COOKIE_DOMAIN_MISMATCH": "Cookie file domains do not match this platform.",
         "COOKIE_EMPTY_OR_EXPIRED": "Cookie file has no valid unexpired entries.",
-        "IMPERSONATION_RUNTIME_UNAVAILABLE": "Required impersonation target is unavailable in this build."
+        "IMPERSONATION_RUNTIME_UNAVAILABLE": "Required impersonation target is unavailable in this build.",
+        "IMPERSONATION_BOOTSTRAP_FAILED": "Impersonation runtime bootstrap failed.",
+        "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE": "Required impersonation target for this source is unavailable in this build.",
+        "IMPERSONATION_DEPENDENCY_MISSING": "Impersonation dependency is missing (curl-cffi)."
     }
 }

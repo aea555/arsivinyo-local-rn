@@ -10,6 +10,7 @@ import type {
   LocalDownloadEvent,
   LocalDownloadStartInput,
   LocalDownloadStartResult,
+  LocalImpersonationSelfTestResult,
   LocalSaveToMediaStoreInput,
   LocalSaveToMediaStoreResult,
   LocalPlatform,
@@ -31,6 +32,7 @@ type LocalDownloaderNativeModule = {
   setCustomDomainDefault(input: { domain: string; profileName: string }): Promise<{ success: boolean }>;
   deleteCustomDomainProfile(input: { domain: string; profileName: string }): Promise<{ success: boolean }>;
   getDiagnostics(): Promise<LocalDiagnostics>;
+  runImpersonationSelfTest(): Promise<LocalImpersonationSelfTestResult>;
   saveToMediaStore(input: LocalSaveToMediaStoreInput): Promise<LocalSaveToMediaStoreResult>;
 };
 
@@ -55,6 +57,7 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       setCustomDomainDefault: async () => unsupported(),
       deleteCustomDomainProfile: async () => unsupported(),
       getDiagnostics: async () => unsupported(),
+      runImpersonationSelfTest: async () => unsupported(),
       saveToMediaStore: async () => unsupported(),
     };
 const emitter: any = Platform.OS === 'android' ? new EventEmitter(NativeLocalDownloader as never) : null;

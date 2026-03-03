@@ -60,3 +60,5 @@ modules/local-downloader/android/src/main/assets/ffmpeg/*/ffprobe
 modules/local-downloader/android/src/main/assets/ffmpeg/*/*.so
 modules/local-downloader/android/src/main/assets/ffmpeg/*/*.a
 modules/local-downloader/android/src/main/assets/ffmpeg/*/*.o
+*.whl
+SHA256SUMS

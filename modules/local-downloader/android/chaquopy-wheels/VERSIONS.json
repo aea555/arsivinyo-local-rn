@@ -1,0 +1,12 @@
+{
+  "chaquopyVersion": "15.0.1",
+  "pythonVersion": "3.11",
+  "impersonationDependency": {
+    "name": "curl-cffi",
+    "version": "0.14.0"
+  },
+  "abiCoverage": [
+    "arm64-v8a"
+  ],
+  "notes": "Current pinned impersonation coverage is arm64-v8a only. Place Android-tagged wheels in this directory and update SHA256SUMS."
+}

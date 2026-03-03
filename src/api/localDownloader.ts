@@ -10,6 +10,7 @@ import LocalDownloaderModule, {
   type LocalDownloadEvent,
   type LocalDownloadStartInput,
   type LocalDownloadStartResult,
+  type LocalImpersonationSelfTestResult,
   type LocalSaveToMediaStoreInput,
   type LocalSaveToMediaStoreResult,
   type LocalPlatform,
@@ -97,6 +98,11 @@ export async function deleteLocalCustomDomainProfile(input: { domain: string; pr
 export async function getLocalDiagnostics(): Promise<LocalDiagnostics> {
   ensureAndroid();
   return LocalDownloaderModule.getDiagnostics();
+}
+
+export async function runLocalImpersonationSelfTest(): Promise<LocalImpersonationSelfTestResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.runImpersonationSelfTest();
 }
 
 export async function saveLocalFileToMediaStore(input: LocalSaveToMediaStoreInput): Promise<LocalSaveToMediaStoreResult> {

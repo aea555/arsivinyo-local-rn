@@ -9,6 +9,7 @@ export type {
   LocalDownloadEvent,
   LocalDownloadStartInput,
   LocalDownloadStartResult,
+  LocalImpersonationSelfTestResult,
   LocalSaveToMediaStoreInput,
   LocalSaveToMediaStoreResult,
   LocalPlatform,

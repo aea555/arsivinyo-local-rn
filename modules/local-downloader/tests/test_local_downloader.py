@@ -47,6 +47,19 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         )
         self.assertEqual(code, "REDDIT_EXTRACTOR_ROUTE_FAILED")
 
+        code, _ = ld._classify_exception(
+            Exception("The extractor is attempting impersonation, but none of these impersonate targets are available: firefox"),
+            "PREFLIGHT_FAILED",
+            platform=None,
+        )
+        self.assertEqual(code, "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE")
+
+    def test_extract_required_impersonation_targets(self):
+        targets = ld._extract_required_targets_from_message(
+            "none of these impersonate targets are available: firefox, chrome."
+        )
+        self.assertEqual(targets, ["firefox", "chrome"])
+
     def test_cancel_requested_detection(self):
         self.assertFalse(ld._is_cancel_requested(None))
 

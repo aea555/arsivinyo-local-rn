@@ -139,6 +139,9 @@
         "TIKTOK_EXTRACTOR_UNSTABLE": "TikTok çıkarıcısı şu anda bu video için kararsız.",
         "COOKIE_DOMAIN_MISMATCH": "Cookie dosyasındaki alanlar bu platformla eşleşmiyor.",
         "COOKIE_EMPTY_OR_EXPIRED": "Cookie dosyasında geçerli ve süresi dolmamış kayıt yok.",
-        "IMPERSONATION_RUNTIME_UNAVAILABLE": "Bu sürümde gerekli impersonation hedefi mevcut değil."
+        "IMPERSONATION_RUNTIME_UNAVAILABLE": "Bu sürümde gerekli impersonation hedefi mevcut değil.",
+        "IMPERSONATION_BOOTSTRAP_FAILED": "Impersonation çalışma zamanı başlatılamadı.",
+        "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE": "Bu kaynak için gereken impersonation hedefi bu derlemede kullanılamıyor.",
+        "IMPERSONATION_DEPENDENCY_MISSING": "Impersonation bağımlılığı eksik (curl-cffi)."
     }
 }

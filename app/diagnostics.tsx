@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { getLocalDiagnostics } from '@/src/api';
+import { getLocalDiagnostics, runLocalImpersonationSelfTest } from '@/src/api';
 import { listCookieProfiles, LOCAL_COOKIE_PLATFORMS } from '@/src/services';
 import { useTheme } from '@/src/theme';
 
@@ -26,6 +26,14 @@ type DiagnosticsState = {
   ytDlpVersionAgeDays?: number | null;
   platformStrategyLast?: string | null;
   impersonationRuntimeAvailable?: boolean | null;
+  impersonationEnabled?: boolean;
+  impersonationBackend?: 'curl_cffi' | 'none';
+  impersonationRequiredByExtractorLast?: string | null;
+  impersonationAttemptedTargetsLast?: string[];
+  impersonationResolvedTargetLast?: string | null;
+  impersonationWheelVersion?: string | null;
+  impersonationBuildAbiCoverage?: string[];
+  impersonationBootstrapError?: string | null;
   ffmpegPath: string | null;
   ffprobePath: string | null;
   ffmpegAbi?: string | null;
@@ -71,6 +79,14 @@ const initialState: DiagnosticsState = {
   ytDlpVersionAgeDays: null,
   platformStrategyLast: null,
   impersonationRuntimeAvailable: null,
+  impersonationEnabled: false,
+  impersonationBackend: 'none',
+  impersonationRequiredByExtractorLast: null,
+  impersonationAttemptedTargetsLast: [],
+  impersonationResolvedTargetLast: null,
+  impersonationWheelVersion: null,
+  impersonationBuildAbiCoverage: [],
+  impersonationBootstrapError: null,
   ffmpegPath: null,
   ffprobePath: null,
   ffmpegAbi: null,
@@ -129,6 +145,14 @@ export default function DiagnosticsScreen() {
       ytDlpVersionAgeDays: diag.ytDlpVersionAgeDays ?? null,
       platformStrategyLast: diag.platformStrategyLast ?? null,
       impersonationRuntimeAvailable: diag.impersonationRuntimeAvailable ?? null,
+      impersonationEnabled: diag.impersonationEnabled ?? false,
+      impersonationBackend: diag.impersonationBackend ?? 'none',
+      impersonationRequiredByExtractorLast: diag.impersonationRequiredByExtractorLast ?? null,
+      impersonationAttemptedTargetsLast: diag.impersonationAttemptedTargetsLast ?? [],
+      impersonationResolvedTargetLast: diag.impersonationResolvedTargetLast ?? null,
+      impersonationWheelVersion: diag.impersonationWheelVersion ?? null,
+      impersonationBuildAbiCoverage: diag.impersonationBuildAbiCoverage ?? [],
+      impersonationBootstrapError: diag.impersonationBootstrapError ?? null,
       ffmpegPath: diag.ffmpegPath,
       ffprobePath: diag.ffprobePath,
       ffmpegAbi: diag.ffmpegAbi,
@@ -192,6 +216,14 @@ export default function DiagnosticsScreen() {
           <Text style={[styles.row, { color: colors.textMuted }]}>
             Impersonation runtime: {state.impersonationRuntimeAvailable == null ? 'unknown' : state.impersonationRuntimeAvailable ? 'available' : 'unavailable'}
           </Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Impersonation enabled: {state.impersonationEnabled ? 'yes' : 'no'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Impersonation backend: {state.impersonationBackend ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Impersonation wheel version: {state.impersonationWheelVersion ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Impersonation ABIs: {(state.impersonationBuildAbiCoverage ?? []).join(', ') || 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Impersonation required extractor (last): {state.impersonationRequiredByExtractorLast ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Impersonation attempted targets (last): {(state.impersonationAttemptedTargetsLast ?? []).join(', ') || 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Impersonation resolved target (last): {state.impersonationResolvedTargetLast ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Impersonation bootstrap error: {state.impersonationBootstrapError ?? 'none'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Extractor key (last): {state.lastExtractorKey ?? 'none'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Raw yt-dlp error (last): {state.lastRawYtDlpError ?? 'none'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>
@@ -252,6 +284,19 @@ export default function DiagnosticsScreen() {
             ))
           )}
         </View>
+
+        <Pressable
+          onPress={async () => {
+            await runLocalImpersonationSelfTest();
+            await loadDiagnostics();
+          }}
+          style={({ pressed }) => [
+            styles.refreshButton,
+            { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
+          ]}
+        >
+          <Text style={[styles.refreshText, { color: colors.text }]}>Run Impersonation Self-Test</Text>
+        </Pressable>
 
         <Pressable
           onPress={loadDiagnostics}

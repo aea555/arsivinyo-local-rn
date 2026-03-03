@@ -1,5 +1,5 @@
 import datetime
-import importlib.util
+import importlib
 import json
 import os
 import random
@@ -53,6 +53,15 @@ TIKTOK_API_HOSTNAME_CANDIDATES = [
     "api22-normal-c-alisg.tiktokv.com",
     "api16-normal-c-useast1a.tiktokv.com",
 ]
+IMP_ABI_COVERAGE = ["arm64-v8a"]
+IMPERSONATION_BACKEND_NAME = "curl_cffi"
+IMPERSONATION_DEPENDENCY_PIN = "0.14.0"
+DAILYMOTION_DOMAINS = {"dailymotion.com", "www.dailymotion.com", "dai.ly"}
+IMPERSONATION_TARGET_MATRIX = {
+    "dailymotion": ["firefox", "chrome", "edge"],
+    "tiktok": ["chrome", "firefox"],
+    "reddit": ["chrome"],
+}
 IMPERSONATION_UNAVAILABLE_MARKERS = (
     "impersonate target",
     "no impersonate target is available",
@@ -83,6 +92,14 @@ _RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
     "platformStrategyLast": None,
     "ytDlpVersionAgeDays": None,
     "impersonationRuntimeAvailable": None,
+    "impersonationEnabled": False,
+    "impersonationBackend": "none",
+    "impersonationRequiredByExtractorLast": None,
+    "impersonationAttemptedTargetsLast": [],
+    "impersonationResolvedTargetLast": None,
+    "impersonationWheelVersion": None,
+    "impersonationBuildAbiCoverage": IMP_ABI_COVERAGE,
+    "impersonationBootstrapError": None,
 }
 _IMPERSONATION_RUNTIME_AVAILABLE: Optional[bool] = None
 
@@ -98,6 +115,9 @@ def _redact_text(value: str) -> str:
 
 def _reset_attempt_trace() -> None:
     _RUNTIME_DIAGNOSTICS["attemptTrace"] = []
+    _RUNTIME_DIAGNOSTICS["impersonationAttemptedTargetsLast"] = []
+    _RUNTIME_DIAGNOSTICS["impersonationResolvedTargetLast"] = None
+    _RUNTIME_DIAGNOSTICS["impersonationRequiredByExtractorLast"] = None
 
 
 def _push_attempt_trace(entry: Dict[str, Any]) -> None:
@@ -111,22 +131,89 @@ def _set_runtime_diag(key: str, value: Any) -> None:
     _RUNTIME_DIAGNOSTICS[key] = value
 
 
+def _append_diag_target(target: Optional[str]) -> None:
+    if not target:
+        return
+    current = list(_RUNTIME_DIAGNOSTICS.get("impersonationAttemptedTargetsLast") or [])
+    if target not in current:
+        current.append(target)
+    _set_runtime_diag("impersonationAttemptedTargetsLast", current)
+
+
 def _is_impersonation_unavailable_message(message: str) -> bool:
     lower = (message or "").lower()
     return any(marker in lower for marker in IMPERSONATION_UNAVAILABLE_MARKERS)
 
 
-def _is_impersonation_runtime_available(debug_logging: bool = False) -> bool:
+def _extract_required_targets_from_message(message: str) -> List[str]:
+    text = message or ""
+    match = re.search(r"available:\s*([a-z0-9_,\-\s]+)", text, flags=re.IGNORECASE)
+    if not match:
+        return []
+    raw = match.group(1).strip().rstrip(".")
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def _bootstrap_impersonation_runtime(debug_logging: bool = False) -> bool:
     global _IMPERSONATION_RUNTIME_AVAILABLE
     if _IMPERSONATION_RUNTIME_AVAILABLE is not None:
         return _IMPERSONATION_RUNTIME_AVAILABLE
 
-    available = importlib.util.find_spec("curl_cffi") is not None
-    _IMPERSONATION_RUNTIME_AVAILABLE = available
-    _set_runtime_diag("impersonationRuntimeAvailable", available)
-    if not available:
-        _debug_log(debug_logging, "impersonation runtime unavailable: curl_cffi not installed")
-    return available
+    _set_runtime_diag("impersonationAttemptedTargetsLast", [])
+    _set_runtime_diag("impersonationResolvedTargetLast", None)
+    _set_runtime_diag("impersonationRequiredByExtractorLast", None)
+
+    try:
+        module = importlib.import_module(IMPERSONATION_BACKEND_NAME)
+    except ModuleNotFoundError as exc:
+        _IMPERSONATION_RUNTIME_AVAILABLE = False
+        _set_runtime_diag("impersonationRuntimeAvailable", False)
+        _set_runtime_diag("impersonationEnabled", False)
+        _set_runtime_diag("impersonationBackend", "none")
+        _set_runtime_diag("impersonationWheelVersion", IMPERSONATION_DEPENDENCY_PIN)
+        _set_runtime_diag("impersonationBootstrapError", f"IMPERSONATION_DEPENDENCY_MISSING: {exc}")
+        _debug_log(debug_logging, "IMP_BOOTSTRAP_FAIL code=IMPERSONATION_DEPENDENCY_MISSING reason=module-not-found")
+        return False
+    except Exception as exc:
+        _IMPERSONATION_RUNTIME_AVAILABLE = False
+        _set_runtime_diag("impersonationRuntimeAvailable", False)
+        _set_runtime_diag("impersonationEnabled", False)
+        _set_runtime_diag("impersonationBackend", "none")
+        _set_runtime_diag("impersonationWheelVersion", None)
+        _set_runtime_diag("impersonationBootstrapError", f"IMPERSONATION_BOOTSTRAP_FAILED: {exc}")
+        _debug_log(debug_logging, f"IMP_BOOTSTRAP_FAIL code=IMPERSONATION_BOOTSTRAP_FAILED reason={exc}")
+        return False
+
+    try:
+        from curl_cffi import Curl
+
+        curl = Curl()
+        curl.close()
+        version = str(getattr(module, "__version__", "")).strip() or None
+        _IMPERSONATION_RUNTIME_AVAILABLE = True
+        _set_runtime_diag("impersonationRuntimeAvailable", True)
+        _set_runtime_diag("impersonationEnabled", True)
+        _set_runtime_diag("impersonationBackend", IMPERSONATION_BACKEND_NAME)
+        _set_runtime_diag("impersonationWheelVersion", version)
+        _set_runtime_diag("impersonationBootstrapError", None)
+        _debug_log(
+            debug_logging,
+            f"IMP_BOOTSTRAP_OK backend={IMPERSONATION_BACKEND_NAME} version={version or 'unknown'}",
+        )
+        return True
+    except Exception as exc:
+        _IMPERSONATION_RUNTIME_AVAILABLE = False
+        _set_runtime_diag("impersonationRuntimeAvailable", False)
+        _set_runtime_diag("impersonationEnabled", False)
+        _set_runtime_diag("impersonationBackend", "none")
+        _set_runtime_diag("impersonationWheelVersion", None)
+        _set_runtime_diag("impersonationBootstrapError", f"IMPERSONATION_BOOTSTRAP_FAILED: {exc}")
+        _debug_log(debug_logging, f"IMP_BOOTSTRAP_FAIL code=IMPERSONATION_BOOTSTRAP_FAILED reason={exc}")
+        return False
+
+
+def _is_impersonation_runtime_available(debug_logging: bool = False) -> bool:
+    return _bootstrap_impersonation_runtime(debug_logging)
 
 
 def _merge_extractor_args(base: Optional[Dict[str, Any]], extra: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -161,6 +248,8 @@ def get_runtime_diagnostics() -> str:
     if isinstance(version, str):
         _set_runtime_diag("ytDlpVersionAgeDays", _extract_yt_dlp_version_age_days(version))
 
+    _bootstrap_impersonation_runtime(debug_logging=False)
+
     payload = {
         "normalizedUrlLast": _RUNTIME_DIAGNOSTICS.get("normalizedUrlLast"),
         "attemptTraceCount": len(_RUNTIME_DIAGNOSTICS.get("attemptTrace") or []),
@@ -171,8 +260,34 @@ def get_runtime_diagnostics() -> str:
         "platformStrategyLast": _RUNTIME_DIAGNOSTICS.get("platformStrategyLast"),
         "ytDlpVersionAgeDays": _RUNTIME_DIAGNOSTICS.get("ytDlpVersionAgeDays"),
         "impersonationRuntimeAvailable": _RUNTIME_DIAGNOSTICS.get("impersonationRuntimeAvailable"),
+        "impersonationEnabled": _RUNTIME_DIAGNOSTICS.get("impersonationEnabled"),
+        "impersonationBackend": _RUNTIME_DIAGNOSTICS.get("impersonationBackend"),
+        "impersonationRequiredByExtractorLast": _RUNTIME_DIAGNOSTICS.get("impersonationRequiredByExtractorLast"),
+        "impersonationAttemptedTargetsLast": _RUNTIME_DIAGNOSTICS.get("impersonationAttemptedTargetsLast") or [],
+        "impersonationResolvedTargetLast": _RUNTIME_DIAGNOSTICS.get("impersonationResolvedTargetLast"),
+        "impersonationWheelVersion": _RUNTIME_DIAGNOSTICS.get("impersonationWheelVersion"),
+        "impersonationBuildAbiCoverage": _RUNTIME_DIAGNOSTICS.get("impersonationBuildAbiCoverage") or IMP_ABI_COVERAGE,
+        "impersonationBootstrapError": _RUNTIME_DIAGNOSTICS.get("impersonationBootstrapError"),
     }
     return json.dumps(payload)
+
+
+def run_impersonation_self_test(debug_logging: bool = False) -> str:
+    enabled = _bootstrap_impersonation_runtime(debug_logging=debug_logging)
+    code = "IMPERSONATION_SELF_TEST_OK" if enabled else (
+        "IMPERSONATION_BOOTSTRAP_FAILED"
+        if str(_RUNTIME_DIAGNOSTICS.get("impersonationBootstrapError") or "").startswith("IMPERSONATION_BOOTSTRAP_FAILED")
+        else "IMPERSONATION_DEPENDENCY_MISSING"
+    )
+    return _result(
+        enabled,
+        code,
+        None if enabled else str(_RUNTIME_DIAGNOSTICS.get("impersonationBootstrapError") or "Impersonation bootstrap failed"),
+        impersonation_enabled=enabled,
+        backend=_RUNTIME_DIAGNOSTICS.get("impersonationBackend"),
+        wheel_version=_RUNTIME_DIAGNOSTICS.get("impersonationWheelVersion"),
+        build_abi_coverage=_RUNTIME_DIAGNOSTICS.get("impersonationBuildAbiCoverage") or IMP_ABI_COVERAGE,
+    )
 
 
 def _debug_log(enabled: bool, message: str) -> None:
@@ -707,6 +822,10 @@ def _classify_exception(exc: Exception, default_code: str, platform: Optional[st
     lower = message.lower()
 
     if _is_impersonation_unavailable_message(lower):
+        if "extractor is attempting impersonation" in lower or "none of these impersonate targets are available" in lower:
+            return "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE", message
+        if "missing dependencies required" in lower:
+            return "IMPERSONATION_DEPENDENCY_MISSING", message
         return "IMPERSONATION_RUNTIME_UNAVAILABLE", message
 
     if platform == "reddit" and "[generic]" in lower:
@@ -741,6 +860,8 @@ def _build_platform_attempts(
     impersonation_available: bool,
 ) -> List[Dict[str, Any]]:
     attempts: List[Dict[str, Any]] = []
+    host = _extract_host(normalized_url)
+    is_dailymotion = host in DAILYMOTION_DOMAINS or host.endswith(".dailymotion.com") or host.endswith(".dai.ly")
 
     if platform == "reddit":
         if has_cookie and cookie_integrity_ok:
@@ -781,6 +902,27 @@ def _build_platform_attempts(
     if platform == "tiktok":
         install_id = _load_or_create_tiktok_install_id()
         device_id = _load_or_create_tiktok_device_id()
+        tiktok_targets = IMPERSONATION_TARGET_MATRIX.get("tiktok", [])
+        if impersonation_available:
+            for target in tiktok_targets:
+                if has_cookie and cookie_integrity_ok:
+                    attempts.append(
+                        {
+                            "label": f"tiktok-cookie-impersonate-{target}",
+                            "use_cookie": True,
+                            "impersonate": target,
+                            "extractor_args": {"tiktok": {"impersonate": [target]}},
+                        }
+                    )
+                attempts.append(
+                    {
+                        "label": f"tiktok-anon-impersonate-{target}",
+                        "use_cookie": False,
+                        "impersonate": target,
+                        "extractor_args": {"tiktok": {"impersonate": [target]}},
+                    }
+                )
+
         if has_cookie and cookie_integrity_ok:
             attempts.append({"label": "tiktok-base-cookie", "use_cookie": True})
 
@@ -823,6 +965,35 @@ def _build_platform_attempts(
                     "impersonate": "chrome",
                 }
             )
+        return attempts
+
+    if is_dailymotion:
+        dailymotion_targets = IMPERSONATION_TARGET_MATRIX.get("dailymotion", [])
+        if impersonation_available:
+            for target in dailymotion_targets:
+                attempts.append(
+                    {
+                        "label": f"dailymotion-impersonate-{target}",
+                        "use_cookie": has_cookie and cookie_integrity_ok,
+                        "impersonate": target,
+                        "extractor_args": {"dailymotion": {"impersonate": [target]}},
+                    }
+                )
+                attempts.append(
+                    {
+                        "label": f"dailymotion-anon-impersonate-{target}",
+                        "use_cookie": False,
+                        "impersonate": target,
+                        "extractor_args": {"dailymotion": {"impersonate": [target]}},
+                    }
+                )
+        attempts.append(
+            {
+                "label": "dailymotion-no-impersonate",
+                "use_cookie": has_cookie and cookie_integrity_ok,
+                "extractor_args": {"dailymotion": {"impersonate": ["false"]}},
+            }
+        )
         return attempts
 
     attempts.append({"label": "default-primary", "use_cookie": has_cookie and cookie_integrity_ok})
@@ -957,6 +1128,8 @@ def _perform_attempts(
         if force_generic_extractor:
             opts["force_generic_extractor"] = True
 
+        _append_diag_target(impersonate)
+
         _push_attempt_trace(
             {
                 "timeMs": _now_ms(),
@@ -967,11 +1140,11 @@ def _perform_attempts(
                 "platform": platform,
                 "cookieUsed": bool(active_cookie),
                 "retryIndex": index,
-                        "extractorArgs": extractor_args or {},
-                        "impersonate": impersonate,
-                        "forceGenericExtractor": force_generic_extractor,
-                    }
-                )
+                "extractorArgs": extractor_args or {},
+                "impersonate": impersonate,
+                "forceGenericExtractor": force_generic_extractor,
+            }
+        )
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -986,6 +1159,9 @@ def _perform_attempts(
                 if "entries" in info and info["entries"]:
                     info = info["entries"][0]
                 _set_runtime_diag("lastExtractorKey", info.get("extractor_key"))
+                if impersonate:
+                    _set_runtime_diag("impersonationResolvedTargetLast", impersonate)
+                    _debug_log(debug_logging, f"IMP_TARGET_SELECTED target={impersonate} strategy={label}")
                 _push_attempt_trace(
                     {
                         "timeMs": _now_ms(),
@@ -1000,11 +1176,18 @@ def _perform_attempts(
         except Exception as exc:
             code, message = _classify_exception(exc, "PREFLIGHT_FAILED" if phase == "preflight" else "DOWNLOAD_FAILED", platform=platform)
             if _is_impersonation_unavailable_message(message):
-                _set_runtime_diag("impersonationRuntimeAvailable", False)
+                required_extractor = _extract_error_extractor_key(message)
+                required_targets = _extract_required_targets_from_message(message)
+                if required_extractor:
+                    _set_runtime_diag("impersonationRequiredByExtractorLast", required_extractor)
+                    _debug_log(debug_logging, f"IMP_TARGET_REQUIRED extractor={required_extractor} targets={required_targets}")
+                if code in {"IMPERSONATION_DEPENDENCY_MISSING", "IMPERSONATION_RUNTIME_UNAVAILABLE", "IMPERSONATION_BOOTSTRAP_FAILED"}:
+                    _set_runtime_diag("impersonationRuntimeAvailable", False)
+                    _set_runtime_diag("impersonationEnabled", False)
                 # Some extractors force impersonation (for example dailymotion: firefox).
                 # Retry once with explicit per-extractor no-impersonate args before failing.
                 forced_args: Dict[str, Dict[str, List[str]]] = dict(IMPERSONATION_DISABLE_EXTRACTOR_ARGS)
-                extractor_key = _extract_error_extractor_key(message)
+                extractor_key = required_extractor
                 if extractor_key:
                     forced_args[extractor_key] = {"impersonate": ["false"]}
 
@@ -1065,6 +1248,7 @@ def _perform_attempts(
                             retry_info = retry_info["entries"][0]
                         _set_runtime_diag("lastExtractorKey", retry_info.get("extractor_key"))
                         _set_runtime_diag("platformStrategyLast", retry_label)
+                        _set_runtime_diag("impersonationResolvedTargetLast", None)
                         _push_attempt_trace(
                             {
                                 "timeMs": _now_ms(),
@@ -1082,6 +1266,8 @@ def _perform_attempts(
                         "PREFLIGHT_FAILED" if phase == "preflight" else "DOWNLOAD_FAILED",
                         platform=platform,
                     )
+                    if _is_impersonation_unavailable_message(message) and required_extractor:
+                        _set_runtime_diag("impersonationRequiredByExtractorLast", required_extractor)
             redacted = _redact_text(message)
             _set_runtime_diag("lastRawYtDlpError", redacted)
             _push_attempt_trace(

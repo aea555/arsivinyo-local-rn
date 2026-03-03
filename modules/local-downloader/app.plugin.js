@@ -2,6 +2,8 @@ const { createRunOncePlugin, withAppBuildGradle, withGradleProperties, withProje
 
 const CHAQUOPY_VERSION = '15.0.1';
 const YT_DLP_VERSION = '2026.2.4';
+const CURL_CFFI_VERSION = '0.14.0';
+const IMPERSONATION_WHEELS_DIR = 'modules/local-downloader/android/chaquopy-wheels';
 
 const TAGS = {
   buildscriptRepo: {
@@ -19,6 +21,10 @@ const TAGS = {
   pythonConfig: {
     begin: '// @generated begin local-downloader-python-config',
     end: '// @generated end local-downloader-python-config',
+  },
+  impersonationPip: {
+    begin: '// @generated begin local-downloader-impersonation-pip',
+    end: '// @generated end local-downloader-impersonation-pip',
   },
   sourceSetConfig: {
     begin: '// @generated begin local-downloader-sourceset-config',
@@ -131,7 +137,9 @@ function addAppGradleChanges(contents) {
 
   next = ensureChaquopyApplyPlugin(next);
 
-  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("yt-dlp==${YT_DLP_VERSION}")\n            install("tenacity==9.0.0")\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
+  const wheelsDirNormalized = IMPERSONATION_WHEELS_DIR.replace(/\\/g, '/');
+  const impersonationPipBlock = `${TAGS.impersonationPip.begin}\n            def impersonationWheelsDir = file("../../${wheelsDirNormalized}")\n            if (impersonationWheelsDir.exists()) {\n                options("--find-links", impersonationWheelsDir.absolutePath)\n                install("curl-cffi==${CURL_CFFI_VERSION}")\n            } else {\n                println("[local-downloader] Impersonation wheels not found at ${wheelsDirNormalized}; continuing without curl-cffi")\n            }\n${TAGS.impersonationPip.end}`;
+  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("yt-dlp==${YT_DLP_VERSION}")\n            install("tenacity==9.0.0")\n${impersonationPipBlock}\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
 
   const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
 

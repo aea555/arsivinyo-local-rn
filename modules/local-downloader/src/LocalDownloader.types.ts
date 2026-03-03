@@ -108,6 +108,14 @@ export interface LocalDiagnostics {
   ytDlpVersionAgeDays?: number | null;
   platformStrategyLast?: string | null;
   impersonationRuntimeAvailable?: boolean | null;
+  impersonationEnabled?: boolean;
+  impersonationBackend?: 'curl_cffi' | 'none';
+  impersonationRequiredByExtractorLast?: string | null;
+  impersonationAttemptedTargetsLast?: string[];
+  impersonationResolvedTargetLast?: string | null;
+  impersonationWheelVersion?: string | null;
+  impersonationBuildAbiCoverage?: string[];
+  impersonationBootstrapError?: string | null;
   ffmpegPath: string | null;
   ffprobePath: string | null;
   ffmpegAbi?: string | null;
@@ -138,4 +146,14 @@ export interface LocalDiagnostics {
   } | null;
   activeTaskId: string | null;
   lastErrors: string[];
+}
+
+export interface LocalImpersonationSelfTestResult {
+  success: boolean;
+  code: string;
+  message?: string | null;
+  impersonation_enabled?: boolean;
+  backend?: string | null;
+  wheel_version?: string | null;
+  build_abi_coverage?: string[];
 }

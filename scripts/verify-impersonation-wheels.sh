@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+WHEELS_DIR="$ROOT_DIR/modules/local-downloader/android/chaquopy-wheels"
+VERSIONS_FILE="$WHEELS_DIR/VERSIONS.json"
+CHECKSUM_FILE="$WHEELS_DIR/SHA256SUMS"
+
+command -v unzip >/dev/null 2>&1 || {
+  echo "[verify-impersonation-wheels] unzip command is required"
+  exit 1
+}
+
+if [[ ! -d "$WHEELS_DIR" ]]; then
+  echo "[verify-impersonation-wheels] Missing wheels directory: $WHEELS_DIR"
+  exit 1
+fi
+
+if [[ ! -f "$VERSIONS_FILE" ]]; then
+  echo "[verify-impersonation-wheels] Missing versions file: $VERSIONS_FILE"
+  exit 1
+fi
+
+if [[ ! -f "$CHECKSUM_FILE" ]]; then
+  echo "[verify-impersonation-wheels] Missing checksum file: $CHECKSUM_FILE"
+  exit 1
+fi
+
+resolve_required_abis() {
+  if [[ -n "${ABI_LIST:-}" ]]; then
+    echo "$ABI_LIST"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    local parsed
+    parsed="$(python3 - <<PY 2>/dev/null
+import json
+from pathlib import Path
+path = Path("$VERSIONS_FILE")
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    print("")
+    raise SystemExit(0)
+abis = data.get("abiCoverage") or []
+print(" ".join([str(x) for x in abis]))
+PY
+)"
+    if [[ -n "$parsed" ]]; then
+      echo "$parsed"
+      return
+    fi
+  fi
+  echo "arm64-v8a"
+}
+
+ABI_LIST_RAW="$(resolve_required_abis)"
+read -r -a required_abis <<< "$ABI_LIST_RAW"
+
+mapfile -t wheels < <(find "$WHEELS_DIR" -maxdepth 1 -type f -name '*.whl' -printf '%f\n' | sort)
+if [[ "${#wheels[@]}" -eq 0 ]]; then
+  echo "[verify-impersonation-wheels] No wheel files found in $WHEELS_DIR"
+  exit 1
+fi
+
+if ! grep -Eq '^[0-9a-f]{64}\s+.+\.whl$' "$CHECKSUM_FILE"; then
+  echo "[verify-impersonation-wheels] SHA256SUMS has no valid wheel checksum entries"
+  exit 1
+fi
+
+(
+  cd "$WHEELS_DIR"
+  sha256sum -c SHA256SUMS
+)
+
+for abi in "${required_abis[@]}"; do
+  abi_token="${abi//-/_}"
+  if ! printf '%s\n' "${wheels[@]}" | grep -Eq "^curl_cffi-.*android.*${abi_token}.*\\.whl$"; then
+    echo "[verify-impersonation-wheels] Missing curl_cffi Android wheel for ABI token: $abi_token"
+    exit 1
+  fi
+done
+
+for wheel in "${wheels[@]}"; do
+  if [[ "$wheel" == curl_cffi-* ]] && [[ "$wheel" =~ (manylinux|macosx|win_amd64|win32) ]]; then
+    echo "[verify-impersonation-wheels] Non-Android curl_cffi wheel found: $wheel"
+    exit 1
+  fi
+  if [[ "$wheel" == curl_cffi-* ]]; then
+    if ! unzip -l "$WHEELS_DIR/$wheel" | grep -q 'curl_cffi/__init__.py'; then
+      echo "[verify-impersonation-wheels] Wheel missing curl_cffi package files: $wheel"
+      exit 1
+    fi
+  fi
+done
+
+echo "[verify-impersonation-wheels] Wheel verification passed (${#wheels[@]} wheel files, required_abis=${ABI_LIST_RAW})"

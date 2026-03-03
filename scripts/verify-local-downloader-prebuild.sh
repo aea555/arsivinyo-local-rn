@@ -8,6 +8,9 @@ BUILD_GRADLE="$ROOT_DIR/android/build.gradle"
 APP_GRADLE="$ROOT_DIR/android/app/build.gradle"
 GRADLE_PROPERTIES="$ROOT_DIR/android/gradle.properties"
 MERGED_NATIVE_LIBS_DIR="$ROOT_DIR/android/app/build/intermediates/merged_native_libs/debug/mergeDebugNativeLibs/out/lib"
+WHEELS_DIR="$ROOT_DIR/modules/local-downloader/android/chaquopy-wheels"
+WHEEL_CHECKSUMS="$WHEELS_DIR/SHA256SUMS"
+WHEEL_VERSIONS="$WHEELS_DIR/VERSIONS.json"
 
 assert_once() {
   local marker="$1"
@@ -20,6 +23,34 @@ assert_once() {
   fi
 }
 
+resolve_required_abis() {
+  if [[ -n "${ABI_LIST:-}" ]]; then
+    echo "$ABI_LIST"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1 && [[ -f "$WHEEL_VERSIONS" ]]; then
+    local parsed
+    parsed="$(python3 - <<PY 2>/dev/null
+import json
+from pathlib import Path
+path = Path("$WHEEL_VERSIONS")
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    print("")
+    raise SystemExit(0)
+abis = data.get("abiCoverage") or []
+print(" ".join([str(x) for x in abis]))
+PY
+)"
+    if [[ -n "$parsed" ]]; then
+      echo "$parsed"
+      return
+    fi
+  fi
+  echo "arm64-v8a"
+}
+
 verify_generated_files() {
   if [[ ! -f "$BUILD_GRADLE" || ! -f "$APP_GRADLE" || ! -f "$GRADLE_PROPERTIES" ]]; then
     echo "[verify-local-downloader-prebuild] Android Gradle files were not generated"
@@ -30,6 +61,7 @@ verify_generated_files() {
   assert_once "// @generated begin local-downloader-chaquopy-allprojects-repo" "$BUILD_GRADLE"
   assert_once "// @generated begin local-downloader-chaquopy-buildscript-classpath" "$BUILD_GRADLE"
   assert_once "// @generated begin local-downloader-python-config" "$APP_GRADLE"
+  assert_once "// @generated begin local-downloader-impersonation-pip" "$APP_GRADLE"
   assert_once "// @generated begin local-downloader-sourceset-config" "$APP_GRADLE"
 
   if ! grep -Fq 'apply plugin: "com.chaquo.python"' "$APP_GRADLE"; then
@@ -41,6 +73,23 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] expo.useLegacyPackaging must be true in android/gradle.properties"
     exit 1
   fi
+
+  if ! grep -Fq 'install("curl-cffi==' "$APP_GRADLE"; then
+    echo "[verify-local-downloader-prebuild] Missing curl-cffi install line in app/build.gradle"
+    exit 1
+  fi
+}
+
+verify_impersonation_wheels() {
+  if [[ ! -d "$WHEELS_DIR" ]]; then
+    echo "[verify-local-downloader-prebuild] Missing wheels directory: $WHEELS_DIR"
+    exit 1
+  fi
+  if [[ ! -f "$WHEEL_CHECKSUMS" ]]; then
+    echo "[verify-local-downloader-prebuild] Missing wheels checksum file: $WHEEL_CHECKSUMS"
+    exit 1
+  fi
+  bash "$ROOT_DIR/scripts/verify-impersonation-wheels.sh"
 }
 
 verify_merged_native_libs() {
@@ -53,7 +102,10 @@ verify_merged_native_libs() {
     exit 1
   }
 
-  local required_abis=("arm64-v8a" "armeabi-v7a" "x86_64")
+  local abi_list_raw
+  abi_list_raw="$(resolve_required_abis)"
+  local required_abis=()
+  read -r -a required_abis <<< "$abi_list_raw"
   for abi in "${required_abis[@]}"; do
     local ffmpeg_lib="$MERGED_NATIVE_LIBS_DIR/$abi/libffmpeg.so"
     local ffprobe_lib="$MERGED_NATIVE_LIBS_DIR/$abi/libffprobe.so"
@@ -66,10 +118,12 @@ verify_merged_native_libs() {
       exit 1
     fi
   done
+  echo "[verify-local-downloader-prebuild] merged native libs verified for ABIs: $abi_list_raw"
 }
 
 for run in 1 2; do
   echo "[verify-local-downloader-prebuild] prebuild run $run"
+  verify_impersonation_wheels
   CI=1 npx expo prebuild --clean --platform android --no-install >/tmp/local-downloader-prebuild-$run.log 2>&1 || {
     cat /tmp/local-downloader-prebuild-$run.log
     exit 1

@@ -883,6 +883,14 @@ class LocalDownloaderModule : Module() {
       var ytDlpVersionAgeDays: Int? = null
       var lastCookieCheck: Map<String, Any?>? = null
       var impersonationRuntimeAvailable: Boolean? = null
+      var impersonationEnabled: Boolean = false
+      var impersonationBackend: String = "none"
+      var impersonationRequiredByExtractorLast: String? = null
+      var impersonationAttemptedTargetsLast: List<String> = emptyList()
+      var impersonationResolvedTargetLast: String? = null
+      var impersonationWheelVersion: String? = null
+      var impersonationBuildAbiCoverage: List<String> = emptyList()
+      var impersonationBootstrapError: String? = null
 
       runCatching {
         ensurePythonReady()
@@ -901,6 +909,35 @@ class LocalDownloaderModule : Module() {
         ytDlpVersionAgeDays = runtimeDiag.opt("ytDlpVersionAgeDays")?.toString()?.toIntOrNull()
         if (runtimeDiag.has("impersonationRuntimeAvailable") && !runtimeDiag.isNull("impersonationRuntimeAvailable")) {
           impersonationRuntimeAvailable = runtimeDiag.optBoolean("impersonationRuntimeAvailable")
+        }
+        if (runtimeDiag.has("impersonationEnabled") && !runtimeDiag.isNull("impersonationEnabled")) {
+          impersonationEnabled = runtimeDiag.optBoolean("impersonationEnabled")
+        }
+        impersonationBackend = runtimeDiag.optString("impersonationBackend", "none").ifBlank { "none" }
+        impersonationRequiredByExtractorLast = runtimeDiag.optString("impersonationRequiredByExtractorLast")
+          .takeIf { it.isNotBlank() && it != "null" }
+        impersonationResolvedTargetLast = runtimeDiag.optString("impersonationResolvedTargetLast")
+          .takeIf { it.isNotBlank() && it != "null" }
+        impersonationWheelVersion = runtimeDiag.optString("impersonationWheelVersion")
+          .takeIf { it.isNotBlank() && it != "null" }
+        impersonationBootstrapError = runtimeDiag.optString("impersonationBootstrapError")
+          .takeIf { it.isNotBlank() && it != "null" }
+
+        val attemptedTargets = runtimeDiag.optJSONArray("impersonationAttemptedTargetsLast")
+        impersonationAttemptedTargetsLast = if (attemptedTargets == null) {
+          emptyList()
+        } else {
+          (0 until attemptedTargets.length()).mapNotNull { i ->
+            attemptedTargets.optString(i).takeIf { v -> v.isNotBlank() }
+          }
+        }
+        val abiCoverage = runtimeDiag.optJSONArray("impersonationBuildAbiCoverage")
+        impersonationBuildAbiCoverage = if (abiCoverage == null) {
+          emptyList()
+        } else {
+          (0 until abiCoverage.length()).mapNotNull { i ->
+            abiCoverage.optString(i).takeIf { v -> v.isNotBlank() }
+          }
         }
 
         val traceArray = runtimeDiag.optJSONArray("attemptTrace")
@@ -977,6 +1014,14 @@ class LocalDownloaderModule : Module() {
         "ytDlpVersionAgeDays" to ytDlpVersionAgeDays,
         "platformStrategyLast" to platformStrategyLast,
         "impersonationRuntimeAvailable" to impersonationRuntimeAvailable,
+        "impersonationEnabled" to impersonationEnabled,
+        "impersonationBackend" to impersonationBackend,
+        "impersonationRequiredByExtractorLast" to impersonationRequiredByExtractorLast,
+        "impersonationAttemptedTargetsLast" to impersonationAttemptedTargetsLast,
+        "impersonationResolvedTargetLast" to impersonationResolvedTargetLast,
+        "impersonationWheelVersion" to impersonationWheelVersion,
+        "impersonationBuildAbiCoverage" to impersonationBuildAbiCoverage,
+        "impersonationBootstrapError" to impersonationBootstrapError,
         "customDomainMatchLast" to lastCustomDomainMatch?.let {
           mapOf(
             "urlHost" to it.urlHost,
@@ -1003,6 +1048,24 @@ class LocalDownloaderModule : Module() {
         "ffprobeExists" to ffmpegInfo.ffprobeExists,
         "mergeCapable" to ffmpegInfo.mergeCapable,
         "activeHttpUserAgent" to DEFAULT_HTTP_USER_AGENT
+      )
+    }
+
+    AsyncFunction("runImpersonationSelfTest") {
+      ensurePythonReady()
+      val py = Python.getInstance()
+      val result = py.getModule("local_downloader").callAttr("run_impersonation_self_test", debugLoggingEnabled)
+      val json = JSONObject(result.toString())
+      mapOf(
+        "success" to json.optBoolean("success", false),
+        "code" to json.optString("code", "INTERNAL_ERROR"),
+        "message" to json.optString("message").ifBlank { null },
+        "impersonation_enabled" to json.optBoolean("impersonation_enabled", false),
+        "backend" to json.optString("backend").ifBlank { null },
+        "wheel_version" to json.optString("wheel_version").ifBlank { null },
+        "build_abi_coverage" to (json.optJSONArray("build_abi_coverage")?.let { arr ->
+          (0 until arr.length()).mapNotNull { idx -> arr.optString(idx).takeIf { v -> v.isNotBlank() } }
+        } ?: emptyList<String>())
       )
     }
   }
@@ -1840,6 +1903,9 @@ class LocalDownloaderModule : Module() {
       "REDDIT_EXTRACTOR_ROUTE_FAILED",
       "TIKTOK_API_STATUS_ZERO",
       "TIKTOK_EXTRACTOR_UNSTABLE",
+      "IMPERSONATION_BOOTSTRAP_FAILED",
+      "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE",
+      "IMPERSONATION_DEPENDENCY_MISSING",
       "IMPERSONATION_RUNTIME_UNAVAILABLE",
       "COOKIE_DOMAIN_MISMATCH",
       "COOKIE_EMPTY_OR_EXPIRED",
