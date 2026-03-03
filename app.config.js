@@ -29,6 +29,7 @@ export default ({ config }) => {
       favicon: "./assets/images/favicon.png",
     },
     plugins: [
+      "expo-video",
       "expo-router",
       [
         "expo-splash-screen",

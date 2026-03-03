@@ -158,6 +158,13 @@
         "BACKGROUND_SERVICE_START_FAILED": "Background download service failed to start.",
         "QUICK_DOWNLOAD_REJECTED": "Quick download was rejected.",
         "INVALID_QUICK_URL": "The provided quick URL is invalid.",
-        "QUICK_CAPTURE_CANCELLED": "Quick capture was cancelled."
+        "QUICK_CAPTURE_CANCELLED": "Quick capture was cancelled.",
+        "PRIVATE_PLAYER_SESSION_INVALID": "Private playback session is invalid or expired."
+    },
+    "privateVault": {
+        "playerLoading": "Preparing private video...",
+        "playerError": "Could not open this private video.",
+        "playerRetry": "Retry",
+        "playerBack": "Back"
     }
 }

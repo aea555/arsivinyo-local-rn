@@ -115,13 +115,9 @@ export async function prepareLocalPrivatePlayback(
   return LocalDownloaderModule.preparePrivatePlayback({ id, traceId });
 }
 
-export async function openLocalPrivatePlayback(
-  tempUri: string,
-  title?: string,
-  traceId?: string
-): Promise<{ success: boolean }> {
+export async function setLocalSecureScreen(enabled: boolean): Promise<{ success: boolean }> {
   ensureAndroid();
-  return LocalDownloaderModule.openPrivatePlayback({ tempUri, title, traceId });
+  return LocalDownloaderModule.setSecureScreen({ enabled });
 }
 
 export async function clearLocalPrivatePlaybackCache(): Promise<void> {

@@ -112,8 +112,8 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] QuickDownloadCaptureActivity must exist exactly once in AndroidManifest.xml"
     exit 1
   fi
-  if [[ "$(grep -F 'expo.modules.localdownloader.PrivateVideoPlayerActivity' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
-    echo "[verify-local-downloader-prebuild] PrivateVideoPlayerActivity must exist exactly once in AndroidManifest.xml"
+  if grep -Fq 'expo.modules.localdownloader.PrivateVideoPlayerActivity' "$ANDROID_MANIFEST"; then
+    echo "[verify-local-downloader-prebuild] PrivateVideoPlayerActivity must not exist in AndroidManifest.xml"
     exit 1
   fi
   if ! grep -Fq 'android:foregroundServiceType="dataSync"' "$ANDROID_MANIFEST"; then

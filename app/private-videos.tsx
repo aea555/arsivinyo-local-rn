@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -15,12 +16,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   authenticateLocalPrivateAccess,
-  clearLocalPrivatePlaybackCache,
   deleteLocalPrivateVideo,
   listLocalPrivateVideos,
-  openLocalPrivatePlayback,
   prepareLocalPrivatePlayback,
 } from '@/src/api';
+import { createSession } from '@/src/features/privatePlayback/sessionStore';
 import type { LocalPrivateVideoItem } from '@/src/native/localDownloader';
 import { useTheme } from '@/src/theme';
 
@@ -61,6 +61,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, code: string): Pr
 export default function PrivateVideosScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  const router = useRouter();
   const [items, setItems] = useState<LocalPrivateVideoItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [unlocking, setUnlocking] = useState(false);
@@ -92,6 +93,7 @@ export default function PrivateVideosScreen() {
         const knownCodes = [
           'PRIVATE_LEGACY_VAULT_UNSUPPORTED',
           'PRIVATE_VIDEO_NOT_FOUND',
+          'PRIVATE_PLAYER_SESSION_INVALID',
           'PRIVATE_AUTH_FAILED',
           'PRIVATE_MODE_UNAVAILABLE',
           'PRIVATE_STORAGE_WRITE_FAILED',
@@ -160,9 +162,7 @@ export default function PrivateVideosScreen() {
   useFocusEffect(
     useCallback(() => {
       void unlockAndLoad();
-      return () => {
-        void clearLocalPrivatePlaybackCache().catch(() => undefined);
-      };
+      return () => undefined;
     }, [unlockAndLoad])
   );
 
@@ -244,16 +244,21 @@ export default function PrivateVideosScreen() {
         if (!prepared.success || !prepared.tempUri) {
           throw new Error(t('errors.PRIVATE_VIDEO_NOT_FOUND'));
         }
-        stage = 'open-player';
-        const opened = await withTimeout(
-          openLocalPrivatePlayback(prepared.tempUri, item.title, traceId),
-          8_000,
-          'PRIVATE_VIDEO_NOT_FOUND'
-        );
-        devLog(`play opened trace=${traceId} id=${item.id}`, opened);
-        if (!opened.success) {
-          throw new Error(t('errors.PRIVATE_VIDEO_NOT_FOUND'));
-        }
+        stage = 'prepare_done';
+        const session = createSession({
+          itemId: item.id,
+          title: item.title,
+          tempUri: prepared.tempUri,
+          mimeType: prepared.mimeType,
+          traceId,
+        });
+        devLog(`play session_created trace=${traceId} sid=${session.sid} id=${item.id}`);
+        stage = 'player_route_open';
+        router.push({
+          pathname: '/private-player',
+          params: { sid: session.sid },
+        });
+        devLog(`play player_route_open trace=${traceId} sid=${session.sid} id=${item.id}`);
         stage = 'done';
       } catch (e) {
         devLog(`play failed trace=${traceId} id=${item.id} stage=${stage}`, e);
@@ -267,7 +272,7 @@ export default function PrivateVideosScreen() {
         setBusyAction(null);
       }
     },
-    [devLog, ensureAuth, resolveErrorMessage]
+    [devLog, ensureAuth, resolveErrorMessage, router, t]
   );
 
   return (

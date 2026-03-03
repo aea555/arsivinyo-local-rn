@@ -55,6 +55,13 @@ function AppContent() {
             title: '',
           }}
         />
+        <Stack.Screen
+          name="private-player"
+          options={{
+            presentation: 'card',
+            headerShown: false,
+          }}
+        />
       </Stack>
       <StatusBar style={isDark ? 'light' : 'dark'} />
     </>

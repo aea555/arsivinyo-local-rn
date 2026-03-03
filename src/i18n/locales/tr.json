@@ -53,7 +53,11 @@
         "makePublic": "Gizliden çıkar",
         "deleteAction": "Kalıcı sil",
         "deleteTitle": "Gizli video silinsin mi?",
-        "deleteMessage": "\"{{title}}\" gizli kasadan kalıcı olarak silinsin mi?"
+        "deleteMessage": "\"{{title}}\" gizli kasadan kalıcı olarak silinsin mi?",
+        "playerLoading": "Preparing private video...",
+        "playerError": "Could not open this private video.",
+        "playerRetry": "Retry",
+        "playerBack": "Back"
     },
     "settings": {
         "title": "Ayarlar",
@@ -187,6 +191,7 @@
         "PRIVATE_VIDEO_NOT_FOUND": "Gizli video bulunamadı.",
         "PRIVATE_EXPORT_FAILED": "Gizli video galeriye taşınamadı.",
         "PRIVATE_EXPORT_DISABLED": "Gizli videoları galeriye taşıma bu sürümde devre dışı.",
-        "PRIVATE_MODE_UNAVAILABLE": "Gizli mod için güvenli ekran kilidi veya biyometri kurulumu gerekiyor."
+        "PRIVATE_MODE_UNAVAILABLE": "Gizli mod için güvenli ekran kilidi veya biyometri kurulumu gerekiyor.",
+        "PRIVATE_PLAYER_SESSION_INVALID": "Private playback session is invalid or expired."
     }
 }

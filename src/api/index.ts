@@ -11,10 +11,10 @@ export {
     listenDownloadProgress,
     listLocalPrivateVideos,
     makeLocalVideoPublic,
-    openLocalPrivatePlayback,
     prepareLocalPrivatePlayback,
     runLocalImpersonationSelfTest,
     saveLocalFileToMediaStore,
+    setLocalSecureScreen,
     setLocalPrivateModeEnabled,
     startQuickLocalDownloadFromClipboard,
     startQuickLocalDownloadWithUrl

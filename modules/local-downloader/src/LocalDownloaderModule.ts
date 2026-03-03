@@ -40,7 +40,7 @@ type LocalDownloaderNativeModule = {
   deletePrivateVideo(input: { id: string }): Promise<{ success: boolean }>;
   makeVideoPublic(input: { id: string }): Promise<{ success: boolean; uri?: string; code?: string; message?: string }>;
   preparePrivatePlayback(input: { id: string; traceId?: string }): Promise<{ success: boolean; tempUri?: string; mimeType?: string }>;
-  openPrivatePlayback(input: { tempUri: string; title?: string; traceId?: string }): Promise<{ success: boolean }>;
+  setSecureScreen(input: { enabled: boolean }): Promise<{ success: boolean }>;
   clearPrivatePlaybackCache(): Promise<void>;
   importCookie(input: { platform: LocalPlatform; uri: string; profileName: string }): Promise<{ profileName: string; path: string }>;
   listCookieProfiles(platform: LocalPlatform): Promise<LocalCookieProfile[]>;
@@ -78,7 +78,7 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       deletePrivateVideo: async () => unsupported(),
       makeVideoPublic: async () => unsupported(),
       preparePrivatePlayback: async () => unsupported(),
-      openPrivatePlayback: async () => unsupported(),
+      setSecureScreen: async () => unsupported(),
       clearPrivatePlaybackCache: async () => unsupported(),
       importCookie: async () => unsupported(),
       listCookieProfiles: async () => unsupported(),

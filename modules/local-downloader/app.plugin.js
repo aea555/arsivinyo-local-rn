@@ -7,7 +7,6 @@ const IMPERSONATION_WHEELS_DIR = 'modules/local-downloader/android/chaquopy-whee
 const DOWNLOAD_SERVICE_NAME = 'expo.modules.localdownloader.DownloadForegroundService';
 const DOWNLOAD_RECEIVER_NAME = 'expo.modules.localdownloader.DownloadActionReceiver';
 const QUICK_CAPTURE_ACTIVITY_NAME = 'expo.modules.localdownloader.QuickDownloadCaptureActivity';
-const PRIVATE_PLAYER_ACTIVITY_NAME = 'expo.modules.localdownloader.PrivateVideoPlayerActivity';
 
 const TAGS = {
   buildscriptRepo: {
@@ -215,12 +214,6 @@ function addAndroidManifestChanges(config) {
       'android:launchMode': 'singleTask',
       'android:taskAffinity': '',
       'android:theme': '@android:style/Theme.DeviceDefault.Dialog.NoActionBar',
-    });
-
-    ensureApplicationEntry(mainApplication, 'activity', PRIVATE_PLAYER_ACTIVITY_NAME, {
-      'android:exported': 'false',
-      'android:excludeFromRecents': 'true',
-      'android:theme': '@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen',
     });
 
     return modConfig;

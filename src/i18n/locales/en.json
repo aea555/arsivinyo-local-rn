@@ -53,7 +53,11 @@
         "makePublic": "Make non-private",
         "deleteAction": "Delete permanently",
         "deleteTitle": "Delete private video?",
-        "deleteMessage": "Delete \"{{title}}\" permanently from private vault?"
+        "deleteMessage": "Delete \"{{title}}\" permanently from private vault?",
+        "playerLoading": "Preparing private video...",
+        "playerError": "Could not open this private video.",
+        "playerRetry": "Retry",
+        "playerBack": "Back"
     },
     "settings": {
         "title": "Settings",
@@ -187,6 +191,7 @@
         "PRIVATE_VIDEO_NOT_FOUND": "Private video was not found.",
         "PRIVATE_EXPORT_FAILED": "Could not move private video to public gallery.",
         "PRIVATE_EXPORT_DISABLED": "Moving private videos to public gallery is disabled in this build.",
-        "PRIVATE_MODE_UNAVAILABLE": "Private mode requires a secure lock screen or biometric setup."
+        "PRIVATE_MODE_UNAVAILABLE": "Private mode requires a secure lock screen or biometric setup.",
+        "PRIVATE_PLAYER_SESSION_INVALID": "Private playback session is invalid or expired."
     }
 }

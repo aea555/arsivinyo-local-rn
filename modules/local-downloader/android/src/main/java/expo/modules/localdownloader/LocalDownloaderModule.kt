@@ -406,23 +406,10 @@ class LocalDownloaderModule : Module() {
       }
     }
 
-    AsyncFunction("openPrivatePlayback") { input: Map<String, Any?> ->
-      val tempUri = (input["tempUri"] as? String)?.trim().orEmpty()
-      val title = (input["title"] as? String)?.trim()
-      val traceId = (input["traceId"] as? String)?.trim().orEmpty().ifBlank { "n/a" }
-      val startedAt = System.currentTimeMillis()
-      privateTrace(traceId, "open bridge start uri=$tempUri title=${title.orEmpty()}")
-      try {
-        val result = openPrivatePlaybackInternal(tempUri, title, traceId)
-        privateTrace(traceId, "open bridge success elapsedMs=${System.currentTimeMillis() - startedAt}")
-        result
-      } catch (error: Throwable) {
-        privateTrace(
-          traceId,
-          "open bridge failed elapsedMs=${System.currentTimeMillis() - startedAt} error=${error.javaClass.simpleName}:${error.message}"
-        )
-        throw error
-      }
+    AsyncFunction("setSecureScreen") { input: Map<String, Any?> ->
+      val enabled = (input["enabled"] as? Boolean) ?: true
+      setSecureScreenInternal(enabled)
+      mapOf("success" to true)
     }
 
     AsyncFunction("clearPrivatePlaybackCache") {
@@ -2101,60 +2088,23 @@ class LocalDownloaderModule : Module() {
     )
   }
 
-  private fun openPrivatePlaybackInternal(tempUri: String, title: String?, traceId: String = "n/a"): Map<String, Any?> {
-    if (tempUri.isBlank()) {
-      throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND")
-    }
-    val context = requireNotNull(appContext.reactContext)
-    val parsedUri = runCatching { Uri.parse(tempUri) }.getOrNull()
-    val filePath = parsedUri?.path.orEmpty()
-    val file = if (filePath.isBlank()) null else File(filePath)
-    privateTrace(
-      traceId,
-      "open internal validating uri=$tempUri scheme=${parsedUri?.scheme ?: "n/a"} path=$filePath fileExists=${file?.exists() ?: false} fileSize=${file?.length() ?: -1L}"
-    )
-    val intent = Intent(context, PrivateVideoPlayerActivity::class.java).apply {
-      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-      putExtra(PrivateVideoPlayerActivity.EXTRA_URI, tempUri)
-      putExtra(PrivateVideoPlayerActivity.EXTRA_TITLE, title.orEmpty())
-      putExtra(PrivateVideoPlayerActivity.EXTRA_TRACE_ID, traceId)
-    }
-    privateTrace(traceId, "open player start uri=$tempUri title=${title.orEmpty()}")
-    val activity = appContext.currentActivity
-    if (activity != null) {
-      val latch = CountDownLatch(1)
-      val launchFailed = java.util.concurrent.atomic.AtomicBoolean(false)
-      privateTrace(traceId, "open player using current activity=${activity::class.java.simpleName}")
-      activity.runOnUiThread {
-        runCatching {
-          activity.startActivity(intent)
-        }.onFailure {
-          launchFailed.set(true)
-          privateTrace(traceId, "open player failed on UI thread error=${it.javaClass.simpleName}:${it.message}")
-        }
-        latch.countDown()
-      }
-      val completed = runCatching { latch.await(5, TimeUnit.SECONDS) }.getOrDefault(false)
-      privateTrace(traceId, "open player ui-thread latch completed=$completed launchFailed=${launchFailed.get()}")
-      if (!completed || launchFailed.get()) {
-        throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND")
-      }
-    } else {
-      privateTrace(traceId, "open player no current activity; using app context")
-      runCatching {
-        context.startActivity(intent)
-      }.onFailure {
-        privateTrace(traceId, "open player failed without activity error=${it.javaClass.simpleName}:${it.message}")
-        throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND")
-      }
-    }
-    privateTrace(traceId, "open player success")
-    return mapOf("success" to true)
-  }
-
   private fun cleanupPrivatePlaybackCacheInternal() {
     runCatching { privatePlaybackCacheDir(create = false).deleteRecursively() }
     runCatching { privateExportCacheDir(create = false).deleteRecursively() }
+  }
+
+  private fun setSecureScreenInternal(enabled: Boolean) {
+    val activity = appContext.currentActivity ?: return
+    val latch = CountDownLatch(1)
+    activity.runOnUiThread {
+      if (enabled) {
+        activity.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+      } else {
+        activity.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+      }
+      latch.countDown()
+    }
+    runCatching { latch.await(2, TimeUnit.SECONDS) }
   }
 
   private fun cleanupPrivateVaultPartials() {
