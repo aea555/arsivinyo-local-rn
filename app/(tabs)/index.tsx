@@ -283,8 +283,7 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        {/* Main Content */}
-        <View style={styles.content}>
+        <View style={styles.topControls}>
           {backgroundServiceRunning ? (
             <View style={[styles.backgroundChip, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <Ionicons name="cloud-download-outline" size={14} color={colors.accent} />
@@ -293,12 +292,6 @@ export default function HomeScreen() {
               </Text>
             </View>
           ) : null}
-
-          <DownloadButton
-            onPress={handleDownload}
-            state={downloadState}
-            disabled={downloadState !== 'idle' && downloadState !== 'error'}
-          />
 
           <Pressable
             onPress={handleQuickBackgroundDownload}
@@ -323,6 +316,15 @@ export default function HomeScreen() {
               </>
             )}
           </Pressable>
+        </View>
+
+        {/* Main Content */}
+        <View style={styles.content}>
+          <DownloadButton
+            onPress={handleDownload}
+            state={downloadState}
+            disabled={downloadState !== 'idle' && downloadState !== 'error'}
+          />
 
           {isOngoingDownload && progressValue !== null ? (
             <View style={styles.progressSection}>
@@ -483,8 +485,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingBottom: 60,
   },
+  topControls: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: 10,
+    paddingHorizontal: 20,
+    marginTop: 4,
+    marginBottom: 6,
+  },
   backgroundChip: {
-    marginBottom: 12,
     borderWidth: 1,
     borderRadius: 999,
     paddingHorizontal: 12,
@@ -492,13 +502,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    maxWidth: '100%',
+    flexShrink: 1,
   },
   backgroundChipText: {
     fontSize: 12,
     fontWeight: '600',
+    flexShrink: 1,
   },
   quickButton: {
-    marginTop: 12,
     borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 14,
@@ -506,10 +518,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    maxWidth: '100%',
+    flexShrink: 1,
   },
   quickButtonText: {
     fontSize: 13,
     fontWeight: '600',
+    flexShrink: 1,
   },
   statusMessage: {
     marginTop: 24,
