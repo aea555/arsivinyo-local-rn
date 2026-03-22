@@ -52,6 +52,9 @@ PY
   echo "arm64-v8a"
 }
 
+ABI_LIST_RAW="$(resolve_required_abis)"
+EXPECTED_ARCH_CSV="$(echo "$ABI_LIST_RAW" | tr ' ' ',')"
+
 verify_generated_files() {
   if [[ ! -f "$BUILD_GRADLE" || ! -f "$APP_GRADLE" || ! -f "$GRADLE_PROPERTIES" || ! -f "$ANDROID_MANIFEST" ]]; then
     echo "[verify-local-downloader-prebuild] Android Gradle files were not generated"
@@ -75,8 +78,8 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] expo.useLegacyPackaging must be true in android/gradle.properties"
     exit 1
   fi
-  if ! grep -Fq "reactNativeArchitectures=$expected_arch_csv" "$GRADLE_PROPERTIES"; then
-    echo "[verify-local-downloader-prebuild] reactNativeArchitectures must be $expected_arch_csv"
+  if ! grep -Fq "reactNativeArchitectures=$EXPECTED_ARCH_CSV" "$GRADLE_PROPERTIES"; then
+    echo "[verify-local-downloader-prebuild] reactNativeArchitectures must be $EXPECTED_ARCH_CSV"
     exit 1
   fi
 
@@ -112,12 +115,37 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] QuickDownloadCaptureActivity must exist exactly once in AndroidManifest.xml"
     exit 1
   fi
+  if [[ "$(grep -F 'expo.modules.localdownloader.PrivateVaultImportActivity' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "[verify-local-downloader-prebuild] PrivateVaultImportActivity must exist exactly once in AndroidManifest.xml"
+    exit 1
+  fi
   if grep -Fq 'expo.modules.localdownloader.PrivateVideoPlayerActivity' "$ANDROID_MANIFEST"; then
     echo "[verify-local-downloader-prebuild] PrivateVideoPlayerActivity must not exist in AndroidManifest.xml"
     exit 1
   fi
   if ! grep -Fq 'android:foregroundServiceType="dataSync"' "$ANDROID_MANIFEST"; then
     echo "[verify-local-downloader-prebuild] Foreground service type dataSync is required"
+    exit 1
+  fi
+
+  for perm in \
+    'android.permission.ACCESS_MEDIA_LOCATION' \
+    'android.permission.READ_EXTERNAL_STORAGE' \
+    'android.permission.WRITE_EXTERNAL_STORAGE' \
+    'android.permission.READ_MEDIA_AUDIO' \
+    'android.permission.READ_MEDIA_IMAGES' \
+    'android.permission.READ_MEDIA_VIDEO' \
+    'android.permission.READ_MEDIA_VISUAL_USER_SELECTED'; do
+    local matched
+    matched="$(grep -F "$perm" "$ANDROID_MANIFEST" || true)"
+    if [[ -n "$matched" ]] && [[ "$matched" != *'tools:node="remove"'* ]]; then
+      echo "[verify-local-downloader-prebuild] Legacy/broad media permission must be blocked with tools:node=remove: $perm"
+      exit 1
+    fi
+  done
+
+  if grep -Fq 'android:requestLegacyExternalStorage="true"' "$ANDROID_MANIFEST"; then
+    echo "[verify-local-downloader-prebuild] requestLegacyExternalStorage=true must not be present"
     exit 1
   fi
 }
@@ -145,7 +173,7 @@ verify_merged_native_libs() {
   }
 
   local abi_list_raw
-  abi_list_raw="$(resolve_required_abis)"
+  abi_list_raw="$ABI_LIST_RAW"
   local required_abis=()
   read -r -a required_abis <<< "$abi_list_raw"
   for abi in "${required_abis[@]}"; do
@@ -176,7 +204,3 @@ for run in 1 2; do
 done
 
 echo "[verify-local-downloader-prebuild] all checks passed"
-  local abi_list_raw
-  abi_list_raw="$(resolve_required_abis)"
-  local expected_arch_csv
-  expected_arch_csv="$(echo "$abi_list_raw" | tr ' ' ',')"

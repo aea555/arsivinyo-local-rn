@@ -8,6 +8,7 @@ const DEFAULT_REACT_NATIVE_ARCHITECTURES = process.env.LOCAL_DOWNLOADER_ABIS || 
 const DOWNLOAD_SERVICE_NAME = 'expo.modules.localdownloader.DownloadForegroundService';
 const DOWNLOAD_RECEIVER_NAME = 'expo.modules.localdownloader.DownloadActionReceiver';
 const QUICK_CAPTURE_ACTIVITY_NAME = 'expo.modules.localdownloader.QuickDownloadCaptureActivity';
+const PRIVATE_IMPORT_ACTIVITY_NAME = 'expo.modules.localdownloader.PrivateVaultImportActivity';
 
 const TAGS = {
   buildscriptRepo: {
@@ -146,7 +147,7 @@ function addAppGradleChanges(contents) {
   next = ensureChaquopyApplyPlugin(next);
 
   const wheelsDirNormalized = IMPERSONATION_WHEELS_DIR.replace(/\\/g, '/');
-  const impersonationPipBlock = `${TAGS.impersonationPip.begin}\n            def impersonationWheelsDir = file("../../${wheelsDirNormalized}")\n            if (!impersonationWheelsDir.exists()) {\n                println("[local-downloader] Impersonation wheels not found at ${wheelsDirNormalized}; continuing without curl-cffi")\n            } else {\n                def archProp = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString()\n                def requiredAbis = archProp.split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n                def wheelFiles = impersonationWheelsDir.listFiles()?.collect { it.name } ?: []\n                def missingAbis = requiredAbis.findAll { abi ->\n                    def abiToken = abi.replace("-", "_")\n                    !wheelFiles.any { name -> name ==~ /curl_cffi-.*android.*\\${abiToken}.*\\.whl/ }\n                }\n                if (missingAbis.isEmpty()) {\n                    options("--find-links", impersonationWheelsDir.absolutePath)\n                    install("curl-cffi==${CURL_CFFI_VERSION}")\n                } else {\n                    println("[local-downloader] Skipping curl-cffi install: missing Android wheel(s) for ABIs: \\${missingAbis.join(', ')} at ${wheelsDirNormalized}")\n                }\n            }\n${TAGS.impersonationPip.end}`;
+  const impersonationPipBlock = `${TAGS.impersonationPip.begin}\n            def impersonationWheelsDir = file("../../${wheelsDirNormalized}")\n            if (!impersonationWheelsDir.exists()) {\n                println("[local-downloader] Impersonation wheels not found at ${wheelsDirNormalized}; continuing without curl-cffi")\n            } else {\n                def archProp = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString()\n                def requiredAbis = archProp.split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n                def wheelFiles = impersonationWheelsDir.listFiles()?.collect { it.name } ?: []\n                def missingAbis = requiredAbis.findAll { abi ->\n                    def abiToken = abi.replace("-", "_")\n                    !wheelFiles.any { name -> name ==~ /curl_cffi-.*android.*\${abiToken}.*\\.whl/ }\n                }\n                if (missingAbis.isEmpty()) {\n                    options("--find-links", impersonationWheelsDir.absolutePath)\n                    install("curl-cffi==${CURL_CFFI_VERSION}")\n                } else {\n                    println("[local-downloader] Skipping curl-cffi install: missing Android wheel(s) for ABIs: \${missingAbis.join(', ')} at ${wheelsDirNormalized}")\n                }\n            }\n${TAGS.impersonationPip.end}`;
   const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("yt-dlp==${YT_DLP_VERSION}")\n            install("tenacity==9.0.0")\n${impersonationPipBlock}\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
 
   const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
@@ -197,6 +198,9 @@ function addAndroidManifestChanges(config) {
     if (!mainApplication) {
       throw new Error('[local-downloader plugin] Could not find Android application block in AndroidManifest.xml');
     }
+    if (mainApplication.$ && Object.prototype.hasOwnProperty.call(mainApplication.$, 'android:requestLegacyExternalStorage')) {
+      delete mainApplication.$['android:requestLegacyExternalStorage'];
+    }
 
     ensureApplicationEntry(mainApplication, 'service', DOWNLOAD_SERVICE_NAME, {
       'android:exported': 'false',
@@ -215,6 +219,15 @@ function addAndroidManifestChanges(config) {
       'android:launchMode': 'singleTask',
       'android:taskAffinity': '',
       'android:theme': '@android:style/Theme.DeviceDefault.Dialog.NoActionBar',
+    });
+
+    ensureApplicationEntry(mainApplication, 'activity', PRIVATE_IMPORT_ACTIVITY_NAME, {
+      'android:exported': 'false',
+      'android:excludeFromRecents': 'true',
+      'android:noHistory': 'true',
+      'android:launchMode': 'singleTask',
+      'android:taskAffinity': '',
+      'android:theme': '@android:style/Theme.Translucent.NoTitleBar',
     });
 
     return modConfig;

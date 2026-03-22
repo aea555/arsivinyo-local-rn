@@ -5,8 +5,8 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
@@ -16,8 +16,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   authenticateLocalPrivateAccess,
+  copyLocalPrivateVideoToPublicGallery,
   deleteLocalPrivateVideo,
   listLocalPrivateVideos,
+  pickAndImportLocalVideoToPrivateVault,
   prepareLocalPrivatePlayback,
 } from '@/src/api';
 import { createSession } from '@/src/features/privatePlayback/sessionStore';
@@ -68,7 +70,9 @@ export default function PrivateVideosScreen() {
   const [locked, setLocked] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [busyAction, setBusyAction] = useState<'play' | 'delete' | null>(null);
+  const [busyAction, setBusyAction] = useState<'play' | 'copy' | 'delete' | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<LocalPrivateVideoItem | null>(null);
   const devLog = useCallback((message: string, data?: unknown) => {
     if (!__DEV__) return;
     if (data === undefined) {
@@ -97,6 +101,11 @@ export default function PrivateVideosScreen() {
           'PRIVATE_AUTH_FAILED',
           'PRIVATE_MODE_UNAVAILABLE',
           'PRIVATE_STORAGE_WRITE_FAILED',
+          'PRIVATE_IMPORT_PICK_CANCELLED',
+          'PRIVATE_IMPORT_FAILED',
+          'PRIVATE_IMPORT_UNSUPPORTED_TYPE',
+          'PRIVATE_PUBLIC_COPY_FAILED',
+          'PRIVATE_PUBLIC_COPY_LEGACY_UNSUPPORTED',
         ];
         const matched = knownCodes.find((code) => error.message.includes(code));
         if (matched) {
@@ -112,7 +121,7 @@ export default function PrivateVideosScreen() {
   );
 
   const ensureAuth = useCallback(
-    async (purpose: 'view' | 'delete' | 'unprivate') => {
+    async (purpose: 'view' | 'delete' | 'unprivate' | 'import' | 'export') => {
       devLog(`auth start purpose=${purpose}`);
       const auth = await authenticateLocalPrivateAccess(purpose);
       devLog(`auth result purpose=${purpose}`, auth);
@@ -172,44 +181,72 @@ export default function PrivateVideosScreen() {
     return t('privateVault.empty');
   }, [error, loading, t]);
 
+  const importFromGallery = useCallback(async () => {
+    if (isImporting) return;
+    setIsImporting(true);
+    setError(null);
+    try {
+      devLog('import start');
+      await ensureAuth('import');
+      const result = await pickAndImportLocalVideoToPrivateVault();
+      devLog('import result', result);
+      if (!result.success) {
+        if (result.code === 'PRIVATE_IMPORT_PICK_CANCELLED') {
+          return;
+        }
+        throw new Error(result.code || 'PRIVATE_IMPORT_FAILED');
+      }
+      await loadPrivateVideos();
+    } catch (e) {
+      devLog('import failed', e);
+      setError(resolveErrorMessage(e, 'PRIVATE_IMPORT_FAILED'));
+    } finally {
+      setIsImporting(false);
+    }
+  }, [devLog, ensureAuth, isImporting, loadPrivateVideos, resolveErrorMessage]);
+
   const confirmDelete = useCallback(
     (item: LocalPrivateVideoItem) => {
-      Alert.alert(
-        t('privateVault.deleteTitle'),
-        t('privateVault.deleteMessage', { title: item.title }),
-        [
-          { text: t('common.cancel'), style: 'cancel' },
-          {
-            text: t('privateVault.deleteAction'),
-            style: 'destructive',
-            onPress: () => {
-              void (async () => {
-                setBusyId(item.id);
-                setBusyAction('delete');
-                try {
-                  devLog(`delete start id=${item.id}`);
-                  await ensureAuth('delete');
-                  const result = await deleteLocalPrivateVideo(item.id);
-                  devLog(`delete result id=${item.id}`, result);
-                  if (!result.success) {
-                    throw new Error(t('errors.PRIVATE_VIDEO_NOT_FOUND'));
-                  }
-                  await loadPrivateVideos();
-                } catch (e) {
-                  devLog(`delete failed id=${item.id}`, e);
-                  setError(e instanceof Error ? e.message : t('errors.UNKNOWN_ERROR'));
-                } finally {
-                  setBusyId(null);
-                  setBusyAction(null);
-                }
-              })();
-            },
-          },
-        ]
-      );
+      setDeleteTarget(item);
     },
-    [devLog, ensureAuth, loadPrivateVideos, t]
+    []
   );
+
+  const closeDeleteModal = useCallback(() => {
+    if (busyAction === 'delete') return;
+    setDeleteTarget(null);
+  }, [busyAction]);
+
+  const runDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    const item = deleteTarget;
+    setBusyId(item.id);
+    setBusyAction('delete');
+    setError(null);
+    try {
+      devLog(`delete start id=${item.id}`);
+      await ensureAuth('delete');
+      const result = await deleteLocalPrivateVideo(item.id);
+      devLog(`delete result id=${item.id}`, result);
+      if (!result.success) {
+        throw new Error(t('errors.PRIVATE_VIDEO_NOT_FOUND'));
+      }
+      await loadPrivateVideos();
+      setDeleteTarget(null);
+    } catch (e) {
+      devLog(`delete failed id=${item.id}`, e);
+      setError(e instanceof Error ? e.message : t('errors.UNKNOWN_ERROR'));
+      setDeleteTarget(null);
+    } finally {
+      setBusyId(null);
+      setBusyAction(null);
+    }
+  }, [deleteTarget, devLog, ensureAuth, loadPrivateVideos, t]);
+
+  const deletePending = useMemo(() => {
+    if (!deleteTarget) return false;
+    return busyAction === 'delete' && busyId === deleteTarget.id;
+  }, [busyAction, busyId, deleteTarget]);
 
   const playVideo = useCallback(
     async (item: LocalPrivateVideoItem) => {
@@ -275,12 +312,127 @@ export default function PrivateVideosScreen() {
     [devLog, ensureAuth, resolveErrorMessage, router, t]
   );
 
+  const copyToGallery = useCallback(
+    async (item: LocalPrivateVideoItem) => {
+      setBusyId(item.id);
+      setBusyAction('copy');
+      setError(null);
+      try {
+        devLog(`copy start id=${item.id}`);
+        await ensureAuth('export');
+        const result = await copyLocalPrivateVideoToPublicGallery(item.id);
+        devLog(`copy result id=${item.id}`, result);
+        if (!result.success) {
+          throw new Error(result.code || 'PRIVATE_PUBLIC_COPY_FAILED');
+        }
+      } catch (e) {
+        devLog(`copy failed id=${item.id}`, e);
+        setError(resolveErrorMessage(e, 'PRIVATE_PUBLIC_COPY_FAILED'));
+      } finally {
+        setBusyId(null);
+        setBusyAction(null);
+      }
+    },
+    [devLog, ensureAuth, resolveErrorMessage]
+  );
+
+  const deleteModalVisible = !!deleteTarget;
+  const deleteMessage = deleteTarget
+    ? t('privateVault.deleteMessage', { title: deleteTarget.title })
+    : '';
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}> 
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      <Modal transparent animationType="fade" visible={deleteModalVisible} onRequestClose={closeDeleteModal}>
+        <View style={[styles.deleteModalBackdrop, { backgroundColor: colors.background + 'CC' }]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeDeleteModal} disabled={deletePending} />
+          <View
+            style={[
+              styles.deleteModalCard,
+              { borderColor: colors.border, backgroundColor: colors.surfaceHover },
+            ]}
+          >
+            <View style={[styles.deleteIconWrap, { borderColor: colors.error + '55', backgroundColor: colors.error + '16' }]}>
+              <Ionicons name="trash-outline" size={18} color={colors.error} />
+            </View>
+            <Text style={[styles.deleteModalTitle, { color: colors.text }]}>
+              {t('privateVault.deleteTitle')}
+            </Text>
+            <Text style={[styles.deleteModalMessage, { color: colors.textMuted }]}>
+              {deleteMessage}
+            </Text>
+            <View style={styles.deleteModalActions}>
+              <Pressable
+                onPress={closeDeleteModal}
+                disabled={deletePending}
+                style={({ pressed }) => [
+                  styles.deleteModalButton,
+                  {
+                    borderColor: colors.border,
+                    backgroundColor: pressed ? colors.surface : colors.surfaceHover,
+                    opacity: deletePending ? 0.65 : 1,
+                  },
+                ]}
+              >
+                <Text style={[styles.deleteModalButtonText, { color: colors.text }]}>
+                  {t('common.cancel')}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void runDelete()}
+                disabled={deletePending}
+                style={({ pressed }) => [
+                  styles.deleteModalButton,
+                  {
+                    borderColor: colors.error + '66',
+                    backgroundColor: pressed ? colors.error + '22' : colors.error + '16',
+                    opacity: deletePending ? 0.8 : 1,
+                  },
+                ]}
+              >
+                {deletePending ? (
+                  <ActivityIndicator size="small" color={colors.error} />
+                ) : (
+                  <Text style={[styles.deleteModalButtonText, { color: colors.error }]}>
+                    {t('privateVault.deleteAction')}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <View style={styles.header}>
         <Text style={[styles.title, { color: colors.text }]}>{t('privateVault.title')}</Text>
         <Text style={[styles.subtitle, { color: colors.textMuted }]}>{t('privateVault.subtitle')}</Text>
       </View>
+
+      {!locked ? (
+        <View style={styles.toolbar}>
+          <Pressable
+            onPress={() => void importFromGallery()}
+            disabled={isImporting}
+            style={({ pressed }) => [
+              styles.importButton,
+              {
+                borderColor: colors.border,
+                backgroundColor: pressed ? colors.surfaceHover : colors.surface,
+                opacity: isImporting ? 0.7 : 1,
+              },
+            ]}
+          >
+            {isImporting ? (
+              <ActivityIndicator size="small" color={colors.text} />
+            ) : (
+              <Ionicons name="images-outline" size={16} color={colors.text} />
+            )}
+            <Text style={[styles.actionText, { color: colors.text }]}>
+              {t('privateVault.importFromGallery')}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {unlocking ? (
         <View style={styles.centered}>
@@ -325,6 +477,7 @@ export default function PrivateVideosScreen() {
           renderItem={({ item }) => {
             const busy = busyId === item.id;
             const playBusy = busy && busyAction === 'play';
+            const copyBusy = busy && busyAction === 'copy';
             const deleteBusy = busy && busyAction === 'delete';
             const legacyV1 = item.cipherVersion === 'v1';
             return (
@@ -367,6 +520,27 @@ export default function PrivateVideosScreen() {
                   </Pressable>
 
                   <Pressable
+                    onPress={() => void copyToGallery(item)}
+                    disabled={busy || legacyV1}
+                    style={({ pressed }) => [
+                      styles.actionButton,
+                      {
+                        borderColor: colors.border,
+                        backgroundColor: pressed ? colors.surfaceHover : colors.surface,
+                        opacity: busy || legacyV1 ? 0.7 : 1,
+                      },
+                    ]}
+                  >
+                    {copyBusy ? (
+                      <ActivityIndicator size="small" color={colors.text} />
+                    ) : (
+                      <Text style={[styles.actionText, { color: colors.text }]}>
+                        {t('privateVault.copyToGalleryAction')}
+                      </Text>
+                    )}
+                  </Pressable>
+
+                  <Pressable
                     onPress={() => confirmDelete(item)}
                     disabled={busy}
                     style={({ pressed }) => [
@@ -398,6 +572,59 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  deleteModalBackdrop: {
+    flex: 1,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+    gap: 10,
+  },
+  deleteIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteModalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  deleteModalMessage: {
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  deleteModalActions: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
+  },
+  deleteModalButton: {
+    flex: 1,
+    minHeight: 42,
+    borderWidth: 1,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  deleteModalButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
   header: {
     paddingHorizontal: 20,
     paddingTop: 8,
@@ -410,6 +637,22 @@ const styles = StyleSheet.create({
   subtitle: {
     marginTop: 4,
     fontSize: 13,
+  },
+  toolbar: {
+    paddingHorizontal: 16,
+    paddingTop: 2,
+    paddingBottom: 8,
+  },
+  importButton: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
   centered: {
     flex: 1,
@@ -448,6 +691,7 @@ const styles = StyleSheet.create({
   actionsRow: {
     marginTop: 6,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
   },
   actionButton: {

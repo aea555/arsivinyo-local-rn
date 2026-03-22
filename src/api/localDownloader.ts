@@ -17,6 +17,8 @@ import LocalDownloaderModule, {
   type LocalImpersonationSelfTestResult,
   type LocalPrivateAuthPurpose,
   type LocalPrivateAuthResult,
+  type LocalPrivateCopyToPublicResult,
+  type LocalPrivateImportResult,
   type LocalPrivateModeState,
   type LocalPrivateVideoItem,
   type LocalSaveToMediaStoreInput,
@@ -100,6 +102,16 @@ export async function listLocalPrivateVideos(): Promise<LocalPrivateVideoItem[]>
 export async function deleteLocalPrivateVideo(id: string): Promise<{ success: boolean }> {
   ensureAndroid();
   return LocalDownloaderModule.deletePrivateVideo({ id });
+}
+
+export async function copyLocalPrivateVideoToPublicGallery(id: string): Promise<LocalPrivateCopyToPublicResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.copyPrivateVideoToPublicGallery({ id });
+}
+
+export async function pickAndImportLocalVideoToPrivateVault(): Promise<LocalPrivateImportResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.pickAndImportVideoToPrivateVault();
 }
 
 export async function makeLocalVideoPublic(id: string): Promise<{ success: boolean; uri?: string; code?: string; message?: string }> {

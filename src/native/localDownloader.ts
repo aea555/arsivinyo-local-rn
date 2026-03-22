@@ -15,6 +15,8 @@ export type {
   LocalImpersonationSelfTestResult,
   LocalPrivateAuthPurpose,
   LocalPrivateAuthResult,
+  LocalPrivateCopyToPublicResult,
+  LocalPrivateImportResult,
   LocalPrivateModeState,
   LocalPrivateVideoItem,
   LocalSaveToMediaStoreInput,

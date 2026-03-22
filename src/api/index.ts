@@ -2,6 +2,7 @@ export { cancelTask, checkTaskStatus, downloadMedia, pollTaskStatus, startDownlo
 export {
     authenticateLocalPrivateAccess,
     clearLocalPrivatePlaybackCache,
+    copyLocalPrivateVideoToPublicGallery,
     deleteLocalPrivateVideo,
     ensureLocalBackgroundPermission,
     getLocalPrivateModeState,
@@ -12,6 +13,7 @@ export {
     listLocalPrivateVideos,
     makeLocalVideoPublic,
     prepareLocalPrivatePlayback,
+    pickAndImportLocalVideoToPrivateVault,
     runLocalImpersonationSelfTest,
     saveLocalFileToMediaStore,
     setLocalSecureScreen,

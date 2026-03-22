@@ -1,5 +1,4 @@
 import { File } from 'expo-file-system';
-import * as MediaLibrary from 'expo-media-library';
 import { Platform } from 'react-native';
 import LocalDownloaderModule from '../native/localDownloader';
 
@@ -34,27 +33,15 @@ export async function downloadAndSaveFile(
   const fileSize = file.size;
   try {
     const nativeSaveToMediaStore = (LocalDownloaderModule as Partial<typeof LocalDownloaderModule>).saveToMediaStore;
-    if (Platform.OS === 'android' && typeof nativeSaveToMediaStore === 'function') {
-      const saved = await nativeSaveToMediaStore({
-        filePath: sourcePath,
-        filename,
-        dateTakenMs: Date.now(),
-      });
-
-      if (onProgress) {
-        onProgress({
-          totalBytesWritten: fileSize,
-          totalBytesExpectedToWrite: fileSize,
-        });
-      }
-
-      return {
-        uri: saved.uri,
-        assetId: saved.assetId,
-      };
+    if (Platform.OS !== 'android' || typeof nativeSaveToMediaStore !== 'function') {
+      throw new Error('MediaStore save is available only on Android native builds.');
     }
 
-    const asset = await MediaLibrary.createAssetAsync(normalizedPath);
+    const saved = await nativeSaveToMediaStore({
+      filePath: sourcePath,
+      filename,
+      dateTakenMs: Date.now(),
+    });
 
     if (onProgress) {
       onProgress({
@@ -64,8 +51,8 @@ export async function downloadAndSaveFile(
     }
 
     return {
-      uri: asset.uri,
-      assetId: asset.id,
+      uri: saved.uri,
+      assetId: saved.assetId,
     };
   } finally {
     try {

@@ -3,7 +3,7 @@ export default ({ config }) => {
     ...config,
     name: "Arsivinyo Local",
     slug: "arsivinyo-local-rn",
-    version: "2.0.0",
+    version: "1.1.0",
     orientation: "portrait",
     icon: "./assets/images/play_store_512.png",
     scheme: "arsivinyo-local-rn",
@@ -20,6 +20,15 @@ export default ({ config }) => {
         backgroundImage: "./assets/images/ic_launcher_background.png",
         monochromeImage: "./assets/images/ic_launcher_monochrome.png",
       },
+      blockedPermissions: [
+        "android.permission.ACCESS_MEDIA_LOCATION",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+      ],
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
       package: "com.arsivinyo.local",
@@ -41,13 +50,6 @@ export default ({ config }) => {
           dark: {
             backgroundColor: "#000000",
           },
-        },
-      ],
-      [
-        "expo-media-library",
-        {
-          savePhotosPermission: "Allow $(PRODUCT_NAME) to save photos.",
-          isAccessMediaLocationEnabled: true,
         },
       ],
       [

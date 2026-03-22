@@ -118,7 +118,7 @@ export interface LocalPrivateModeState {
   enabled: boolean;
 }
 
-export type LocalPrivateAuthPurpose = 'view' | 'delete' | 'unprivate';
+export type LocalPrivateAuthPurpose = 'view' | 'delete' | 'unprivate' | 'import' | 'export';
 
 export interface LocalPrivateAuthResult {
   granted: boolean;
@@ -134,6 +134,20 @@ export interface LocalPrivateVideoItem {
   durationSec?: number | null;
   sizeBytesEncrypted: number;
   cipherVersion: string;
+}
+
+export interface LocalPrivateCopyToPublicResult {
+  success: boolean;
+  uri?: string;
+  code?: string;
+  message?: string;
+}
+
+export interface LocalPrivateImportResult {
+  success: boolean;
+  item?: LocalPrivateVideoItem;
+  code?: string;
+  message?: string;
 }
 
 export interface LocalDiagnostics {

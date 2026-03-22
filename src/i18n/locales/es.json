@@ -166,12 +166,19 @@
         "QUICK_DOWNLOAD_REJECTED": "Quick download was rejected.",
         "INVALID_QUICK_URL": "The provided quick URL is invalid.",
         "QUICK_CAPTURE_CANCELLED": "Quick capture was cancelled.",
-        "PRIVATE_PLAYER_SESSION_INVALID": "Private playback session is invalid or expired."
+        "PRIVATE_PLAYER_SESSION_INVALID": "Private playback session is invalid or expired.",
+        "PRIVATE_IMPORT_PICK_CANCELLED": "Gallery import was cancelled.",
+        "PRIVATE_IMPORT_FAILED": "Could not import video into private vault.",
+        "PRIVATE_IMPORT_UNSUPPORTED_TYPE": "Selected media is not a supported video type.",
+        "PRIVATE_PUBLIC_COPY_FAILED": "Could not copy private video to gallery.",
+        "PRIVATE_PUBLIC_COPY_LEGACY_UNSUPPORTED": "Copying private videos to gallery requires Android 10 or newer."
     },
     "privateVault": {
         "playerLoading": "Preparing private video...",
         "playerError": "Could not open this private video.",
         "playerRetry": "Retry",
-        "playerBack": "Back"
+        "playerBack": "Back",
+        "importFromGallery": "Import from gallery",
+        "copyToGalleryAction": "Copy to gallery"
     }
 }

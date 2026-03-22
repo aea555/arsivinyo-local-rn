@@ -18,9 +18,11 @@ import type {
   LocalPrivateModeState,
   LocalPrivateVideoItem,
   LocalImpersonationSelfTestResult,
+  LocalPrivateCopyToPublicResult,
   LocalSaveToMediaStoreInput,
   LocalSaveToMediaStoreResult,
   LocalPlatform,
+  LocalPrivateImportResult,
   LocalQuickDownloadResult,
   LocalTaskStatusResult,
 } from './LocalDownloader.types';
@@ -38,6 +40,8 @@ type LocalDownloaderNativeModule = {
   authenticatePrivateAccess(input: { purpose: LocalPrivateAuthPurpose }): Promise<LocalPrivateAuthResult>;
   listPrivateVideos(): Promise<LocalPrivateVideoItem[]>;
   deletePrivateVideo(input: { id: string }): Promise<{ success: boolean }>;
+  copyPrivateVideoToPublicGallery(input: { id: string }): Promise<LocalPrivateCopyToPublicResult>;
+  pickAndImportVideoToPrivateVault(): Promise<LocalPrivateImportResult>;
   makeVideoPublic(input: { id: string }): Promise<{ success: boolean; uri?: string; code?: string; message?: string }>;
   preparePrivatePlayback(input: { id: string; traceId?: string }): Promise<{ success: boolean; tempUri?: string; mimeType?: string }>;
   setSecureScreen(input: { enabled: boolean }): Promise<{ success: boolean }>;
@@ -76,6 +80,8 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       authenticatePrivateAccess: async () => unsupported(),
       listPrivateVideos: async () => unsupported(),
       deletePrivateVideo: async () => unsupported(),
+      copyPrivateVideoToPublicGallery: async () => unsupported(),
+      pickAndImportVideoToPrivateVault: async () => unsupported(),
       makeVideoPublic: async () => unsupported(),
       preparePrivatePlayback: async () => unsupported(),
       setSecureScreen: async () => unsupported(),
