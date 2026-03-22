@@ -75,8 +75,8 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] expo.useLegacyPackaging must be true in android/gradle.properties"
     exit 1
   fi
-  if ! grep -Fq 'reactNativeArchitectures=arm64-v8a' "$GRADLE_PROPERTIES"; then
-    echo "[verify-local-downloader-prebuild] reactNativeArchitectures must be arm64-v8a for current impersonation wheel coverage"
+  if ! grep -Fq "reactNativeArchitectures=$expected_arch_csv" "$GRADLE_PROPERTIES"; then
+    echo "[verify-local-downloader-prebuild] reactNativeArchitectures must be $expected_arch_csv"
     exit 1
   fi
 
@@ -84,8 +84,8 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] Missing curl-cffi install line in app/build.gradle"
     exit 1
   fi
-  if ! grep -Fq 'abiFilters "arm64-v8a"' "$APP_GRADLE"; then
-    echo "[verify-local-downloader-prebuild] Missing arm64 abi filter for impersonation wheel compatibility"
+  if ! grep -Fq 'abiFilters(*localDownloaderAbis)' "$APP_GRADLE"; then
+    echo "[verify-local-downloader-prebuild] Missing dynamic local-downloader abi filter wiring"
     exit 1
   fi
 
@@ -176,3 +176,7 @@ for run in 1 2; do
 done
 
 echo "[verify-local-downloader-prebuild] all checks passed"
+  local abi_list_raw
+  abi_list_raw="$(resolve_required_abis)"
+  local expected_arch_csv
+  expected_arch_csv="$(echo "$abi_list_raw" | tr ' ' ',')"

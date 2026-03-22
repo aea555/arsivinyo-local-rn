@@ -8,5 +8,5 @@
   "abiCoverage": [
     "arm64-v8a"
   ],
-  "notes": "Current pinned impersonation coverage is arm64-v8a only. Place Android-tagged wheels in this directory and update SHA256SUMS."
+  "notes": "Pinned impersonation coverage defaults to arm64-v8a. Add x86_64 by providing matching Android wheels and overriding ABI_LIST/reactNativeArchitectures."
 }

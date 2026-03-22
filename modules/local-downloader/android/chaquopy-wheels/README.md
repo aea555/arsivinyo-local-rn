@@ -6,6 +6,9 @@ This directory is for vendored Android wheels used by Chaquopy to enable yt-dlp 
 
 - `arm64-v8a`
 
+Default coverage is `arm64-v8a` only.
+Add `x86_64` by providing matching Android wheels and setting `ABI_LIST` / `reactNativeArchitectures` explicitly.
+
 `ABI_LIST` can override this during build/verification when additional ABIs are available.
 
 ## Required package

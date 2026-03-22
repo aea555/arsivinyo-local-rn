@@ -4404,7 +4404,7 @@ class LocalDownloaderModule : Module() {
     private val RETRYABLE_COOKIE_FAILURE_CODES = setOf("PREFLIGHT_FAILED", "DOWNLOAD_FAILED", "INTERNAL_ERROR")
     private val STRICT_COOKIE_PLATFORMS = setOf("instagram", "facebook", "tiktok", "reddit")
     private val IN_FLIGHT_STATUSES = setOf("PENDING", "STARTED", "PROGRESS")
-    private val SUPPORTED_FFMPEG_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    private val SUPPORTED_FFMPEG_ABIS = listOf("arm64-v8a", "x86_64")
 
     fun onNotificationCancelAction(context: Context) {
       activeModule?.cancelFromNotificationAction() ?: run {

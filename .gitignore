@@ -67,3 +67,5 @@ SHA256SUMS
 __pycache__
 *.lck
 *.part
+
+.vscode/
