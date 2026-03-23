@@ -56,11 +56,9 @@ modules/local-downloader/tests/__pycache__/*.pyc
 
 # local-downloader ffmpeg binaries and native libs
 modules/local-downloader/android/src/main/jniLibs/
-modules/local-downloader/android/src/main/assets/ffmpeg/*/ffmpeg
-modules/local-downloader/android/src/main/assets/ffmpeg/*/ffprobe
-modules/local-downloader/android/src/main/assets/ffmpeg/*/*.so
-modules/local-downloader/android/src/main/assets/ffmpeg/*/*.a
-modules/local-downloader/android/src/main/assets/ffmpeg/*/*.o
+modules/local-downloader/android/src/main/assets/ffmpeg/arm64-v8a
+modules/local-downloader/android/src/main/assets/ffmpeg/x86_64
+
 *.whl
 SHA256SUMS
 *.pyc
