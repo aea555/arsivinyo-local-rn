@@ -1,4 +1,5 @@
 import os
+import importlib
 import tempfile
 import unittest
 import unittest.mock
@@ -29,6 +30,86 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         progressive_selector = ld._build_format_selector(0, False)
         self.assertEqual(merged_selector, "bestvideo+bestaudio/best")
         self.assertEqual(progressive_selector, "best[acodec!=none][vcodec!=none]/best")
+
+    def test_build_platform_attempts_youtube_chunk_profiles(self):
+        attempts = ld._build_platform_attempts(
+            "youtube",
+            "https://www.youtube.com/watch?v=abc123",
+            has_cookie=True,
+            cookie_integrity_ok=True,
+            impersonation_available=False,
+        )
+        labels = [attempt.get("label") for attempt in attempts]
+        self.assertEqual(labels[:3], ["youtube-chunk-10m", "youtube-chunk-4m", "youtube-default"])
+        self.assertEqual(
+            attempts[0].get("ydl_overrides", {}).get("http_chunk_size"),
+            ld.YOUTUBE_HTTP_CHUNK_SIZE_PRIMARY,
+        )
+        self.assertEqual(
+            attempts[1].get("ydl_overrides", {}).get("http_chunk_size"),
+            ld.YOUTUBE_HTTP_CHUNK_SIZE_FALLBACK,
+        )
+        self.assertEqual(
+            attempts[0].get("ydl_overrides", {}).get("throttledratelimit"),
+            ld.YOUTUBE_THROTTLED_RATE_LIMIT,
+        )
+
+    def test_should_emit_progress_update_throttles_small_changes(self):
+        self.assertFalse(
+            ld._should_emit_progress_update(
+                current_status="downloading",
+                current_percent=10.2,
+                now_ms=1400,
+                last_status="downloading",
+                last_percent=10.0,
+                last_emit_ms=1000,
+            )
+        )
+        self.assertTrue(
+            ld._should_emit_progress_update(
+                current_status="downloading",
+                current_percent=10.6,
+                now_ms=1400,
+                last_status="downloading",
+                last_percent=10.0,
+                last_emit_ms=1000,
+            )
+        )
+        self.assertTrue(
+            ld._should_emit_progress_update(
+                current_status="downloading",
+                current_percent=10.2,
+                now_ms=1600,
+                last_status="downloading",
+                last_percent=10.0,
+                last_emit_ms=1000,
+            )
+        )
+        self.assertTrue(
+            ld._should_emit_progress_update(
+                current_status="processing",
+                current_percent=99.0,
+                now_ms=1200,
+                last_status="downloading",
+                last_percent=98.5,
+                last_emit_ms=1100,
+            )
+        )
+
+    def test_coerce_monotonic_download_percent(self):
+        self.assertEqual(ld._coerce_monotonic_download_percent(42.0, None), 42.0)
+        self.assertEqual(ld._coerce_monotonic_download_percent(78.0, 80.0), 80.0)
+        self.assertEqual(ld._coerce_monotonic_download_percent(102.0, 80.0), 100.0)
+        self.assertEqual(ld._coerce_monotonic_download_percent(-3.0, 15.0), 15.0)
+
+    def test_ytdlp_verbose_toggle_from_env(self):
+        with unittest.mock.patch.dict(os.environ, {"ARSIVINYO_YTDLP_VERBOSE_DEV": "1"}, clear=False):
+            mod = importlib.reload(ld)
+            self.assertTrue(mod.YTDLP_VERBOSE_DEV)
+        with unittest.mock.patch.dict(os.environ, {"ARSIVINYO_YTDLP_VERBOSE_DEV": "0"}, clear=False):
+            mod = importlib.reload(ld)
+            self.assertFalse(mod.YTDLP_VERBOSE_DEV)
+        importlib.reload(ld)
 
     def test_failure_classification(self):
         code, _ = ld._classify_exception(Exception("HTTP Error 403: Blocked"), "DOWNLOAD_FAILED")

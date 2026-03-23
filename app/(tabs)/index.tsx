@@ -2,7 +2,7 @@ import { Sixtyfour_400Regular, useFonts } from '@expo-google-fonts/sixtyfour';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -54,6 +54,8 @@ export default function HomeScreen() {
   const [isQuickSubmitting, setIsQuickSubmitting] = useState(false);
   const [privateModeEnabled, setPrivateModeEnabled] = useState(false);
   const [isPrivateToggleBusy, setIsPrivateToggleBusy] = useState(false);
+  const speedEmaBytesPerSecRef = useRef<number | null>(null);
+  const speedLogCounterRef = useRef(0);
 
   const isOngoingDownload =
     downloadState === 'starting' ||
@@ -127,6 +129,8 @@ export default function HomeScreen() {
       setActiveTaskId(null);
       setDownloadPercent(0);
       setDownloadSpeedBytesPerSec(null);
+      speedEmaBytesPerSecRef.current = null;
+      speedLogCounterRef.current = 0;
 
       // Get URL from clipboard
       const url = await getUrlFromClipboard();
@@ -136,6 +140,7 @@ export default function HomeScreen() {
         setActiveTaskId(null);
         setDownloadPercent(null);
         setDownloadSpeedBytesPerSec(null);
+        speedEmaBytesPerSecRef.current = null;
         setTimeout(() => setDownloadState('idle'), 3000);
         return;
       }
@@ -157,15 +162,34 @@ export default function HomeScreen() {
             if (typeof progress.progressPercent === 'number' && progress.progressPercent >= 99) {
               setDownloadSpeedBytesPerSec(null);
             } else {
-              setDownloadSpeedBytesPerSec(progress.speedBytesPerSec);
+              const alpha = 0.22;
+              const prev = speedEmaBytesPerSecRef.current;
+              const smoothed = prev == null
+                ? progress.speedBytesPerSec
+                : prev + alpha * (progress.speedBytesPerSec - prev);
+              speedEmaBytesPerSecRef.current = smoothed;
+              setDownloadSpeedBytesPerSec(smoothed);
+
+              if (__DEV__) {
+                speedLogCounterRef.current += 1;
+                if (speedLogCounterRef.current % 8 === 0) {
+                  const rawMb = progress.speedBytesPerSec / (1024 * 1024);
+                  const smoothMb = smoothed / (1024 * 1024);
+                  console.info(
+                    `[Download][speed] raw=${rawMb.toFixed(2)}MB/s smoothed=${smoothMb.toFixed(2)}MB/s progress=${progress.progressPercent ?? 'n/a'}`
+                  );
+                }
+              }
             }
           }
         } else if (progress.state === 'processing' || progress.state === 'saving') {
           setDownloadPercent(null);
           setDownloadSpeedBytesPerSec(null);
+          speedEmaBytesPerSecRef.current = null;
         } else if (progress.state === 'starting') {
           setDownloadPercent(0);
           setDownloadSpeedBytesPerSec(null);
+          speedEmaBytesPerSecRef.current = null;
         }
         if (progress.errorMessage) {
           setStatusMessage(progress.errorMessage);
@@ -191,6 +215,7 @@ export default function HomeScreen() {
       setStatusMessage(result.isPrivate ? t('home.privateSaved') : result.filename);
       setDownloadPercent(100);
       setDownloadSpeedBytesPerSec(null);
+      speedEmaBytesPerSecRef.current = null;
 
       // Reset after delay
       setTimeout(() => {
@@ -199,6 +224,7 @@ export default function HomeScreen() {
         setActiveTaskId(null);
         setDownloadPercent(null);
         setDownloadSpeedBytesPerSec(null);
+        speedEmaBytesPerSecRef.current = null;
       }, 3000);
     } catch (error) {
       const cancelCode = (error as { code?: string } | null)?.code;
@@ -209,6 +235,7 @@ export default function HomeScreen() {
         setActiveTaskId(null);
         setDownloadPercent(null);
         setDownloadSpeedBytesPerSec(null);
+        speedEmaBytesPerSecRef.current = null;
         return;
       }
 
@@ -221,6 +248,7 @@ export default function HomeScreen() {
       setActiveTaskId(null);
       setDownloadPercent(null);
       setDownloadSpeedBytesPerSec(null);
+      speedEmaBytesPerSecRef.current = null;
       setTimeout(() => setDownloadState('idle'), 3000);
     }
   }, [privateModeEnabled, t]);

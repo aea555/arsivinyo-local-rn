@@ -57,7 +57,12 @@ GENERIC_MEDIA_RELATIVE_PATTERN = re.compile(
 MAX_GENERIC_DISCOVERY_CANDIDATES = 4
 MAX_ATTEMPT_TRACE = 80
 ALLOW_REDDIT_PUBLIC_FALLBACK = True
-YTDLP_VERBOSE_DEV = True
+YTDLP_VERBOSE_DEV = os.getenv("ARSIVINYO_YTDLP_VERBOSE_DEV", "").strip().lower() in {"1", "true", "yes", "on"}
+PROGRESS_WRITE_MIN_INTERVAL_MS = 500
+PROGRESS_WRITE_MIN_DELTA_PERCENT = 0.5
+YOUTUBE_HTTP_CHUNK_SIZE_PRIMARY = 10 * 1024 * 1024
+YOUTUBE_HTTP_CHUNK_SIZE_FALLBACK = 4 * 1024 * 1024
+YOUTUBE_THROTTLED_RATE_LIMIT = 350 * 1024
 TIKTOK_APP_INFO_CANDIDATES = [
     ("musical_ly", "35.1.3", "2023501030", "0"),
     ("trill", "35.1.3", "2023501030", "1180"),
@@ -131,6 +136,8 @@ _RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
     "impersonationBuildAbiCoverage": IMP_ABI_COVERAGE,
     "impersonationBootstrapError": None,
     "redditShareResolutionLast": None,
+    "progressWritesLast": 0,
+    "youtubeChunkProfileLast": None,
 }
 _IMPERSONATION_RUNTIME_AVAILABLE: Optional[bool] = None
 
@@ -150,6 +157,8 @@ def _reset_attempt_trace() -> None:
     _RUNTIME_DIAGNOSTICS["impersonationResolvedTargetLast"] = None
     _RUNTIME_DIAGNOSTICS["impersonationRequiredByExtractorLast"] = None
     _RUNTIME_DIAGNOSTICS["redditShareResolutionLast"] = None
+    _RUNTIME_DIAGNOSTICS["progressWritesLast"] = 0
+    _RUNTIME_DIAGNOSTICS["youtubeChunkProfileLast"] = None
 
 
 def _push_attempt_trace(entry: Dict[str, Any]) -> None:
@@ -301,6 +310,8 @@ def get_runtime_diagnostics() -> str:
         "impersonationBuildAbiCoverage": _RUNTIME_DIAGNOSTICS.get("impersonationBuildAbiCoverage") or IMP_ABI_COVERAGE,
         "impersonationBootstrapError": _RUNTIME_DIAGNOSTICS.get("impersonationBootstrapError"),
         "redditShareResolutionLast": _RUNTIME_DIAGNOSTICS.get("redditShareResolutionLast"),
+        "progressWritesLast": _RUNTIME_DIAGNOSTICS.get("progressWritesLast"),
+        "youtubeChunkProfileLast": _RUNTIME_DIAGNOSTICS.get("youtubeChunkProfileLast"),
     }
     return json.dumps(payload)
 
@@ -1060,6 +1071,8 @@ def _sanitize_opts_for_log(opts: Dict[str, Any]) -> Dict[str, Any]:
         "retries": opts.get("retries"),
         "hls_prefer_native": opts.get("hls_prefer_native"),
         "external_downloader": opts.get("external_downloader"),
+        "http_chunk_size": opts.get("http_chunk_size"),
+        "throttledratelimit": opts.get("throttledratelimit"),
         "abort_on_unavailable_fragments": opts.get("abort_on_unavailable_fragments"),
         "skip_unavailable_fragments": opts.get("skip_unavailable_fragments"),
     }
@@ -1393,6 +1406,30 @@ def _build_platform_attempts(
             )
         return attempts
 
+    if platform == "youtube":
+        attempts.append(
+            {
+                "label": "youtube-chunk-10m",
+                "use_cookie": has_cookie and cookie_integrity_ok,
+                "ydl_overrides": {
+                    "http_chunk_size": YOUTUBE_HTTP_CHUNK_SIZE_PRIMARY,
+                    "throttledratelimit": YOUTUBE_THROTTLED_RATE_LIMIT,
+                },
+            }
+        )
+        attempts.append(
+            {
+                "label": "youtube-chunk-4m",
+                "use_cookie": has_cookie and cookie_integrity_ok,
+                "ydl_overrides": {
+                    "http_chunk_size": YOUTUBE_HTTP_CHUNK_SIZE_FALLBACK,
+                    "throttledratelimit": YOUTUBE_THROTTLED_RATE_LIMIT,
+                },
+            }
+        )
+        attempts.append({"label": "youtube-default", "use_cookie": has_cookie and cookie_integrity_ok})
+        return attempts
+
     if is_dailymotion:
         dailymotion_targets = IMPERSONATION_TARGET_MATRIX.get("dailymotion", [])
         if impersonation_available:
@@ -1586,6 +1623,8 @@ def _perform_attempts(
         referer_url = strategy.get("referer_url")
         last_strategy = label
         _set_runtime_diag("platformStrategyLast", label)
+        if platform == "youtube":
+            _set_runtime_diag("youtubeChunkProfileLast", ydl_overrides.get("http_chunk_size"))
 
         opts = _common_ydl_opts(
             attempt_url,
@@ -1630,6 +1669,8 @@ def _perform_attempts(
                 "impersonate": impersonate,
                 "forceGenericExtractor": force_generic_extractor,
                 "format": opts.get("format"),
+                "httpChunkSize": opts.get("http_chunk_size"),
+                "throttledRateLimit": opts.get("throttledratelimit"),
             }
         )
 
@@ -1885,6 +1926,35 @@ def _parse_speed_bytes_per_sec(raw: Any) -> Optional[float]:
         return None
     speed = value * multiplier
     return speed if speed > 0 else None
+
+
+def _should_emit_progress_update(
+    *,
+    current_status: str,
+    current_percent: Optional[float],
+    now_ms: int,
+    last_status: Optional[str],
+    last_percent: Optional[float],
+    last_emit_ms: int,
+) -> bool:
+    if current_status != last_status:
+        return True
+    if current_status != "downloading":
+        return True
+    if last_percent is None or current_percent is None:
+        return (now_ms - last_emit_ms) >= PROGRESS_WRITE_MIN_INTERVAL_MS
+    if abs(float(current_percent) - float(last_percent)) >= PROGRESS_WRITE_MIN_DELTA_PERCENT:
+        return True
+    return (now_ms - last_emit_ms) >= PROGRESS_WRITE_MIN_INTERVAL_MS
+
+
+def _coerce_monotonic_download_percent(current_percent: float, last_percent: Optional[float]) -> float:
+    current = max(0.0, min(100.0, float(current_percent)))
+    if last_percent is None:
+        return current
+    # yt-dlp can report multi-stage progress (e.g., video then audio) where percentage drops.
+    # Keep progress monotonic to avoid visual restart/flicker in UI.
+    return max(current, max(0.0, min(100.0, float(last_percent))))
 
 
 def _write_progress(
@@ -2226,6 +2296,7 @@ def run_download(
         def _progress_hook(progress: Dict[str, Any]) -> None:
             if _is_cancel_requested(cancel_flag_path):
                 raise RuntimeError("DOWNLOAD_CANCELLED")
+            nonlocal progress_write_count, last_progress_emit_ms, last_progress_percent, last_progress_status, last_download_percent_emitted
             status = str(progress.get("status") or "").lower()
             if status == "downloading":
                 percent: Optional[float] = None
@@ -2244,15 +2315,49 @@ def run_download(
                 if speed_bytes_per_sec is None:
                     speed_bytes_per_sec = _parse_speed_bytes_per_sec(progress.get("_speed_str"))
                 if percent is not None:
-                    _write_progress(
-                        progress_file_path,
-                        percent,
-                        "Downloading media",
-                        "downloading",
-                        speed_bytes_per_sec=speed_bytes_per_sec,
-                    )
+                    raw_percent = percent
+                    percent = _coerce_monotonic_download_percent(percent, last_download_percent_emitted)
+                    if debug_logging and raw_percent + 0.01 < percent:
+                        _debug_log(
+                            debug_logging,
+                            f"progress clamped raw={raw_percent:.2f} monotonic={percent:.2f}",
+                        )
+                    now_ms = _now_ms()
+                    if _should_emit_progress_update(
+                        current_status="downloading",
+                        current_percent=percent,
+                        now_ms=now_ms,
+                        last_status=last_progress_status,
+                        last_percent=last_progress_percent,
+                        last_emit_ms=last_progress_emit_ms,
+                    ):
+                        _write_progress(
+                            progress_file_path,
+                            percent,
+                            "Downloading media",
+                            "downloading",
+                            speed_bytes_per_sec=speed_bytes_per_sec,
+                        )
+                        progress_write_count += 1
+                        last_progress_emit_ms = now_ms
+                        last_progress_percent = percent
+                        last_download_percent_emitted = percent
+                        last_progress_status = "downloading"
+                        _set_runtime_diag("progressWritesLast", progress_write_count)
             elif status == "finished":
                 _write_progress(progress_file_path, 99.0, "Processing media", "processing")
+                progress_write_count += 1
+                last_progress_emit_ms = _now_ms()
+                last_progress_percent = 99.0
+                last_download_percent_emitted = max(last_download_percent_emitted or 0.0, 99.0)
+                last_progress_status = "processing"
+                _set_runtime_diag("progressWritesLast", progress_write_count)
+
+        progress_write_count = 0
+        last_progress_emit_ms = 0
+        last_progress_percent: Optional[float] = None
+        last_download_percent_emitted: Optional[float] = None
+        last_progress_status: Optional[str] = None
 
         preflight_info, preflight_fail_code, preflight_fail_message, preflight_strategy = _perform_attempts(
             phase="preflight",
@@ -2356,6 +2461,12 @@ def run_download(
 
         size_mb = os.path.getsize(final_path) / (1024 * 1024)
         _write_progress(progress_file_path, 100.0, "Completed", "completed")
+        progress_write_count += 1
+        _set_runtime_diag("progressWritesLast", progress_write_count)
+        _debug_log(
+            debug_logging,
+            f"download progress-writes={progress_write_count} strategy={download_strategy} youtubeChunk={_RUNTIME_DIAGNOSTICS.get('youtubeChunkProfileLast')}",
+        )
         return _result(
             True,
             "DOWNLOAD_COMPLETED",
