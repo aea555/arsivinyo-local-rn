@@ -3,7 +3,7 @@ export default ({ config }) => {
     ...config,
     name: "Arsivinyo Local",
     slug: "arsivinyo-local-rn",
-    version: "1.1.0",
+    version: "1.1.1",
     orientation: "portrait",
     icon: "./assets/images/play_store_512.png",
     scheme: "arsivinyo-local-rn",

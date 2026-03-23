@@ -68,12 +68,14 @@ import kotlin.math.max
 data class TaskState(
   var taskId: String,
   var status: String,
+  var state: String? = null,
   var filename: String? = null,
   var filePath: String? = null,
   var isPrivate: Boolean? = null,
   var privateVideoId: String? = null,
   var sizeMb: Double? = null,
   var progressPercent: Double? = null,
+  var speedBytesPerSec: Double? = null,
   var errorCode: String? = null,
   var errorMessage: String? = null,
   var estimatedSizeMb: Double? = null,
@@ -1635,19 +1637,42 @@ class LocalDownloaderModule : Module() {
     syncForegroundNotification("error", quickReasonToMessage(reason))
   }
 
-  private fun emitProgress(taskId: String, status: String, state: String, message: String?, progressPercent: Double? = null) {
+  private fun emitProgress(
+    taskId: String,
+    status: String,
+    state: String,
+    message: String?,
+    progressPercent: Double? = null,
+    speedBytesPerSec: Double? = null
+  ) {
+    val normalizedState = normalizeProgressEventState(state)
+    tasks[taskId]?.state = normalizedState
+    if (progressPercent != null) {
+      tasks[taskId]?.progressPercent = progressPercent.coerceIn(0.0, 100.0)
+    }
+    if (normalizedState != "downloading") {
+      tasks[taskId]?.speedBytesPerSec = null
+    } else if (speedBytesPerSec != null && speedBytesPerSec > 0) {
+      tasks[taskId]?.speedBytesPerSec = speedBytesPerSec
+    }
+    val eventSpeedBytesPerSec = if (normalizedState == "downloading") {
+      (if (speedBytesPerSec != null && speedBytesPerSec > 0) speedBytesPerSec else tasks[taskId]?.speedBytesPerSec)
+    } else {
+      null
+    }
     sendEvent(
       "downloadProgress",
       mapOf(
         "taskId" to taskId,
         "status" to status,
-        "state" to state,
+        "state" to normalizedState,
         "message" to message,
-        "progressPercent" to progressPercent?.coerceIn(0.0, 100.0)
+        "progressPercent" to progressPercent?.coerceIn(0.0, 100.0),
+        "speedBytesPerSec" to eventSpeedBytesPerSec
       )
     )
     if (taskId == activeTaskId) {
-      syncForegroundNotification(state, message, progressPercent)
+      syncForegroundNotification(normalizedState, message, progressPercent)
     }
   }
 
@@ -1669,10 +1694,30 @@ class LocalDownloaderModule : Module() {
     if (sizeMb != null) task.sizeMb = sizeMb
     if (isPrivate != null) task.isPrivate = isPrivate
     if (privateVideoId != null || isPrivate == false) task.privateVideoId = privateVideoId
+    if (task.state == null) {
+      task.state = when (status) {
+        "PENDING", "STARTED" -> "starting"
+        "PROGRESS" -> "downloading"
+        "SUCCESS" -> "completed"
+        "FAILURE", "CANCELLED" -> "error"
+        else -> null
+      }
+    }
     task.errorCode = errorCode
     task.errorMessage = errorMessage
     tasks[taskId] = task
     persistTaskSnapshot()
+  }
+
+  private fun normalizeProgressEventState(rawState: String?): String {
+    return when (rawState?.trim()?.lowercase()) {
+      "starting" -> "starting"
+      "processing" -> "processing"
+      "saving" -> "saving"
+      "completed" -> "completed"
+      "error" -> "error"
+      else -> "downloading"
+    }
   }
 
   private fun callPythonPreflight(input: PreflightPythonInput): JSONObject {
@@ -4572,6 +4617,8 @@ class LocalDownloaderModule : Module() {
 
   private suspend fun observeProgressFile(taskId: String, progressFile: File) {
     var lastProgressBucket = -1
+    var lastProgressState: String? = null
+    var lastSpeedBucket = -1
     while (currentCoroutineContext().isActive) {
       if (activeTaskId != taskId || shouldIgnoreTaskResult(taskId) || isTerminalStatus(tasks[taskId]?.status)) {
         return
@@ -4590,15 +4637,22 @@ class LocalDownloaderModule : Module() {
           .takeIf { !it.isNaN() }
           ?.coerceIn(0.0, 100.0)
           ?: return@runCatching
+        val speedBytesPerSec = json.optDouble("speedBytesPerSec", Double.NaN)
+          .takeIf { !it.isNaN() && it > 0.0 }
+        val progressState = normalizeProgressEventState(json.optString("status").ifBlank { "downloading" })
         val bucket = percent.toInt()
-        if (bucket == lastProgressBucket) {
+        val speedBucket = speedBytesPerSec?.let { (it / 1024.0).toInt() } ?: -1
+        if (bucket == lastProgressBucket && progressState == lastProgressState && speedBucket == lastSpeedBucket) {
           return@runCatching
         }
 
         lastProgressBucket = bucket
+        lastProgressState = progressState
+        lastSpeedBucket = speedBucket
         tasks[taskId]?.progressPercent = percent
+        tasks[taskId]?.speedBytesPerSec = speedBytesPerSec
         val message = json.optString("message").ifBlank { "Downloading media" }
-        emitProgress(taskId, "PROGRESS", "downloading", message, percent)
+        emitProgress(taskId, "PROGRESS", progressState, message, percent, speedBytesPerSec)
       }.onFailure {
         debug("Task[$taskId] progress file parse failed: ${it.message}")
       }
@@ -4735,12 +4789,14 @@ class LocalDownloaderModule : Module() {
         tasks[taskId] = TaskState(
           taskId = taskId,
           status = if (wasInFlight) "FAILURE" else originalStatus,
+          state = obj.optString("state").ifBlank { if (wasInFlight) "error" else null },
           filename = obj.optString("filename").ifBlank { null },
           filePath = obj.optString("filePath").ifBlank { null },
           isPrivate = if (obj.has("isPrivate")) obj.optBoolean("isPrivate") else null,
           privateVideoId = obj.optString("privateVideoId").ifBlank { null },
           sizeMb = obj.optDouble("sizeMb", Double.NaN).takeIf { !it.isNaN() },
           progressPercent = obj.optDouble("progressPercent", Double.NaN).takeIf { !it.isNaN() },
+          speedBytesPerSec = obj.optDouble("speedBytesPerSec", Double.NaN).takeIf { !it.isNaN() && it > 0.0 },
           errorCode = if (wasInFlight) "PROCESS_RESTARTED" else obj.optString("errorCode").ifBlank { null },
           errorMessage = if (wasInFlight) {
             "Download was interrupted because app process restarted."
@@ -4769,12 +4825,14 @@ class LocalDownloaderModule : Module() {
     return mapOf(
       "taskId" to taskId,
       "status" to status,
+      "state" to state,
       "filename" to filename,
       "filePath" to filePath,
       "isPrivate" to isPrivate,
       "privateVideoId" to privateVideoId,
       "sizeMb" to sizeMb,
       "progressPercent" to progressPercent,
+      "speedBytesPerSec" to speedBytesPerSec,
       "errorCode" to errorCode,
       "errorMessage" to errorMessage,
       "estimatedSizeMb" to estimatedSizeMb,

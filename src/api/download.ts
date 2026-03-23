@@ -217,7 +217,22 @@ export async function downloadMedia(
     }
 
     if (event.state === 'downloading') {
-      onProgressChange?.({ state: 'downloading', taskId, progressPercent: event.progressPercent });
+      onProgressChange?.({
+        state: 'downloading',
+        taskId,
+        progressPercent: event.progressPercent,
+        speedBytesPerSec: event.speedBytesPerSec,
+      });
+      return;
+    }
+
+    if (event.state === 'processing') {
+      onProgressChange?.({ state: 'processing', taskId, progressPercent: event.progressPercent });
+      return;
+    }
+
+    if (event.state === 'saving') {
+      onProgressChange?.({ state: 'saving', taskId, progressPercent: event.progressPercent });
       return;
     }
 
@@ -233,7 +248,17 @@ export async function downloadMedia(
         return;
       }
       if (status.status === 'PROGRESS') {
-        onProgressChange?.({ state: 'downloading', taskId, progressPercent: status.progressPercent });
+        const statusState = status.state;
+        const mappedState =
+          statusState === 'processing' || statusState === 'saving' || statusState === 'starting'
+            ? statusState
+            : 'downloading';
+        onProgressChange?.({
+          state: mappedState,
+          taskId,
+          progressPercent: status.progressPercent,
+          speedBytesPerSec: mappedState === 'downloading' ? status.speedBytesPerSec : undefined,
+        });
       }
     });
 

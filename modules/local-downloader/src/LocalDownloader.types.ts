@@ -60,12 +60,14 @@ export type LocalTaskStatus = 'PENDING' | 'STARTED' | 'PROGRESS' | 'SUCCESS' | '
 export interface LocalTaskStatusResult {
   taskId: string;
   status: LocalTaskStatus;
+  state?: 'starting' | 'downloading' | 'processing' | 'saving' | 'completed' | 'error';
   filename?: string;
   filePath?: string;
   isPrivate?: boolean;
   privateVideoId?: string;
   sizeMb?: number;
   progressPercent?: number;
+  speedBytesPerSec?: number;
   errorCode?: string;
   errorMessage?: string;
   estimatedSizeMb?: number | null;
@@ -110,6 +112,7 @@ export interface LocalDownloadEvent {
   state: 'starting' | 'downloading' | 'processing' | 'saving' | 'completed' | 'error';
   message?: string;
   progressPercent?: number;
+  speedBytesPerSec?: number;
 }
 
 export interface LocalBackgroundStateEvent extends LocalBackgroundState {}

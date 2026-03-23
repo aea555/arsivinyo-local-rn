@@ -111,6 +111,7 @@ SOFT_REDDIT_SHARE_RESOLUTION_MARKERS = (
     "network is unreachable",
     "temporary failure in name resolution",
 )
+SPEED_PER_SEC_PATTERN = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[kmg]?i?b)\s*/\s*s", flags=re.IGNORECASE)
 
 _RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
     "normalizedUrlLast": None,
@@ -1852,7 +1853,47 @@ def _resolve_downloaded_file(info: Dict[str, Any], output_dir: Optional[str]) ->
     return None
 
 
-def _write_progress(progress_file_path: Optional[str], progress_percent: Optional[float], message: str, status: str) -> None:
+def _parse_speed_bytes_per_sec(raw: Any) -> Optional[float]:
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        return value if value > 0 else None
+
+    text = str(raw or "").strip().replace(",", "")
+    if not text:
+        return None
+
+    match = SPEED_PER_SEC_PATTERN.search(text)
+    if not match:
+        return None
+
+    try:
+        value = float(match.group("value"))
+    except (TypeError, ValueError):
+        return None
+
+    unit = str(match.group("unit") or "").lower()
+    multiplier = {
+        "b": 1.0,
+        "kb": 1000.0,
+        "kib": 1024.0,
+        "mb": 1000.0 * 1000.0,
+        "mib": 1024.0 * 1024.0,
+        "gb": 1000.0 * 1000.0 * 1000.0,
+        "gib": 1024.0 * 1024.0 * 1024.0,
+    }.get(unit)
+    if multiplier is None:
+        return None
+    speed = value * multiplier
+    return speed if speed > 0 else None
+
+
+def _write_progress(
+    progress_file_path: Optional[str],
+    progress_percent: Optional[float],
+    message: str,
+    status: str,
+    speed_bytes_per_sec: Optional[float] = None,
+) -> None:
     if not progress_file_path:
         return
     try:
@@ -1862,6 +1903,8 @@ def _write_progress(progress_file_path: Optional[str], progress_percent: Optiona
         }
         if progress_percent is not None:
             payload["progressPercent"] = max(0.0, min(100.0, float(progress_percent)))
+        if isinstance(speed_bytes_per_sec, (int, float)) and float(speed_bytes_per_sec) > 0:
+            payload["speedBytesPerSec"] = float(speed_bytes_per_sec)
 
         target_dir = os.path.dirname(progress_file_path)
         if target_dir:
@@ -2197,8 +2240,17 @@ def run_download(
                             percent = float(percent_str)
                 except (TypeError, ValueError):
                     percent = None
+                speed_bytes_per_sec = _parse_speed_bytes_per_sec(progress.get("speed"))
+                if speed_bytes_per_sec is None:
+                    speed_bytes_per_sec = _parse_speed_bytes_per_sec(progress.get("_speed_str"))
                 if percent is not None:
-                    _write_progress(progress_file_path, percent, "Downloading media", "downloading")
+                    _write_progress(
+                        progress_file_path,
+                        percent,
+                        "Downloading media",
+                        "downloading",
+                        speed_bytes_per_sec=speed_bytes_per_sec,
+                    )
             elif status == "finished":
                 _write_progress(progress_file_path, 99.0, "Processing media", "processing")
 

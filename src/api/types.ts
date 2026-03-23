@@ -20,12 +20,14 @@ export type TaskStatus = 'PENDING' | 'STARTED' | 'PROGRESS' | 'SUCCESS' | 'FAILU
 export interface TaskStatusResponse {
     taskId: string;
     status: TaskStatus;
+    state?: DownloadState;
     filePath?: string;
     filename?: string;
     isPrivate?: boolean;
     privateVideoId?: string;
     sizeMb?: number;
     progressPercent?: number;
+    speedBytesPerSec?: number;
     errorCode?: string;
     errorMessage?: string;
     estimatedSizeMb?: number | null;
@@ -126,6 +128,7 @@ export interface DownloadProgress {
     taskId?: string;
     filename?: string;
     progressPercent?: number;
+    speedBytesPerSec?: number;
     errorCode?: ApiErrorCode;
     errorMessage?: string;
 }

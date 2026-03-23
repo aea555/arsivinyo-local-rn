@@ -46,6 +46,7 @@ export default function HomeScreen() {
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
+  const [downloadSpeedBytesPerSec, setDownloadSpeedBytesPerSec] = useState<number | null>(null);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [backgroundServiceRunning, setBackgroundServiceRunning] = useState(false);
@@ -62,13 +63,23 @@ export default function HomeScreen() {
 
   const progressValue = (() => {
     if (!isOngoingDownload) return null;
+    if (downloadState === 'processing' || downloadState === 'saving') {
+      return null;
+    }
     if (typeof downloadPercent === 'number') {
       return Math.max(0, Math.min(100, Math.round(downloadPercent)));
     }
-    if (downloadState === 'processing') return 95;
-    if (downloadState === 'saving') return 99;
     return 0;
   })();
+
+  const speedValue = (() => {
+    if (downloadState !== 'downloading') return null;
+    if (typeof progressValue === 'number' && progressValue >= 99) return null;
+    if (typeof downloadSpeedBytesPerSec !== 'number' || downloadSpeedBytesPerSec <= 0) return null;
+    return downloadSpeedBytesPerSec / (1024 * 1024);
+  })();
+
+  const speedLabel = speedValue == null ? null : `${speedValue >= 10 ? speedValue.toFixed(1) : speedValue.toFixed(2)} MB/s`;
 
   useEffect(() => {
     let mounted = true;
@@ -115,6 +126,7 @@ export default function HomeScreen() {
       setStatusMessage('');
       setActiveTaskId(null);
       setDownloadPercent(0);
+      setDownloadSpeedBytesPerSec(null);
 
       // Get URL from clipboard
       const url = await getUrlFromClipboard();
@@ -123,6 +135,7 @@ export default function HomeScreen() {
         setStatusMessage(t('home.noUrlInClipboard'));
         setActiveTaskId(null);
         setDownloadPercent(null);
+        setDownloadSpeedBytesPerSec(null);
         setTimeout(() => setDownloadState('idle'), 3000);
         return;
       }
@@ -133,12 +146,26 @@ export default function HomeScreen() {
         if (progress.taskId) {
           setActiveTaskId(progress.taskId);
         }
-        if (typeof progress.progressPercent === 'number') {
-          setDownloadPercent(progress.progressPercent);
-        } else if (progress.state === 'processing') {
-          setDownloadPercent((prev) => (typeof prev === 'number' ? Math.max(prev, 95) : 95));
-        } else if (progress.state === 'saving') {
-          setDownloadPercent((prev) => (typeof prev === 'number' ? Math.max(prev, 99) : 99));
+        if (progress.state === 'downloading') {
+          if (typeof progress.progressPercent === 'number') {
+            setDownloadPercent(progress.progressPercent);
+            if (progress.progressPercent >= 99) {
+              setDownloadSpeedBytesPerSec(null);
+            }
+          }
+          if (typeof progress.speedBytesPerSec === 'number' && progress.speedBytesPerSec > 0) {
+            if (typeof progress.progressPercent === 'number' && progress.progressPercent >= 99) {
+              setDownloadSpeedBytesPerSec(null);
+            } else {
+              setDownloadSpeedBytesPerSec(progress.speedBytesPerSec);
+            }
+          }
+        } else if (progress.state === 'processing' || progress.state === 'saving') {
+          setDownloadPercent(null);
+          setDownloadSpeedBytesPerSec(null);
+        } else if (progress.state === 'starting') {
+          setDownloadPercent(0);
+          setDownloadSpeedBytesPerSec(null);
         }
         if (progress.errorMessage) {
           setStatusMessage(progress.errorMessage);
@@ -163,6 +190,7 @@ export default function HomeScreen() {
       setDownloadState('completed');
       setStatusMessage(result.isPrivate ? t('home.privateSaved') : result.filename);
       setDownloadPercent(100);
+      setDownloadSpeedBytesPerSec(null);
 
       // Reset after delay
       setTimeout(() => {
@@ -170,6 +198,7 @@ export default function HomeScreen() {
         setStatusMessage('');
         setActiveTaskId(null);
         setDownloadPercent(null);
+        setDownloadSpeedBytesPerSec(null);
       }, 3000);
     } catch (error) {
       const cancelCode = (error as { code?: string } | null)?.code;
@@ -179,6 +208,7 @@ export default function HomeScreen() {
         setStatusMessage(t('errors.DOWNLOAD_CANCELLED'));
         setActiveTaskId(null);
         setDownloadPercent(null);
+        setDownloadSpeedBytesPerSec(null);
         return;
       }
 
@@ -190,6 +220,7 @@ export default function HomeScreen() {
       );
       setActiveTaskId(null);
       setDownloadPercent(null);
+      setDownloadSpeedBytesPerSec(null);
       setTimeout(() => setDownloadState('idle'), 3000);
     }
   }, [privateModeEnabled, t]);
@@ -483,22 +514,35 @@ export default function HomeScreen() {
             disabled={downloadState !== 'idle' && downloadState !== 'error'}
           />
 
-          {isOngoingDownload && progressValue !== null ? (
+          {isOngoingDownload ? (
             <View style={styles.progressSection}>
               <Text style={[styles.progressText, { color: colors.text }]}>
-                {t('home.downloadProgress', { percent: progressValue })}
+                {downloadState === 'processing'
+                  ? t('home.processing')
+                  : downloadState === 'saving'
+                    ? t('common.loading')
+                    : t('home.downloadProgress', { percent: progressValue ?? 0 })}
               </Text>
-              <View style={[styles.progressTrack, { backgroundColor: colors.surfaceHover }]}>
-                <View
-                  style={[
-                    styles.progressFill,
-                    {
-                      width: `${progressValue}%`,
-                      backgroundColor: colors.accent,
-                    },
-                  ]}
-                />
-              </View>
+              {progressValue !== null ? (
+                <View style={[styles.progressTrack, { backgroundColor: colors.surfaceHover }]}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      {
+                        width: `${progressValue}%`,
+                        backgroundColor: colors.accent,
+                      },
+                    ]}
+                  />
+                </View>
+              ) : (
+                <ActivityIndicator size="small" color={colors.accent} />
+              )}
+              {speedLabel ? (
+                <Text style={[styles.speedText, { color: colors.textMuted }]}>
+                  {speedLabel}
+                </Text>
+              ) : null}
             </View>
           ) : null}
 
@@ -750,6 +794,10 @@ const styles = StyleSheet.create({
   progressFill: {
     height: '100%',
     borderRadius: 999,
+  },
+  speedText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   cancelButton: {
     marginTop: 12,
