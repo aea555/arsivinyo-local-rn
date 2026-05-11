@@ -2,7 +2,10 @@ import { Platform } from 'react-native';
 import LocalDownloaderModule, {
   addBackgroundStateListener,
   addDownloadProgressListener,
+  addYtDlpUpdateProgressListener,
   type LocalBackgroundPermissionResult,
+  type LocalBackgroundDownloadsState,
+  type LocalStickyNotificationState,
   type LocalBackgroundState,
   type LocalBackgroundStateEvent,
   type LocalCookieProfile,
@@ -11,6 +14,7 @@ import LocalDownloaderModule, {
   type LocalCustomDomainProfile,
   type LocalCustomDomainSummary,
   type LocalDiagnostics,
+  type LocalDownloadFailureLog,
   type LocalDownloadEvent,
   type LocalDownloadStartInput,
   type LocalDownloadStartResult,
@@ -26,6 +30,10 @@ import LocalDownloaderModule, {
   type LocalPlatform,
   type LocalQuickDownloadResult,
   type LocalTaskStatusResult,
+  type LocalYtDlpUpdateCheckResult,
+  type LocalYtDlpUpdateProgressEvent,
+  type LocalYtDlpUpdateResult,
+  type LocalYtDlpUpdateStatus,
 } from '../native/localDownloader';
 
 function ensureAndroid(): void {
@@ -42,6 +50,11 @@ export function listenDownloadProgress(listener: (event: LocalDownloadEvent) => 
 export function listenBackgroundState(listener: (event: LocalBackgroundStateEvent) => void) {
   ensureAndroid();
   return addBackgroundStateListener(listener);
+}
+
+export function listenYtDlpUpdateProgress(listener: (event: LocalYtDlpUpdateProgressEvent) => void) {
+  ensureAndroid();
+  return addYtDlpUpdateProgressListener(listener);
 }
 
 export async function startLocalDownload(input: LocalDownloadStartInput): Promise<LocalDownloadStartResult> {
@@ -67,6 +80,16 @@ export async function getLocalBackgroundState(): Promise<LocalBackgroundState> {
 export async function ensureLocalBackgroundPermission(): Promise<LocalBackgroundPermissionResult> {
   ensureAndroid();
   return LocalDownloaderModule.ensureBackgroundPermission();
+}
+
+export async function setLocalBackgroundDownloadsEnabled(enabled: boolean): Promise<LocalBackgroundDownloadsState> {
+  ensureAndroid();
+  return LocalDownloaderModule.setBackgroundDownloadsEnabled({ enabled });
+}
+
+export async function setLocalStickyNotificationEnabled(enabled: boolean): Promise<LocalStickyNotificationState> {
+  ensureAndroid();
+  return LocalDownloaderModule.setStickyNotificationEnabled({ enabled });
 }
 
 export async function startQuickLocalDownloadFromClipboard(): Promise<LocalQuickDownloadResult> {
@@ -192,6 +215,31 @@ export async function deleteLocalCustomDomainProfile(input: { domain: string; pr
 export async function getLocalDiagnostics(): Promise<LocalDiagnostics> {
   ensureAndroid();
   return LocalDownloaderModule.getDiagnostics();
+}
+
+export async function getLocalDownloadFailureLogs(): Promise<LocalDownloadFailureLog[]> {
+  ensureAndroid();
+  return LocalDownloaderModule.getDownloadFailureLogs();
+}
+
+export async function getLocalYtDlpUpdateStatus(): Promise<LocalYtDlpUpdateStatus> {
+  ensureAndroid();
+  return LocalDownloaderModule.getYtDlpUpdateStatus();
+}
+
+export async function checkLocalYtDlpUpdate(): Promise<LocalYtDlpUpdateCheckResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.checkYtDlpUpdate();
+}
+
+export async function updateLocalYtDlp(): Promise<LocalYtDlpUpdateResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.updateYtDlp();
+}
+
+export async function clearLocalYtDlpOverride(): Promise<{ success: boolean; requiresRestart?: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.clearYtDlpOverride();
 }
 
 export async function runLocalImpersonationSelfTest(): Promise<LocalImpersonationSelfTestResult> {

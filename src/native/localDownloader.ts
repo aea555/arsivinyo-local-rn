@@ -1,6 +1,7 @@
-export { default, addBackgroundStateListener, addDownloadProgressListener } from '../../modules/local-downloader/src';
+export { default, addBackgroundStateListener, addDownloadProgressListener, addYtDlpUpdateProgressListener } from '../../modules/local-downloader/src';
 export type {
   LocalBackgroundPermissionResult,
+  LocalBackgroundDownloadsState,
   LocalBackgroundState,
   LocalBackgroundStateEvent,
   LocalCookieProfile,
@@ -9,6 +10,7 @@ export type {
   LocalCustomDomainProfile,
   LocalCustomDomainSummary,
   LocalDiagnostics,
+  LocalDownloadFailureLog,
   LocalDownloadEvent,
   LocalDownloadStartInput,
   LocalDownloadStartResult,
@@ -21,8 +23,13 @@ export type {
   LocalPrivateVideoItem,
   LocalSaveToMediaStoreInput,
   LocalSaveToMediaStoreResult,
+  LocalStickyNotificationState,
   LocalPlatform,
   LocalQuickDownloadResult,
   LocalTaskStatus,
   LocalTaskStatusResult,
+  LocalYtDlpUpdateCheckResult,
+  LocalYtDlpUpdateProgressEvent,
+  LocalYtDlpUpdateResult,
+  LocalYtDlpUpdateStatus,
 } from '../../modules/local-downloader/src';

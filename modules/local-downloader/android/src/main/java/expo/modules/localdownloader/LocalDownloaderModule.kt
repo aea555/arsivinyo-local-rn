@@ -44,7 +44,9 @@ import java.io.IOException
 import java.io.OutputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URL
 import java.security.MessageDigest
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -56,6 +58,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -68,6 +72,7 @@ import kotlin.math.max
 data class TaskState(
   var taskId: String,
   var status: String,
+  var url: String? = null,
   var state: String? = null,
   var filename: String? = null,
   var filePath: String? = null,
@@ -169,16 +174,26 @@ data class PrivateVideoEntry(
   val encFileName: String
 )
 
+data class YtDlpReleaseAsset(
+  val version: String,
+  val filename: String,
+  val url: String,
+  val sha256: String,
+  val sizeBytes: Long
+)
+
 class LocalDownloaderModule : Module() {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val tasks = ConcurrentHashMap<String, TaskState>()
   private val cancelFlags = ConcurrentHashMap<String, File>()
   private val ignoredTaskResults = ConcurrentHashMap.newKeySet<String>()
   private val lastErrors = ArrayDeque<String>()
+  private val failureLogLock = Any()
   private val customCookieIndexLock = Any()
   private val queueLock = Any()
   private val privateVaultLock = Any()
   private val privateVaultIoLock = Any()
+  private val ytDlpUpdateLock = Any()
   private val queuedQuickDownloads = ArrayDeque<QueuedQuickDownload>()
   private val recentQuickUrls = LinkedHashMap<String, Long>()
   private val tag = "LocalDownloader"
@@ -212,6 +227,12 @@ class LocalDownloaderModule : Module() {
   private var privateModeEnabled: Boolean = false
 
   @Volatile
+  private var backgroundDownloadsEnabled: Boolean = false
+
+  @Volatile
+  private var stickyNotificationEnabled: Boolean = false
+
+  @Volatile
   private var privateLastEncryptMs: Long? = null
 
   @Volatile
@@ -220,14 +241,23 @@ class LocalDownloaderModule : Module() {
   @Volatile
   private var privateLastThroughputMbps: Double? = null
 
+  @Volatile
+  private var ytDlpUpdateRunning: Boolean = false
+
+  @Volatile
+  private var lastYtDlpBootstrapStatus: JSONObject? = null
+
   override fun definition() = ModuleDefinition {
     Name("LocalDownloader")
-    Events("downloadProgress", "backgroundStateChanged")
+    Events("downloadProgress", "backgroundStateChanged", "ytDlpUpdateProgress")
 
     OnCreate {
       activeModule = this@LocalDownloaderModule
       lastQuickReason = lastQuickReasonFallback
-      privateModeEnabled = isPrivateModeEnabledPersisted(requireNotNull(appContext.reactContext))
+      val context = requireNotNull(appContext.reactContext)
+      privateModeEnabled = isPrivateModeEnabledPersisted(context)
+      backgroundDownloadsEnabled = isBackgroundDownloadsEnabledPersisted(context)
+      stickyNotificationEnabled = isStickyNotificationEnabledPersisted(context)
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
       cleanupRuntimeCookieTemp()
       cleanupPrivatePlaybackCacheInternal()
@@ -249,7 +279,11 @@ class LocalDownloaderModule : Module() {
         addError("MERGE_DEPENDENCY_MISSING: ffmpeg/ffprobe not executable")
       }
       cachedFfmpegInfo = ffmpegInfo
-      syncForegroundNotification("idle", "Ready for quick downloads")
+      if (stickyNotificationEnabled) {
+        syncForegroundNotification("idle", "Ready for quick downloads")
+      } else {
+        stopForegroundNotificationIfIdle()
+      }
       consumePendingQuickRequests()
       emitBackgroundStateChanged()
     }
@@ -331,6 +365,18 @@ class LocalDownloaderModule : Module() {
         "granted" to refreshedGranted,
         "canAskAgain" to canAskForNotificationPermission()
       )
+    }
+
+    AsyncFunction("setBackgroundDownloadsEnabled") { input: Map<String, Any?> ->
+      val requested = (input["enabled"] as? Boolean) ?: false
+      val resolved = setBackgroundDownloadsEnabledInternal(requested)
+      mapOf("enabled" to resolved)
+    }
+
+    AsyncFunction("setStickyNotificationEnabled") { input: Map<String, Any?> ->
+      val requested = (input["enabled"] as? Boolean) ?: false
+      val resolved = setStickyNotificationEnabledInternal(requested)
+      mapOf("enabled" to resolved)
     }
 
     AsyncFunction("startQuickDownloadFromClipboard") {
@@ -782,6 +828,26 @@ class LocalDownloaderModule : Module() {
       saveToMediaStoreInternal(filePath, filename, mimeType, dateTakenMs)
     }
 
+    AsyncFunction("getYtDlpUpdateStatus") {
+      getYtDlpUpdateStatusInternal(includeLatest = false)
+    }
+
+    AsyncFunction("getDownloadFailureLogs") {
+      readDownloadFailureLogsInternal()
+    }
+
+    AsyncFunction("checkYtDlpUpdate") {
+      checkYtDlpUpdateInternal()
+    }
+
+    AsyncFunction("updateYtDlp") {
+      updateYtDlpInternal()
+    }
+
+    AsyncFunction("clearYtDlpOverride") {
+      clearYtDlpOverrideInternal()
+    }
+
     AsyncFunction("getDiagnostics") {
       val ffmpegInfo = getOrResolveFfmpegInfo(forceRefresh = true)
 
@@ -805,6 +871,15 @@ class LocalDownloaderModule : Module() {
       var impersonationWheelVersion: String? = null
       var impersonationBuildAbiCoverage: List<String> = emptyList()
       var impersonationBootstrapError: String? = null
+      var ytDlpBundledVersion: String? = null
+      var ytDlpActiveVersion: String? = null
+      var ytDlpOverrideVersion: String? = null
+      var ytDlpPendingVersion: String? = null
+      var ytDlpFailedVersion: String? = null
+      var ytDlpFailedReason: String? = null
+      var ytDlpOverrideSource: String = "bundled"
+      var ytDlpOverridePath: String? = null
+      var ytDlpOverrideStorageReady: Boolean = false
 
       runCatching {
         ensurePythonReady()
@@ -812,6 +887,16 @@ class LocalDownloaderModule : Module() {
         val py = Python.getInstance()
         ytDlpVersion = py.getModule("yt_dlp.version").get("__version__").toString()
         ytDlpAvailable = true
+        val updateStatus = buildYtDlpUpdateStatusMap(fetchActiveFromPython = false)
+        ytDlpBundledVersion = updateStatus["bundledVersion"] as? String
+        ytDlpActiveVersion = updateStatus["activeVersion"] as? String
+        ytDlpOverrideVersion = updateStatus["overrideVersion"] as? String
+        ytDlpPendingVersion = updateStatus["pendingVersion"] as? String
+        ytDlpFailedVersion = updateStatus["failedVersion"] as? String
+        ytDlpFailedReason = updateStatus["failedReason"] as? String
+        ytDlpOverrideSource = (updateStatus["source"] as? String) ?: "bundled"
+        ytDlpOverridePath = updateStatus["overridePath"] as? String
+        ytDlpOverrideStorageReady = updateStatus["storageReady"] as? Boolean ?: false
 
         val runtimeDiagRaw = py.getModule("local_downloader").callAttr("get_runtime_diagnostics").toString()
         val runtimeDiag = JSONObject(runtimeDiagRaw)
@@ -896,6 +981,15 @@ class LocalDownloaderModule : Module() {
         "ytDlpVersion" to ytDlpVersion,
         "ytDlpAvailable" to ytDlpAvailable,
         "pythonReady" to pythonReady,
+        "ytDlpBundledVersion" to ytDlpBundledVersion,
+        "ytDlpActiveVersion" to ytDlpActiveVersion,
+        "ytDlpOverrideVersion" to ytDlpOverrideVersion,
+        "ytDlpPendingVersion" to ytDlpPendingVersion,
+        "ytDlpFailedVersion" to ytDlpFailedVersion,
+        "ytDlpFailedReason" to ytDlpFailedReason,
+        "ytDlpOverrideSource" to ytDlpOverrideSource,
+        "ytDlpOverridePath" to ytDlpOverridePath,
+        "ytDlpOverrideStorageReady" to ytDlpOverrideStorageReady,
         "ffmpegPath" to ffmpegInfo.path,
         "ffprobePath" to ffmpegInfo.ffprobePath,
         "ffmpegAbi" to ffmpegInfo.abi,
@@ -1018,7 +1112,7 @@ class LocalDownloaderModule : Module() {
     val taskId = UUID.randomUUID().toString()
     ignoredTaskResults.remove(taskId)
 
-    val task = TaskState(taskId = taskId, status = "PENDING")
+    val task = TaskState(taskId = taskId, status = "PENDING", url = url)
     tasks[taskId] = task
     persistTaskSnapshot()
     emitProgress(taskId, "PENDING", "starting", "Task created")
@@ -1552,10 +1646,46 @@ class LocalDownloaderModule : Module() {
       "queuedUrls" to synchronized(queueLock) { queuedQuickDownloads.map { it.url } },
       "lastQuickReason" to lastQuickReason,
       "notificationPhase" to notificationPhase,
+      "backgroundDownloadsEnabled" to backgroundDownloadsEnabled,
+      "stickyNotificationEnabled" to stickyNotificationEnabled,
       "privateModeEnabled" to privateModeEnabled,
       "notificationPermissionRequired" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU),
       "notificationPermissionGranted" to granted
     )
+  }
+
+  private fun setBackgroundDownloadsEnabledInternal(enabled: Boolean): Boolean {
+    val context = requireNotNull(appContext.reactContext)
+    if (enabled && !isNotificationPermissionGranted(context)) {
+      throw IllegalStateException("BACKGROUND_PERMISSION_REQUIRED")
+    }
+    backgroundDownloadsEnabled = enabled
+    persistBackgroundDownloadsEnabled(context, enabled)
+    if (stickyNotificationEnabled) {
+      syncForegroundNotification("idle", if (enabled) "Background downloads enabled" else "Background downloads disabled")
+    } else {
+      stopForegroundNotificationIfIdle()
+    }
+    emitBackgroundStateChanged()
+    return enabled
+  }
+
+  private fun setStickyNotificationEnabledInternal(enabled: Boolean): Boolean {
+    val context = requireNotNull(appContext.reactContext)
+    if (enabled && !isNotificationPermissionGranted(context)) {
+      throw IllegalStateException("BACKGROUND_PERMISSION_REQUIRED")
+    }
+    stickyNotificationEnabled = enabled
+    persistStickyNotificationEnabled(context, enabled)
+    if (enabled) {
+      syncForegroundNotification("idle", "Sticky notification enabled")
+    } else if (activeTaskId == null && queueSize() == 0) {
+      DownloadNotificationController.stop(context)
+    } else {
+      syncForegroundNotification(notificationPhase, "Sticky notification disabled")
+    }
+    emitBackgroundStateChanged()
+    return enabled
   }
 
   private fun setPrivateModeEnabledInternal(enabled: Boolean): Boolean {
@@ -1596,7 +1726,7 @@ class LocalDownloaderModule : Module() {
       progressPercent = progress,
       queueSize = queueSize(),
       privateModeEnabled = privateModeEnabled,
-      pinned = STICKY_NOTIFICATION_ENABLED,
+      pinned = stickyNotificationEnabled,
     )
     if (state.shouldRunForeground) {
       DownloadNotificationController.startOrUpdate(context, state)
@@ -1688,6 +1818,7 @@ class LocalDownloaderModule : Module() {
     privateVideoId: String? = null
   ) {
     val task = tasks[taskId] ?: TaskState(taskId, status)
+    val wasFailure = task.status == "FAILURE"
     task.status = status
     if (filename != null) task.filename = filename
     if (filePath != null) task.filePath = filePath
@@ -1707,6 +1838,9 @@ class LocalDownloaderModule : Module() {
     task.errorMessage = errorMessage
     tasks[taskId] = task
     persistTaskSnapshot()
+    if (status == "FAILURE" && !wasFailure) {
+      recordDownloadFailure(taskId, errorCode, errorMessage)
+    }
   }
 
   private fun normalizeProgressEventState(rawState: String?): String {
@@ -1775,10 +1909,524 @@ class LocalDownloaderModule : Module() {
     return json
   }
 
+  private fun getYtDlpUpdateStatusInternal(includeLatest: Boolean): Map<String, Any?> {
+    val status = buildYtDlpUpdateStatusMap(fetchActiveFromPython = true).toMutableMap()
+    if (includeLatest) {
+      runCatching {
+        val latest = fetchLatestYtDlpRelease()
+        status["latestVersion"] = latest.version
+        status["updateAvailable"] = isNewerYtDlpVersion(latest.version, status["effectiveInstalledVersion"] as? String)
+      }.onFailure {
+        status["latestCheckError"] = it.message ?: it::class.java.simpleName
+      }
+    }
+    return status
+  }
+
+  private fun checkYtDlpUpdateInternal(): Map<String, Any?> {
+    emitYtDlpUpdateProgress("checking")
+    val status = getYtDlpUpdateStatusInternal(includeLatest = true).toMutableMap()
+    val latest = status["latestVersion"] as? String
+    val current = status["effectiveInstalledVersion"] as? String
+    val updateAvailable = latest != null && isNewerYtDlpVersion(latest, current)
+    status["updateAvailable"] = updateAvailable
+    status["status"] = if (updateAvailable) "available" else "up_to_date"
+    emitYtDlpUpdateProgress(if (updateAvailable) "available" else "up_to_date", version = latest)
+    return status
+  }
+
+  private fun updateYtDlpInternal(): Map<String, Any?> {
+    synchronized(ytDlpUpdateLock) {
+      if (ytDlpUpdateRunning) {
+        return mapOf("status" to "running", "success" to false, "code" to "UPDATE_ALREADY_RUNNING", "requiresRestart" to false)
+      }
+      ytDlpUpdateRunning = true
+    }
+
+    try {
+      if (activeJob?.isActive == true || activeTaskId != null) {
+        return mapOf(
+          "status" to "blocked",
+          "success" to false,
+          "code" to "DOWNLOAD_ACTIVE",
+          "message" to "A download is active. Finish or cancel it before updating yt-dlp.",
+          "requiresRestart" to false
+        )
+      }
+
+      emitYtDlpUpdateProgress("checking")
+      cleanupYtDlpUpdateScratch()
+      val before = buildYtDlpUpdateStatusMap(fetchActiveFromPython = true)
+      val release = fetchLatestYtDlpRelease()
+      val current = before["effectiveInstalledVersion"] as? String
+      if (!isNewerYtDlpVersion(release.version, current)) {
+        emitYtDlpUpdateProgress("up_to_date", version = release.version)
+        return mapOf(
+          "status" to "up_to_date",
+          "success" to true,
+          "previousVersion" to current,
+          "installedVersion" to current,
+          "latestVersion" to release.version,
+          "requiresRestart" to false
+        )
+      }
+
+      val context = requireNotNull(appContext.reactContext).applicationContext
+      val updateCache = ytDlpUpdateCacheDir(context).apply { mkdirs() }
+      val wheelTmp = File(updateCache, "${release.version}.whl.tmp")
+      val wheelFile = File(updateCache, "${release.version}.whl")
+      requireSufficientYtDlpUpdateSpace(updateCache, release.sizeBytes)
+      downloadYtDlpWheel(release, wheelTmp)
+      if (wheelFile.exists()) wheelFile.delete()
+      if (!wheelTmp.renameTo(wheelFile)) {
+        throw IOException("WHEEL_RENAME_FAILED")
+      }
+
+      emitYtDlpUpdateProgress("installing", version = release.version)
+      val versionDir = installYtDlpWheel(context, release, wheelFile)
+      val manifest = readYtDlpManifest(context)
+      val installed = manifest.optJSONObject("installed") ?: JSONObject()
+      installed.put(
+        release.version,
+        JSONObject()
+          .put("sha256", release.sha256)
+          .put("installedAt", System.currentTimeMillis())
+          .put("source", "pypi")
+          .put("filename", release.filename)
+      )
+      manifest.put("schemaVersion", 1)
+      manifest.put("installed", installed)
+      manifest.put("pendingVersion", release.version)
+      manifest.put("failedVersion", JSONObject.NULL)
+      manifest.put("failedReason", JSONObject.NULL)
+      writeYtDlpManifest(context, manifest)
+
+      emitYtDlpUpdateProgress("verifying", version = release.version)
+      verifyInstalledYtDlpPackage(versionDir, release.version)
+      emitYtDlpUpdateProgress("installed", version = release.version)
+      return mapOf(
+        "status" to "installed",
+        "success" to true,
+        "previousVersion" to current,
+        "installedVersion" to release.version,
+        "latestVersion" to release.version,
+        "requiresRestart" to true,
+        "pendingVersion" to release.version
+      )
+    } catch (error: Throwable) {
+      val code = error.message?.takeIf { it.isNotBlank() } ?: error::class.java.simpleName
+      addError("YT_DLP_UPDATE_FAILED: $code")
+      emitYtDlpUpdateProgress("failed", message = code)
+      return mapOf("status" to "failed", "success" to false, "code" to code, "message" to code, "requiresRestart" to false)
+    } finally {
+      synchronized(ytDlpUpdateLock) {
+        ytDlpUpdateRunning = false
+      }
+    }
+  }
+
+  private fun clearYtDlpOverrideInternal(): Map<String, Any?> {
+    val context = requireNotNull(appContext.reactContext).applicationContext
+    val manifest = readYtDlpManifest(context)
+    manifest.put("schemaVersion", 1)
+    manifest.put("activeVersion", JSONObject.NULL)
+    manifest.put("pendingVersion", JSONObject.NULL)
+    manifest.put("failedVersion", JSONObject.NULL)
+    manifest.put("failedReason", JSONObject.NULL)
+    writeYtDlpManifest(context, manifest)
+    return mapOf("success" to true, "requiresRestart" to Python.isStarted())
+  }
+
+  private fun buildYtDlpUpdateStatusMap(fetchActiveFromPython: Boolean): Map<String, Any?> {
+    val context = requireNotNull(appContext.reactContext).applicationContext
+    var manifest = readYtDlpManifest(context)
+    var bootstrap = lastYtDlpBootstrapStatus
+    var activeVersion = bootstrap?.optString("activeVersion")?.takeIf { it.isNotBlank() && it != "null" }
+    if (activeVersion == null && fetchActiveFromPython) {
+      runCatching {
+        ensurePythonReady()
+        bootstrap = lastYtDlpBootstrapStatus
+        manifest = readYtDlpManifest(context)
+        activeVersion = Python.getInstance().getModule("yt_dlp.version").get("__version__").toString()
+      }
+    }
+    val pendingVersion = manifest.optString("pendingVersion").takeIf { it.isNotBlank() && it != "null" }
+    val manifestActiveVersion = manifest.optString("activeVersion").takeIf { it.isNotBlank() && it != "null" }
+    val overrideVersion = bootstrap?.optString("overrideVersion")?.takeIf { it.isNotBlank() && it != "null" } ?: manifestActiveVersion
+    val bundledVersion = bootstrap?.optString("bundledVersion")?.takeIf { it.isNotBlank() && it != "null" }
+      ?: if (overrideVersion == null) activeVersion else null
+    val effectiveInstalledVersion = pendingVersion ?: overrideVersion ?: activeVersion ?: bundledVersion
+    val root = ytDlpOverrideRoot(context)
+    val versionsDir = File(root, "versions")
+    val installedVersions = manifest.optJSONObject("installed")?.let { obj ->
+      obj.keys().asSequence().toList().sortedWith(Comparator { a, b -> compareYtDlpVersions(a, b) })
+    } ?: emptyList()
+    return mapOf(
+      "source" to (bootstrap?.optString("source")?.takeIf { it.isNotBlank() } ?: if (overrideVersion != null) "override" else "bundled"),
+      "bundledVersion" to bundledVersion,
+      "activeVersion" to activeVersion,
+      "overrideVersion" to overrideVersion,
+      "pendingVersion" to pendingVersion,
+      "failedVersion" to manifest.optString("failedVersion").takeIf { it.isNotBlank() && it != "null" },
+      "failedReason" to manifest.optString("failedReason").takeIf { it.isNotBlank() && it != "null" },
+      "effectiveInstalledVersion" to effectiveInstalledVersion,
+      "installedVersions" to installedVersions,
+      "requiresRestart" to (pendingVersion != null),
+      "updateRunning" to ytDlpUpdateRunning,
+      "storageReady" to ((root.exists() || root.mkdirs()) && (versionsDir.exists() || versionsDir.mkdirs())),
+      "overridePath" to bootstrap?.optString("overridePath")?.takeIf { it.isNotBlank() && it != "null" },
+      "activeTaskId" to activeTaskId
+    )
+  }
+
+  private fun applyYtDlpOverrideBootstrap(context: Context) {
+    val root = ytDlpOverrideRoot(context).apply { mkdirs() }
+    File(root, "versions").mkdirs()
+    File(root, ".staging").mkdirs()
+    val manifest = ytDlpManifestFile(context)
+    runCatching {
+      val result = Python.getInstance()
+        .getModule("yt_dlp_override_bootstrap")
+        .callAttr("activate", root.absolutePath, manifest.absolutePath)
+        .toString()
+      lastYtDlpBootstrapStatus = JSONObject(result)
+      debug("yt-dlp override bootstrap: $result")
+    }.onFailure {
+      addError("YT_DLP_OVERRIDE_BOOTSTRAP_FAILED: ${it.message}")
+      lastYtDlpBootstrapStatus = JSONObject()
+        .put("source", "bundled")
+        .put("failedReason", it.message ?: it::class.java.simpleName)
+    }
+  }
+
+  private fun fetchLatestYtDlpRelease(): YtDlpReleaseAsset {
+    val json = httpGetJson(YT_DLP_PYPI_JSON_URL)
+    val version = json.optJSONObject("info")?.optString("version")?.takeIf { isStableYtDlpVersion(it) }
+      ?: throw IllegalStateException("LATEST_VERSION_NOT_STABLE")
+    val releases = json.optJSONObject("releases")?.optJSONArray(version)
+      ?: throw IllegalStateException("LATEST_RELEASE_FILES_MISSING")
+    for (i in 0 until releases.length()) {
+      val file = releases.optJSONObject(i) ?: continue
+      val filename = file.optString("filename")
+      val packagetype = file.optString("packagetype")
+      val pythonVersion = file.optString("python_version")
+      if (packagetype != "bdist_wheel" || pythonVersion != "py3" || !filename.endsWith("-py3-none-any.whl")) {
+        continue
+      }
+      val url = file.optString("url").takeIf { it.startsWith("https://") } ?: continue
+      val sha256 = file.optJSONObject("digests")?.optString("sha256")?.takeIf { it.matches(Regex("^[a-fA-F0-9]{64}$")) } ?: continue
+      val sizeBytes = file.optLong("size", -1L)
+      if (sizeBytes <= 0 || sizeBytes > YT_DLP_MAX_WHEEL_BYTES) {
+        continue
+      }
+      return YtDlpReleaseAsset(version, filename, url, sha256.lowercase(), sizeBytes)
+    }
+    throw IllegalStateException("COMPATIBLE_WHEEL_NOT_FOUND")
+  }
+
+  private fun httpGetJson(url: String): JSONObject {
+    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+      connectTimeout = YT_DLP_UPDATE_CONNECT_TIMEOUT_MS
+      readTimeout = YT_DLP_UPDATE_READ_TIMEOUT_MS
+      requestMethod = "GET"
+      setRequestProperty("Accept", "application/json")
+      setRequestProperty("User-Agent", DEFAULT_HTTP_USER_AGENT)
+    }
+    try {
+      val code = connection.responseCode
+      if (code !in 200..299) {
+        throw IOException("PYPI_HTTP_$code")
+      }
+      val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+      return JSONObject(body)
+    } finally {
+      connection.disconnect()
+    }
+  }
+
+  private fun downloadYtDlpWheel(release: YtDlpReleaseAsset, target: File) {
+    emitYtDlpUpdateProgress("downloading", version = release.version, bytesDownloaded = 0L, bytesTotal = release.sizeBytes)
+    val connection = (URL(release.url).openConnection() as HttpURLConnection).apply {
+      connectTimeout = YT_DLP_UPDATE_CONNECT_TIMEOUT_MS
+      readTimeout = YT_DLP_UPDATE_READ_TIMEOUT_MS
+      requestMethod = "GET"
+      setRequestProperty("Accept", "application/octet-stream")
+      setRequestProperty("User-Agent", DEFAULT_HTTP_USER_AGENT)
+    }
+    val digest = MessageDigest.getInstance("SHA-256")
+    var downloaded = 0L
+    var lastEmitMs = 0L
+    try {
+      val code = connection.responseCode
+      if (code !in 200..299) {
+        throw IOException("WHEEL_HTTP_$code")
+      }
+      val total = connection.contentLengthLong.takeIf { it > 0 } ?: release.sizeBytes
+      if (total > YT_DLP_MAX_WHEEL_BYTES) {
+        throw IOException("WHEEL_TOO_LARGE")
+      }
+      target.parentFile?.mkdirs()
+      connection.inputStream.use { input ->
+        FileOutputStream(target).use { output ->
+          val buffer = ByteArray(64 * 1024)
+          while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            downloaded += read
+            if (downloaded > YT_DLP_MAX_WHEEL_BYTES) {
+              throw IOException("WHEEL_TOO_LARGE")
+            }
+            digest.update(buffer, 0, read)
+            output.write(buffer, 0, read)
+            val now = System.currentTimeMillis()
+            if (now - lastEmitMs >= 500L) {
+              emitYtDlpUpdateProgress("downloading", version = release.version, bytesDownloaded = downloaded, bytesTotal = total)
+              lastEmitMs = now
+            }
+          }
+          output.fd.sync()
+        }
+      }
+      val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+      if (actualHash != release.sha256) {
+        target.delete()
+        throw IOException("WHEEL_HASH_MISMATCH")
+      }
+      emitYtDlpUpdateProgress("downloading", version = release.version, bytesDownloaded = downloaded, bytesTotal = total)
+    } finally {
+      connection.disconnect()
+    }
+  }
+
+  private fun installYtDlpWheel(context: Context, release: YtDlpReleaseAsset, wheelFile: File): File {
+    val root = ytDlpOverrideRoot(context).apply { mkdirs() }
+    val stagingRoot = File(root, ".staging").apply { mkdirs() }
+    val versionsRoot = File(root, "versions").apply { mkdirs() }
+    val staging = File(stagingRoot, "${release.version}-${UUID.randomUUID()}")
+    val versionDir = File(versionsRoot, release.version)
+    safeDeleteYtDlpPath(context, staging)
+    staging.mkdirs()
+    try {
+      extractWheelSafely(context, wheelFile, staging)
+      verifyInstalledYtDlpPackage(staging, release.version)
+      if (versionDir.exists()) {
+        safeDeleteYtDlpPath(context, versionDir)
+      }
+      if (!staging.renameTo(versionDir)) {
+        throw IOException("INSTALL_RENAME_FAILED")
+      }
+      return versionDir
+    } catch (error: Throwable) {
+      safeDeleteYtDlpPath(context, staging)
+      throw error
+    }
+  }
+
+  private fun extractWheelSafely(context: Context, wheelFile: File, staging: File) {
+    val stagingCanonical = staging.canonicalFile
+    var extractedBytes = 0L
+    ZipInputStream(FileInputStream(wheelFile)).use { zip ->
+      while (true) {
+        val entry = zip.nextEntry ?: break
+        validateYtDlpZipEntry(entry)
+        val target = File(stagingCanonical, entry.name.replace('\\', '/')).canonicalFile
+        ensureDescendant(stagingCanonical, target, "ZIP_ENTRY_ESCAPE")
+        if (entry.isDirectory) {
+          target.mkdirs()
+        } else {
+          target.parentFile?.mkdirs()
+          FileOutputStream(target).use { output ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+              val read = zip.read(buffer)
+              if (read < 0) break
+              extractedBytes += read
+              if (extractedBytes > YT_DLP_MAX_WHEEL_BYTES * 4) {
+                throw IOException("WHEEL_EXTRACTED_TOO_LARGE")
+              }
+              output.write(buffer, 0, read)
+            }
+          }
+        }
+        zip.closeEntry()
+      }
+    }
+    ensureDescendant(ytDlpOverrideRoot(context).canonicalFile, stagingCanonical, "STAGING_OUTSIDE_OVERRIDE_ROOT")
+  }
+
+  private fun validateYtDlpZipEntry(entry: ZipEntry) {
+    val name = entry.name.replace('\\', '/')
+    if (name.isBlank() || name.startsWith("/") || name.contains("../") || name == ".." || name.startsWith("../") || name.matches(Regex("^[A-Za-z]:.*"))) {
+      throw IOException("UNSAFE_WHEEL_ENTRY")
+    }
+  }
+
+  private fun verifyInstalledYtDlpPackage(packageRoot: File, expectedVersion: String) {
+    if (!File(packageRoot, "yt_dlp").isDirectory) {
+      throw IOException("YT_DLP_PACKAGE_DIR_MISSING")
+    }
+    val distInfo = packageRoot.listFiles()?.firstOrNull {
+      it.isDirectory && it.name.startsWith("yt_dlp-") && it.name.endsWith(".dist-info")
+    } ?: throw IOException("YT_DLP_DIST_INFO_MISSING")
+    if (!File(distInfo, "METADATA").exists() && !File(distInfo, "WHEEL").exists()) {
+      throw IOException("YT_DLP_METADATA_MISSING")
+    }
+    val metadata = File(distInfo, "METADATA")
+    if (metadata.exists()) {
+      val versionLine = metadata.readLines().firstOrNull { it.startsWith("Version:", ignoreCase = true) }
+      val metadataVersion = versionLine?.substringAfter(":")?.trim()
+      if (!ytDlpVersionsEqual(metadataVersion, expectedVersion)) {
+        throw IOException("YT_DLP_METADATA_VERSION_MISMATCH")
+      }
+    }
+  }
+
+  private fun cleanupYtDlpUpdateScratch() {
+    val context = requireNotNull(appContext.reactContext).applicationContext
+    safeDeleteYtDlpPath(context, ytDlpUpdateCacheDir(context))
+    val staging = File(ytDlpOverrideRoot(context), ".staging")
+    if (staging.exists()) {
+      staging.listFiles()?.forEach { safeDeleteYtDlpPath(context, it) }
+    }
+  }
+
+  private fun requireSufficientYtDlpUpdateSpace(directory: File, wheelSizeBytes: Long) {
+    directory.mkdirs()
+    val required = max(YT_DLP_MIN_FREE_SPACE_BYTES, wheelSizeBytes * 4)
+    val available = StatFs(directory.absolutePath).availableBytes
+    if (available < required) {
+      throw IOException("LOW_STORAGE")
+    }
+  }
+
+  private fun readYtDlpManifest(context: Context): JSONObject {
+    val file = ytDlpManifestFile(context)
+    if (!file.exists()) {
+      return JSONObject().put("schemaVersion", 1).put("installed", JSONObject())
+    }
+    return runCatching {
+      JSONObject(file.readText())
+    }.getOrElse {
+      JSONObject().put("schemaVersion", 1).put("installed", JSONObject())
+    }
+  }
+
+  private fun writeYtDlpManifest(context: Context, manifest: JSONObject) {
+    val file = ytDlpManifestFile(context)
+    val parent = file.parentFile ?: throw IOException("MANIFEST_PARENT_MISSING")
+    parent.mkdirs()
+    val tmp = File(parent, "${file.name}.tmp")
+    manifest.put("schemaVersion", 1)
+    FileOutputStream(tmp).use { output ->
+      output.write(manifest.toString().toByteArray(Charsets.UTF_8))
+      output.fd.sync()
+    }
+    if (!tmp.renameTo(file)) {
+      if (file.exists() && !file.delete()) {
+        throw IOException("MANIFEST_REPLACE_FAILED")
+      }
+      if (!tmp.renameTo(file)) {
+        throw IOException("MANIFEST_RENAME_FAILED")
+      }
+    }
+  }
+
+  private fun safeDeleteYtDlpPath(context: Context, target: File) {
+    val allowedRoots = listOf(ytDlpOverrideRoot(context).canonicalFile, ytDlpUpdateCacheDir(context).canonicalFile)
+    val canonical = target.canonicalFile
+    if (allowedRoots.none { isDescendantOrSelf(it, canonical) }) {
+      throw IOException("UNSAFE_DELETE_PATH")
+    }
+    if (canonical.exists()) {
+      canonical.deleteRecursively()
+    }
+  }
+
+  private fun ensureDescendant(root: File, candidate: File, code: String) {
+    if (!isDescendantOrSelf(root.canonicalFile, candidate.canonicalFile)) {
+      throw IOException(code)
+    }
+  }
+
+  private fun isDescendantOrSelf(root: File, candidate: File): Boolean {
+    val rootPath = root.canonicalPath
+    val candidatePath = candidate.canonicalPath
+    return candidatePath == rootPath || candidatePath.startsWith(rootPath + File.separator)
+  }
+
+  private fun ytDlpOverrideRoot(context: Context): File = File(context.filesDir, YT_DLP_OVERRIDE_DIRNAME)
+
+  private fun ytDlpManifestFile(context: Context): File = File(ytDlpOverrideRoot(context), YT_DLP_MANIFEST_FILENAME)
+
+  private fun ytDlpUpdateCacheDir(context: Context): File = File(context.cacheDir, YT_DLP_UPDATE_CACHE_DIRNAME)
+
+  private fun isStableYtDlpVersion(version: String?): Boolean {
+    return version?.trim()?.matches(Regex("^\\d{4}\\.\\d{1,2}\\.\\d{1,2}$")) == true
+  }
+
+  private fun isNewerYtDlpVersion(candidate: String?, current: String?): Boolean {
+    if (!isStableYtDlpVersion(candidate)) return false
+    if (!isStableYtDlpVersion(current)) return true
+    return compareYtDlpVersions(candidate!!, current!!) > 0
+  }
+
+  private fun ytDlpVersionsEqual(left: String?, right: String?): Boolean {
+    if (left == null || right == null) return false
+    val leftParts = parseYtDlpVersionParts(left)
+    val rightParts = parseYtDlpVersionParts(right)
+    if (leftParts != null && rightParts != null) {
+      return leftParts == rightParts
+    }
+    return left.trim() == right.trim()
+  }
+
+  private fun compareYtDlpVersions(left: String, right: String): Int {
+    val l = parseYtDlpVersionParts(left) ?: emptyList()
+    val r = parseYtDlpVersionParts(right) ?: emptyList()
+    for (i in 0 until 3) {
+      val diff = (l.getOrNull(i) ?: 0) - (r.getOrNull(i) ?: 0)
+      if (diff != 0) return diff
+    }
+    return 0
+  }
+
+  private fun parseYtDlpVersionParts(version: String?): List<Int>? {
+    if (!isStableYtDlpVersion(version)) return null
+    val parts = version!!.trim().split(".").map { it.toIntOrNull() ?: return null }
+    if (parts.size != 3 || parts[0] < 1000 || parts[1] < 1 || parts[2] < 1) return null
+    return parts
+  }
+
+  private fun emitYtDlpUpdateProgress(
+    phase: String,
+    version: String? = null,
+    bytesDownloaded: Long? = null,
+    bytesTotal: Long? = null,
+    message: String? = null
+  ) {
+    val percent = if (bytesDownloaded != null && bytesTotal != null && bytesTotal > 0) {
+      (bytesDownloaded.toDouble() / bytesTotal.toDouble() * 100.0).coerceIn(0.0, 100.0)
+    } else {
+      null
+    }
+    sendEvent(
+      "ytDlpUpdateProgress",
+      mapOf(
+        "phase" to phase,
+        "version" to version,
+        "bytesDownloaded" to bytesDownloaded,
+        "bytesTotal" to bytesTotal,
+        "percent" to percent,
+        "message" to message
+      )
+    )
+  }
+
   private fun ensurePythonReady() {
     val context = requireNotNull(appContext.reactContext).applicationContext
     if (!Python.isStarted()) {
       Python.start(AndroidPlatform(context))
+      applyYtDlpOverrideBootstrap(context)
       debug("Python runtime started")
     } else {
       debug("Python runtime already started")
@@ -4739,6 +5387,90 @@ class LocalDownloaderModule : Module() {
     }
   }
 
+  private fun failureLogFile(context: Context): File {
+    return File(context.filesDir, FAILURE_LOG_FILENAME)
+  }
+
+  private fun readDownloadFailureLogArray(context: Context): JSONArray {
+    val file = failureLogFile(context)
+    if (!file.exists()) {
+      return JSONArray()
+    }
+
+    return runCatching {
+      JSONArray(file.readText(Charsets.UTF_8))
+    }.getOrElse {
+      Log.w(tag, "Failed to read download failure log", it)
+      JSONArray()
+    }
+  }
+
+  private fun writeDownloadFailureLogArray(context: Context, array: JSONArray) {
+    val file = failureLogFile(context)
+    val tmp = File("${file.absolutePath}.tmp")
+    file.parentFile?.mkdirs()
+    FileOutputStream(tmp).use { stream ->
+      stream.write(array.toString().toByteArray(Charsets.UTF_8))
+      stream.fd.sync()
+    }
+    if (file.exists() && !file.delete()) {
+      throw IOException("Could not replace failure log")
+    }
+    if (!tmp.renameTo(file)) {
+      throw IOException("Could not commit failure log")
+    }
+  }
+
+  private fun recordDownloadFailure(taskId: String, code: String?, message: String?) {
+    val context = appContext.reactContext ?: return
+    val safeCode = code?.takeIf { it.isNotBlank() } ?: "UNKNOWN_ERROR"
+    val safeMessage = message?.takeIf { it.isNotBlank() } ?: safeCode
+    val sourceUrl = tasks[taskId]?.url?.takeIf { it.isNotBlank() }
+
+    synchronized(failureLogLock) {
+      runCatching {
+        val existing = readDownloadFailureLogArray(context)
+        val next = JSONArray()
+        next.put(
+          JSONObject().apply {
+            put("id", UUID.randomUUID().toString())
+            put("createdAt", System.currentTimeMillis())
+            put("taskId", taskId)
+            put("code", safeCode)
+            put("url", sourceUrl)
+            put("message", safeMessage.take(MAX_FAILURE_LOG_MESSAGE_CHARS))
+          }
+        )
+        for (i in 0 until minOf(existing.length(), MAX_DOWNLOAD_FAILURE_LOGS - 1)) {
+          val item = existing.optJSONObject(i) ?: continue
+          next.put(item)
+        }
+        writeDownloadFailureLogArray(context, next)
+      }.onFailure {
+        Log.w(tag, "Failed to persist download failure log", it)
+      }
+    }
+  }
+
+  private fun readDownloadFailureLogsInternal(): List<Map<String, Any?>> {
+    val context = requireNotNull(appContext.reactContext)
+    return synchronized(failureLogLock) {
+      val array = readDownloadFailureLogArray(context)
+      (0 until minOf(array.length(), MAX_DOWNLOAD_FAILURE_LOGS)).mapNotNull { index ->
+        val item = array.optJSONObject(index) ?: return@mapNotNull null
+        val message = item.optString("message").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        mapOf(
+          "id" to item.optString("id").ifBlank { "${item.optLong("createdAt", 0L)}-$index" },
+          "createdAt" to item.optLong("createdAt", 0L),
+          "taskId" to item.optString("taskId").ifBlank { null },
+          "code" to item.optString("code").ifBlank { null },
+          "url" to item.optString("url").ifBlank { null },
+          "message" to message
+        )
+      }
+    }
+  }
+
   private fun debug(message: String) {
     if (debugLoggingEnabled) {
       Log.d(tag, message)
@@ -4789,6 +5521,7 @@ class LocalDownloaderModule : Module() {
         tasks[taskId] = TaskState(
           taskId = taskId,
           status = if (wasInFlight) "FAILURE" else originalStatus,
+          url = obj.optString("url").ifBlank { null },
           state = obj.optString("state").ifBlank { if (wasInFlight) "error" else null },
           filename = obj.optString("filename").ifBlank { null },
           filePath = obj.optString("filePath").ifBlank { null },
@@ -4825,6 +5558,7 @@ class LocalDownloaderModule : Module() {
     return mapOf(
       "taskId" to taskId,
       "status" to status,
+      "url" to url,
       "state" to state,
       "filename" to filename,
       "filePath" to filePath,
@@ -4865,6 +5599,8 @@ class LocalDownloaderModule : Module() {
     private const val SECURE_COOKIES_DIRNAME = "cookies_secure"
     private const val PREFS_NAME = "local_downloader_prefs"
     private const val PREF_PRIVATE_MODE_ENABLED = "private_mode_enabled"
+    private const val PREF_BACKGROUND_DOWNLOADS_ENABLED = "background_downloads_enabled"
+    private const val PREF_STICKY_NOTIFICATION_ENABLED = "sticky_notification_enabled"
     private const val PRIVATE_VAULT_DIRNAME = "private_vault"
     private const val PRIVATE_VAULT_OBJECTS_DIRNAME = "objects"
     private const val PRIVATE_VAULT_INDEX_FILENAME = "index.json"
@@ -4901,14 +5637,24 @@ class LocalDownloaderModule : Module() {
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
     private const val DEFAULT_MAX_FILE_SIZE_MB = 0
     private const val TASK_SNAPSHOT_FILENAME = "local_downloader_tasks.json"
+    private const val FAILURE_LOG_FILENAME = "download_failure_logs.json"
     private const val DOWNLOAD_PROGRESS_DIRNAME = "local_download_progress"
+    private const val YT_DLP_OVERRIDE_DIRNAME = "yt-dlp-overrides"
+    private const val YT_DLP_UPDATE_CACHE_DIRNAME = "yt-dlp-update"
+    private const val YT_DLP_MANIFEST_FILENAME = "manifest.json"
+    private const val YT_DLP_PYPI_JSON_URL = "https://pypi.org/pypi/yt-dlp/json"
+    private const val YT_DLP_MAX_WHEEL_BYTES = 50L * 1024L * 1024L
+    private const val YT_DLP_MIN_FREE_SPACE_BYTES = 100L * 1024L * 1024L
+    private const val YT_DLP_UPDATE_CONNECT_TIMEOUT_MS = 15_000
+    private const val YT_DLP_UPDATE_READ_TIMEOUT_MS = 45_000
     private const val DOWNLOAD_PROGRESS_POLL_MS = 400L
     private const val DEFAULT_COOKIE_PROFILE_FILENAME = ".default_profile"
     private const val REQUEST_CODE_NOTIFICATIONS = 4491
     private const val MAX_QUEUED_DOWNLOADS = 3
     private const val MAX_PENDING_QUICK_REQUESTS = MAX_QUEUED_DOWNLOADS
     private const val MAX_ERROR_LOGS = 20
-    private const val STICKY_NOTIFICATION_ENABLED = true
+    private const val MAX_DOWNLOAD_FAILURE_LOGS = 50
+    private const val MAX_FAILURE_LOG_MESSAGE_CHARS = 20_000
     private const val QUICK_DEDUP_WINDOW_MS = 20_000L
     private const val PRIVATE_IMPORT_PICK_TIMEOUT_SECONDS = 180L
     private const val PRIVATE_PUBLIC_COPY_RELATIVE_PATH = "DCIM/Arsivinyo"
@@ -4969,7 +5715,7 @@ class LocalDownloaderModule : Module() {
           progressPercent = null,
           queueSize = pendingQuickRequestsSnapshot().size,
           privateModeEnabled = next,
-          pinned = true
+          pinned = isStickyNotificationEnabledPersisted(context)
         )
       )
     }
@@ -5044,7 +5790,7 @@ class LocalDownloaderModule : Module() {
           progressPercent = null,
           queueSize = queueSize,
           privateModeEnabled = selectedVisibility == "private",
-          pinned = true
+          pinned = isStickyNotificationEnabledPersisted(context)
         )
       )
       return mapOf(
@@ -5166,10 +5912,34 @@ class LocalDownloaderModule : Module() {
         .getBoolean(PREF_PRIVATE_MODE_ENABLED, false)
     }
 
+    private fun isBackgroundDownloadsEnabledPersisted(context: Context): Boolean {
+      return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_BACKGROUND_DOWNLOADS_ENABLED, false)
+    }
+
+    private fun isStickyNotificationEnabledPersisted(context: Context): Boolean {
+      return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_STICKY_NOTIFICATION_ENABLED, false)
+    }
+
     private fun persistPrivateModeEnabled(context: Context, enabled: Boolean) {
       context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(PREF_PRIVATE_MODE_ENABLED, enabled && PRIVATE_VAULT_FEATURE_FLAG)
+        .apply()
+    }
+
+    private fun persistBackgroundDownloadsEnabled(context: Context, enabled: Boolean) {
+      context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_BACKGROUND_DOWNLOADS_ENABLED, enabled)
+        .apply()
+    }
+
+    private fun persistStickyNotificationEnabled(context: Context, enabled: Boolean) {
+      context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_STICKY_NOTIFICATION_ENABLED, enabled)
         .apply()
     }
 
@@ -5229,7 +5999,7 @@ class LocalDownloaderModule : Module() {
             progressPercent = null,
             queueSize = 0,
             privateModeEnabled = isPrivateModeEnabledPersisted(context),
-            pinned = true
+            pinned = isStickyNotificationEnabledPersisted(context)
           )
         )
       }

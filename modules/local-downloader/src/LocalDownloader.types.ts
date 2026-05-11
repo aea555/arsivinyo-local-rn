@@ -15,6 +15,8 @@ export interface LocalDownloadStartResult {
 }
 
 export interface LocalBackgroundState {
+  backgroundDownloadsEnabled?: boolean;
+  stickyNotificationEnabled?: boolean;
   serviceRunning: boolean;
   activeTaskId: string | null;
   queueSize: number;
@@ -32,6 +34,14 @@ export interface LocalBackgroundPermissionResult {
   canAskAgain: boolean;
 }
 
+export interface LocalBackgroundDownloadsState {
+  enabled: boolean;
+}
+
+export interface LocalStickyNotificationState {
+  enabled: boolean;
+}
+
 export interface LocalQuickDownloadResult {
   accepted: boolean;
   reason?: 'NO_CLIPBOARD_URL' | 'INVALID_QUICK_URL' | 'QUEUE_FULL' | 'PERMISSION_REQUIRED' | 'ALREADY_ACTIVE' | 'QUICK_DOWNLOAD_REJECTED' | 'QUICK_CAPTURE_CANCELLED' | 'PRIVATE_MODE_UNAVAILABLE';
@@ -41,6 +51,15 @@ export interface LocalQuickDownloadResult {
   resolvedUrl?: string | null;
   visibility?: 'public' | 'private';
   captureMode?: 'clipboard' | 'manual';
+}
+
+export interface LocalDownloadFailureLog {
+  id: string;
+  createdAt: number;
+  taskId?: string | null;
+  code?: string | null;
+  url?: string | null;
+  message: string;
 }
 
 export interface LocalSaveToMediaStoreInput {
@@ -60,6 +79,7 @@ export type LocalTaskStatus = 'PENDING' | 'STARTED' | 'PROGRESS' | 'SUCCESS' | '
 export interface LocalTaskStatusResult {
   taskId: string;
   status: LocalTaskStatus;
+  url?: string | null;
   state?: 'starting' | 'downloading' | 'processing' | 'saving' | 'completed' | 'error';
   filename?: string;
   filePath?: string;
@@ -117,6 +137,61 @@ export interface LocalDownloadEvent {
 
 export interface LocalBackgroundStateEvent extends LocalBackgroundState {}
 
+export type LocalYtDlpUpdatePhase =
+  | 'checking'
+  | 'available'
+  | 'up_to_date'
+  | 'downloading'
+  | 'installing'
+  | 'verifying'
+  | 'installed'
+  | 'failed';
+
+export interface LocalYtDlpUpdateProgressEvent {
+  phase: LocalYtDlpUpdatePhase;
+  version?: string | null;
+  bytesDownloaded?: number | null;
+  bytesTotal?: number | null;
+  percent?: number | null;
+  message?: string | null;
+}
+
+export interface LocalYtDlpUpdateStatus {
+  source: 'bundled' | 'override' | string;
+  bundledVersion?: string | null;
+  activeVersion?: string | null;
+  overrideVersion?: string | null;
+  pendingVersion?: string | null;
+  failedVersion?: string | null;
+  failedReason?: string | null;
+  effectiveInstalledVersion?: string | null;
+  installedVersions?: string[];
+  latestVersion?: string | null;
+  latestCheckError?: string | null;
+  updateAvailable?: boolean;
+  requiresRestart?: boolean;
+  updateRunning?: boolean;
+  storageReady?: boolean;
+  overridePath?: string | null;
+  activeTaskId?: string | null;
+}
+
+export interface LocalYtDlpUpdateCheckResult extends LocalYtDlpUpdateStatus {
+  status: 'available' | 'up_to_date' | string;
+}
+
+export interface LocalYtDlpUpdateResult {
+  status: 'up_to_date' | 'installed' | 'failed' | 'blocked' | 'running' | string;
+  success: boolean;
+  previousVersion?: string | null;
+  installedVersion?: string | null;
+  latestVersion?: string | null;
+  pendingVersion?: string | null;
+  requiresRestart: boolean;
+  code?: string;
+  message?: string;
+}
+
 export interface LocalPrivateModeState {
   enabled: boolean;
 }
@@ -157,6 +232,15 @@ export interface LocalDiagnostics {
   ytDlpVersion: string;
   ytDlpAvailable: boolean;
   pythonReady: boolean;
+  ytDlpBundledVersion?: string | null;
+  ytDlpActiveVersion?: string | null;
+  ytDlpOverrideVersion?: string | null;
+  ytDlpPendingVersion?: string | null;
+  ytDlpFailedVersion?: string | null;
+  ytDlpFailedReason?: string | null;
+  ytDlpOverrideSource?: string | null;
+  ytDlpOverridePath?: string | null;
+  ytDlpOverrideStorageReady?: boolean;
   normalizedUrlLast?: string | null;
   attemptTraceCount?: number;
   attemptTrace?: Array<{

@@ -5,7 +5,6 @@ import {
     Pressable,
     ScrollView,
     StyleSheet,
-    Text,
     View,
 } from 'react-native';
 import {
@@ -14,6 +13,7 @@ import {
     themeDisplayNames,
     useTheme,
 } from '../theme';
+import { AppText as Text } from './AppText';
 
 interface ThemePickerProps {
     onClose?: () => void;

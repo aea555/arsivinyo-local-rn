@@ -9,7 +9,6 @@ import {
   Modal,
   Pressable,
   StyleSheet,
-  Text,
   View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,11 +21,12 @@ import {
   ensureLocalBackgroundPermission,
   getLocalBackgroundState,
   listenBackgroundState,
+  setLocalBackgroundDownloadsEnabled,
   setLocalPrivateModeEnabled,
-  startQuickLocalDownloadFromClipboard,
+  setLocalStickyNotificationEnabled,
 } from '@/src/api';
 import type { DownloadState } from '@/src/api/types';
-import { BannerAd, DownloadButton } from '@/src/components';
+import { AppText as Text, BannerAd, DownloadButton } from '@/src/components';
 import {
   downloadAndSaveFile,
   getUrlFromClipboard,
@@ -50,8 +50,11 @@ export default function HomeScreen() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [backgroundServiceRunning, setBackgroundServiceRunning] = useState(false);
+  const [backgroundDownloadsEnabled, setBackgroundDownloadsEnabled] = useState(false);
+  const [stickyNotificationEnabled, setStickyNotificationEnabled] = useState(false);
   const [backgroundQueueSize, setBackgroundQueueSize] = useState(0);
-  const [isQuickSubmitting, setIsQuickSubmitting] = useState(false);
+  const [isBackgroundToggleBusy, setIsBackgroundToggleBusy] = useState(false);
+  const [isStickyNotificationToggleBusy, setIsStickyNotificationToggleBusy] = useState(false);
   const [privateModeEnabled, setPrivateModeEnabled] = useState(false);
   const [isPrivateToggleBusy, setIsPrivateToggleBusy] = useState(false);
   const speedEmaBytesPerSecRef = useRef<number | null>(null);
@@ -89,6 +92,8 @@ export default function HomeScreen() {
       .then((state) => {
         if (!mounted) return;
         setBackgroundServiceRunning(state.serviceRunning);
+        setBackgroundDownloadsEnabled(Boolean(state.backgroundDownloadsEnabled));
+        setStickyNotificationEnabled(Boolean(state.stickyNotificationEnabled));
         setBackgroundQueueSize(state.queueSize);
         setPrivateModeEnabled(Boolean(state.privateModeEnabled));
       })
@@ -105,6 +110,8 @@ export default function HomeScreen() {
       try {
         return listenBackgroundState((state) => {
           setBackgroundServiceRunning(Boolean(state.serviceRunning));
+          setBackgroundDownloadsEnabled(Boolean(state.backgroundDownloadsEnabled));
+          setStickyNotificationEnabled(Boolean(state.stickyNotificationEnabled));
           setBackgroundQueueSize(state.queueSize || 0);
           if (typeof state.privateModeEnabled === 'boolean') {
             setPrivateModeEnabled(state.privateModeEnabled);
@@ -242,9 +249,7 @@ export default function HomeScreen() {
       console.error('Download error:', error);
 
       setDownloadState('error');
-      setStatusMessage(
-        error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR')
-      );
+      setStatusMessage(t('home.downloadFailed'));
       setActiveTaskId(null);
       setDownloadPercent(null);
       setDownloadSpeedBytesPerSec(null);
@@ -308,43 +313,61 @@ export default function HomeScreen() {
     }
   }, [isPrivateToggleBusy, privateModeEnabled, t]);
 
-  const handleQuickBackgroundDownload = useCallback(async () => {
-    setIsQuickSubmitting(true);
+  const handleToggleBackgroundDownloads = useCallback(async () => {
+    if (isBackgroundToggleBusy) return;
+    const nextEnabled = !backgroundDownloadsEnabled;
+    setIsBackgroundToggleBusy(true);
     try {
-      const permission = await ensureLocalBackgroundPermission();
-      if (!permission.granted) {
-        setStatusMessage(t('errors.BACKGROUND_PERMISSION_REQUIRED'));
-        return;
+      if (nextEnabled) {
+        const permission = await ensureLocalBackgroundPermission();
+        if (!permission.granted) {
+          setStatusMessage(t('errors.BACKGROUND_PERMISSION_REQUIRED'));
+          return;
+        }
       }
 
-      const result = await startQuickLocalDownloadFromClipboard();
-      if (!result.accepted) {
-          const reasonMap: Record<string, string> = {
-            NO_CLIPBOARD_URL: 'NO_CLIPBOARD_URL',
-            INVALID_QUICK_URL: 'INVALID_QUICK_URL',
-            QUICK_CAPTURE_CANCELLED: 'QUICK_CAPTURE_CANCELLED',
-            QUEUE_FULL: 'DOWNLOAD_QUEUE_FULL',
-            PERMISSION_REQUIRED: 'BACKGROUND_PERMISSION_REQUIRED',
-            ALREADY_ACTIVE: 'DOWNLOAD_ALREADY_IN_PROGRESS',
-            QUICK_DOWNLOAD_REJECTED: 'QUICK_DOWNLOAD_REJECTED',
-            PRIVATE_MODE_UNAVAILABLE: 'PRIVATE_MODE_UNAVAILABLE',
-          };
-        const code = reasonMap[result.reason || ''] || 'QUICK_DOWNLOAD_REJECTED';
-        setStatusMessage(t(`errors.${code}`));
-        return;
-      }
-
+      const result = await setLocalBackgroundDownloadsEnabled(nextEnabled);
+      setBackgroundDownloadsEnabled(Boolean(result.enabled));
       const bg = await getLocalBackgroundState();
       setBackgroundServiceRunning(bg.serviceRunning);
+      setBackgroundDownloadsEnabled(Boolean(bg.backgroundDownloadsEnabled));
       setBackgroundQueueSize(bg.queueSize);
-      setStatusMessage(t('home.quickDownloadQueued'));
+      setStatusMessage(result.enabled ? t('home.backgroundDownloadsEnabled') : t('home.backgroundDownloadsDisabled'));
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('errors.QUICK_DOWNLOAD_REJECTED');
+      const message = error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR');
       setStatusMessage(message);
     } finally {
-      setIsQuickSubmitting(false);
+      setIsBackgroundToggleBusy(false);
     }
-  }, [t]);
+  }, [backgroundDownloadsEnabled, isBackgroundToggleBusy, t]);
+
+  const handleToggleStickyNotification = useCallback(async () => {
+    if (isStickyNotificationToggleBusy) return;
+    const nextEnabled = !stickyNotificationEnabled;
+    setIsStickyNotificationToggleBusy(true);
+    try {
+      if (nextEnabled) {
+        const permission = await ensureLocalBackgroundPermission();
+        if (!permission.granted) {
+          setStatusMessage(t('errors.BACKGROUND_PERMISSION_REQUIRED'));
+          return;
+        }
+      }
+
+      const result = await setLocalStickyNotificationEnabled(nextEnabled);
+      setStickyNotificationEnabled(Boolean(result.enabled));
+      const bg = await getLocalBackgroundState();
+      setBackgroundServiceRunning(bg.serviceRunning);
+      setStickyNotificationEnabled(Boolean(bg.stickyNotificationEnabled));
+      setBackgroundQueueSize(bg.queueSize);
+      setStatusMessage(result.enabled ? t('home.stickyNotificationEnabled') : t('home.stickyNotificationDisabled'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR');
+      setStatusMessage(message);
+    } finally {
+      setIsStickyNotificationToggleBusy(false);
+    }
+  }, [isStickyNotificationToggleBusy, stickyNotificationEnabled, t]);
 
   return (
     <LinearGradient
@@ -372,16 +395,31 @@ export default function HomeScreen() {
               {t('common.appName')}
             </Text>
           </View>
-          <Pressable
-            onPress={openSettings}
-            style={({ pressed }) => [
-              styles.settingsButton,
-              { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
-            ]}
-            hitSlop={8}
-          >
-            <Ionicons name="settings-outline" size={22} color={colors.text} />
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('home.privateVault')}
+              accessibilityHint={t('home.privateVaultHint')}
+              onPress={openPrivateVideos}
+              style={({ pressed }) => [
+                styles.headerIconButton,
+                { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
+              ]}
+              hitSlop={8}
+            >
+              <Ionicons name="shield-checkmark-outline" size={21} color={colors.text} />
+            </Pressable>
+            <Pressable
+              onPress={openSettings}
+              style={({ pressed }) => [
+                styles.headerIconButton,
+                { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
+              ]}
+              hitSlop={8}
+            >
+              <Ionicons name="settings-outline" size={22} color={colors.text} />
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.controlsPanel}>
@@ -417,33 +455,111 @@ export default function HomeScreen() {
           <View style={styles.primaryActionsColumn}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={t('home.quickBackgroundDownload')}
-              accessibilityHint={t('home.quickBackgroundDownloadHint')}
-              onPress={handleQuickBackgroundDownload}
-              disabled={isQuickSubmitting}
+              accessibilityLabel={backgroundDownloadsEnabled ? t('home.backgroundDownloadsOn') : t('home.backgroundDownloadsOff')}
+              accessibilityHint={backgroundDownloadsEnabled ? t('home.backgroundDownloadsHintOn') : t('home.backgroundDownloadsHintOff')}
+              onPress={handleToggleBackgroundDownloads}
+              disabled={isBackgroundToggleBusy}
               style={({ pressed }) => [
                 styles.actionRow,
                 {
-                  backgroundColor: pressed ? colors.surfaceHover : colors.surface,
-                  borderColor: colors.border,
-                  opacity: isQuickSubmitting ? 0.7 : 1,
+                  backgroundColor: backgroundDownloadsEnabled
+                    ? colors.accent + '16'
+                    : (pressed ? colors.surfaceHover : colors.surface),
+                  borderColor: backgroundDownloadsEnabled ? colors.accent : colors.border,
+                  opacity: isBackgroundToggleBusy ? 0.7 : 1,
                 },
               ]}
             >
               <View style={styles.actionLeading}>
-                {isQuickSubmitting ? (
+                {isBackgroundToggleBusy ? (
                   <ActivityIndicator size="small" color={colors.text} />
                 ) : (
-                  <Ionicons name="flash-outline" size={18} color={colors.text} />
+                  <Ionicons name={backgroundDownloadsEnabled ? 'cloud-download-outline' : 'cloud-offline-outline'} size={18} color={colors.text} />
                 )}
               </View>
               <View style={styles.actionTextBlock}>
                 <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
-                  {t('home.quickBackgroundDownload')}
+                  {backgroundDownloadsEnabled ? t('home.backgroundDownloadsOn') : t('home.backgroundDownloadsOff')}
                 </Text>
                 <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
-                  {t('home.quickBackgroundDownloadHint')}
+                  {backgroundDownloadsEnabled ? t('home.backgroundDownloadsHintOn') : t('home.backgroundDownloadsHintOff')}
                 </Text>
+              </View>
+              <View style={styles.actionTrailing}>
+                <View
+                  style={[
+                    styles.modeBadge,
+                    {
+                      backgroundColor: backgroundDownloadsEnabled ? colors.accent + '28' : colors.surface,
+                      borderColor: backgroundDownloadsEnabled ? colors.accent : colors.borderSubtle,
+                    },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={[
+                      styles.modeBadgeText,
+                      { color: backgroundDownloadsEnabled ? colors.accent : colors.textMuted },
+                    ]}
+                  >
+                    {backgroundDownloadsEnabled ? t('home.privateModeBadgeOn') : t('home.privateModeBadgeOff')}
+                  </Text>
+                </View>
+              </View>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={stickyNotificationEnabled ? t('home.stickyNotificationOn') : t('home.stickyNotificationOff')}
+              accessibilityHint={stickyNotificationEnabled ? t('home.stickyNotificationHintOn') : t('home.stickyNotificationHintOff')}
+              onPress={handleToggleStickyNotification}
+              disabled={isStickyNotificationToggleBusy}
+              style={({ pressed }) => [
+                styles.actionRow,
+                {
+                  backgroundColor: stickyNotificationEnabled
+                    ? colors.accent + '16'
+                    : (pressed ? colors.surfaceHover : colors.surface),
+                  borderColor: stickyNotificationEnabled ? colors.accent : colors.border,
+                  opacity: isStickyNotificationToggleBusy ? 0.7 : 1,
+                },
+              ]}
+            >
+              <View style={styles.actionLeading}>
+                {isStickyNotificationToggleBusy ? (
+                  <ActivityIndicator size="small" color={colors.text} />
+                ) : (
+                  <Ionicons name={stickyNotificationEnabled ? 'notifications-outline' : 'notifications-off-outline'} size={18} color={colors.text} />
+                )}
+              </View>
+              <View style={styles.actionTextBlock}>
+                <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
+                  {stickyNotificationEnabled ? t('home.stickyNotificationOn') : t('home.stickyNotificationOff')}
+                </Text>
+                <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
+                  {stickyNotificationEnabled ? t('home.stickyNotificationHintOn') : t('home.stickyNotificationHintOff')}
+                </Text>
+              </View>
+              <View style={styles.actionTrailing}>
+                <View
+                  style={[
+                    styles.modeBadge,
+                    {
+                      backgroundColor: stickyNotificationEnabled ? colors.accent + '28' : colors.surface,
+                      borderColor: stickyNotificationEnabled ? colors.accent : colors.borderSubtle,
+                    },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={[
+                      styles.modeBadgeText,
+                      { color: stickyNotificationEnabled ? colors.accent : colors.textMuted },
+                    ]}
+                  >
+                    {stickyNotificationEnabled ? t('home.privateModeBadgeOn') : t('home.privateModeBadgeOff')}
+                  </Text>
+                </View>
               </View>
             </Pressable>
 
@@ -507,31 +623,6 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('home.privateVault')}
-            accessibilityHint={t('home.privateVaultHint')}
-            onPress={openPrivateVideos}
-            style={({ pressed }) => [
-              styles.secondaryActionRow,
-              {
-                backgroundColor: pressed ? colors.surfaceHover : colors.surface + 'CC',
-                borderColor: colors.borderSubtle,
-              },
-            ]}
-          >
-            <View style={styles.actionLeading}>
-              <Ionicons name="shield-checkmark-outline" size={18} color={colors.text} />
-            </View>
-            <View style={styles.actionTextBlock}>
-              <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
-                {t('home.privateVault')}
-              </Text>
-              <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
-                {t('home.privateVaultHint')}
-              </Text>
-            </View>
-          </Pressable>
         </View>
 
         {/* Main Content */}
@@ -700,13 +791,18 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     letterSpacing: 2,
   },
-  settingsButton: {
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  headerIconButton: {
     width: 40,
     height: 40,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    flexShrink: 0,
   },
   content: {
     flex: 1,
@@ -749,15 +845,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 9,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  secondaryActionRow: {
-    minHeight: 52,
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
     flexDirection: 'row',
     alignItems: 'center',
   },

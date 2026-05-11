@@ -5,7 +5,6 @@ import {
     ActivityIndicator,
     Pressable,
     StyleSheet,
-    Text,
     View,
 } from 'react-native';
 import Animated, {
@@ -16,6 +15,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import type { DownloadState } from '../api/types';
 import { useTheme } from '../theme';
+import { AppText as Text } from './AppText';
 
 interface DownloadButtonProps {
     onPress: () => void;

@@ -3,11 +3,11 @@ import React from 'react';
 import {
     Pressable,
     StyleSheet,
-    Text,
     View,
     ViewStyle,
 } from 'react-native';
 import { useTheme } from '../theme';
+import { AppText as Text } from './AppText';
 
 type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
 

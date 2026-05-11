@@ -2,14 +2,17 @@ import { EventEmitter, type EventSubscription, requireNativeModule } from 'expo-
 import { Platform } from 'react-native';
 import type {
   LocalCookieProfile,
+  LocalBackgroundDownloadsState,
   LocalBackgroundPermissionResult,
   LocalBackgroundState,
   LocalBackgroundStateEvent,
+  LocalStickyNotificationState,
   LocalCustomCookieImportInput,
   LocalCustomCookieImportResult,
   LocalCustomDomainProfile,
   LocalCustomDomainSummary,
   LocalDiagnostics,
+  LocalDownloadFailureLog,
   LocalDownloadEvent,
   LocalDownloadStartInput,
   LocalDownloadStartResult,
@@ -25,6 +28,10 @@ import type {
   LocalPrivateImportResult,
   LocalQuickDownloadResult,
   LocalTaskStatusResult,
+  LocalYtDlpUpdateCheckResult,
+  LocalYtDlpUpdateProgressEvent,
+  LocalYtDlpUpdateResult,
+  LocalYtDlpUpdateStatus,
 } from './LocalDownloader.types';
 
 type LocalDownloaderNativeModule = {
@@ -33,6 +40,8 @@ type LocalDownloaderNativeModule = {
   cancelTask(taskId: string): Promise<{ success: boolean }>;
   getBackgroundState(): Promise<LocalBackgroundState>;
   ensureBackgroundPermission(): Promise<LocalBackgroundPermissionResult>;
+  setBackgroundDownloadsEnabled(input: { enabled: boolean }): Promise<LocalBackgroundDownloadsState>;
+  setStickyNotificationEnabled(input: { enabled: boolean }): Promise<LocalStickyNotificationState>;
   startQuickDownloadFromClipboard(): Promise<LocalQuickDownloadResult>;
   startQuickDownloadWithUrl(input: { url: string }): Promise<LocalQuickDownloadResult>;
   getPrivateModeState(): Promise<LocalPrivateModeState>;
@@ -57,8 +66,13 @@ type LocalDownloaderNativeModule = {
   setCustomDomainDefault(input: { domain: string; profileName: string }): Promise<{ success: boolean }>;
   deleteCustomDomainProfile(input: { domain: string; profileName: string }): Promise<{ success: boolean }>;
   getDiagnostics(): Promise<LocalDiagnostics>;
+  getDownloadFailureLogs(): Promise<LocalDownloadFailureLog[]>;
   runImpersonationSelfTest(): Promise<LocalImpersonationSelfTestResult>;
   saveToMediaStore(input: LocalSaveToMediaStoreInput): Promise<LocalSaveToMediaStoreResult>;
+  getYtDlpUpdateStatus(): Promise<LocalYtDlpUpdateStatus>;
+  checkYtDlpUpdate(): Promise<LocalYtDlpUpdateCheckResult>;
+  updateYtDlp(): Promise<LocalYtDlpUpdateResult>;
+  clearYtDlpOverride(): Promise<{ success: boolean; requiresRestart?: boolean }>;
 };
 
 const unsupported = (): never => {
@@ -73,6 +87,8 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       cancelTask: async () => unsupported(),
       getBackgroundState: async () => unsupported(),
       ensureBackgroundPermission: async () => unsupported(),
+      setBackgroundDownloadsEnabled: async () => unsupported(),
+      setStickyNotificationEnabled: async () => unsupported(),
       startQuickDownloadFromClipboard: async () => unsupported(),
       startQuickDownloadWithUrl: async () => unsupported(),
       getPrivateModeState: async () => unsupported(),
@@ -97,8 +113,13 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       setCustomDomainDefault: async () => unsupported(),
       deleteCustomDomainProfile: async () => unsupported(),
       getDiagnostics: async () => unsupported(),
+      getDownloadFailureLogs: async () => unsupported(),
       runImpersonationSelfTest: async () => unsupported(),
       saveToMediaStore: async () => unsupported(),
+      getYtDlpUpdateStatus: async () => unsupported(),
+      checkYtDlpUpdate: async () => unsupported(),
+      updateYtDlp: async () => unsupported(),
+      clearYtDlpOverride: async () => unsupported(),
     };
 const emitter: any = Platform.OS === 'android' ? new EventEmitter(NativeLocalDownloader as never) : null;
 
@@ -114,6 +135,13 @@ export function addBackgroundStateListener(listener: (event: LocalBackgroundStat
     return { remove: () => undefined };
   }
   return emitter.addListener('backgroundStateChanged', listener);
+}
+
+export function addYtDlpUpdateProgressListener(listener: (event: LocalYtDlpUpdateProgressEvent) => void): EventSubscription {
+  if (!emitter) {
+    return { remove: () => undefined };
+  }
+  return emitter.addListener('ytDlpUpdateProgress', listener);
 }
 
 export default NativeLocalDownloader;

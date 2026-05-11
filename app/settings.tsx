@@ -1,21 +1,25 @@
-import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { getErrorMessage } from '@/src/api/errors';
-import { SettingsItem, ThemePicker } from '@/src/components';
+import {
+  getLocalYtDlpUpdateStatus,
+  listenYtDlpUpdateProgress,
+  updateLocalYtDlp,
+} from '@/src/api';
+import { AppText as Text, AppTextInput as TextInput, SettingsItem, ThemePicker } from '@/src/components';
 import { BUILD_CONFIG } from '@/src/config';
+import type { LocalYtDlpUpdateProgressEvent, LocalYtDlpUpdateStatus } from '@/src/native/localDownloader';
 import {
   type CookiePlatform,
   type CookieProfile,
@@ -70,6 +74,9 @@ export default function SettingsScreen() {
   const [customImportDomain, setCustomImportDomain] = useState('');
   const [diagnosticUnlockTaps, setDiagnosticUnlockTaps] = useState(0);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const [ytDlpUpdateStatus, setYtDlpUpdateStatus] = useState<LocalYtDlpUpdateStatus | null>(null);
+  const [ytDlpUpdateProgress, setYtDlpUpdateProgress] = useState<LocalYtDlpUpdateProgressEvent | null>(null);
+  const [ytDlpUpdating, setYtDlpUpdating] = useState(false);
 
   const showError = useCallback((message: string) => {
     setFeedback({ title: t('common.error'), message, tone: 'error' });
@@ -110,6 +117,30 @@ export default function SettingsScreen() {
   useEffect(() => {
     void refreshCookieData();
   }, [refreshCookieData]);
+
+  const refreshYtDlpUpdateStatus = useCallback(async () => {
+    try {
+      const status = await getLocalYtDlpUpdateStatus();
+      setYtDlpUpdateStatus(status);
+    } catch {
+      setYtDlpUpdateStatus(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshYtDlpUpdateStatus();
+    const subscription = listenYtDlpUpdateProgress((event) => {
+      setYtDlpUpdateProgress(event);
+      setYtDlpUpdating(!['available', 'up_to_date', 'installed', 'failed'].includes(event.phase));
+    });
+    return () => subscription.remove();
+  }, [refreshYtDlpUpdateStatus]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshYtDlpUpdateStatus();
+    }, [refreshYtDlpUpdateStatus])
+  );
 
   const closeSelector = useCallback(() => {
     setSelectorPlatform(null);
@@ -351,10 +382,6 @@ export default function SettingsScreen() {
     }
   }, [closeCustomSelector, closeDeleteConfirmModal, customDefaultsMap, pendingCustomDelete, refreshCookieData, showError]);
 
-  const handleClose = useCallback(() => {
-    router.back();
-  }, [router]);
-
   const handleVersionPress = useCallback(() => {
     setDiagnosticUnlockTaps((prev) => prev + 1);
   }, []);
@@ -363,24 +390,68 @@ export default function SettingsScreen() {
     router.push('/diagnostics' as never);
   }, [router]);
 
+  const openRecentFailures = useCallback(() => {
+    router.push('/recent-failures' as never);
+  }, [router]);
+
+  const ytDlpUpdateSubtitle = useMemo(() => {
+    const progress = ytDlpUpdateProgress;
+    if (ytDlpUpdating && progress) {
+      if (progress.phase === 'downloading' && typeof progress.percent === 'number') {
+        return t('settings.ytDlpUpdateDownloading', { percent: Math.round(progress.percent) });
+      }
+      return t(`settings.ytDlpUpdatePhase.${progress.phase}`, { defaultValue: t('settings.ytDlpUpdateWorking') });
+    }
+
+    if (ytDlpUpdateStatus?.pendingVersion || ytDlpUpdateStatus?.requiresRestart) {
+      return t('settings.ytDlpUpdateRestartRequired', {
+        version: ytDlpUpdateStatus.pendingVersion ?? ytDlpUpdateStatus.effectiveInstalledVersion ?? 'unknown',
+      });
+    }
+
+    if (ytDlpUpdateStatus?.failedReason) {
+      return t('settings.ytDlpUpdateFailedHint', { reason: ytDlpUpdateStatus.failedReason });
+    }
+
+    const active = ytDlpUpdateStatus?.activeVersion ?? ytDlpUpdateStatus?.effectiveInstalledVersion ?? 'unknown';
+    const source = ytDlpUpdateStatus?.source === 'override' ? t('settings.ytDlpUpdateSourceOverride') : t('settings.ytDlpUpdateSourceBundled');
+    return t('settings.ytDlpUpdateHint', { version: active, source });
+  }, [t, ytDlpUpdateProgress, ytDlpUpdateStatus, ytDlpUpdating]);
+
+  const ytDlpUpdateDisabled = ytDlpUpdating || Boolean(ytDlpUpdateStatus?.activeTaskId) || ytDlpUpdateStatus?.storageReady === false;
+
+  const handleYtDlpUpdate = useCallback(async () => {
+    if (ytDlpUpdateDisabled) {
+      if (ytDlpUpdateStatus?.activeTaskId) {
+        showError(t('settings.ytDlpUpdateDownloadActive'));
+      }
+      return;
+    }
+
+    setYtDlpUpdating(true);
+    setYtDlpUpdateProgress({ phase: 'checking' });
+    try {
+      const result = await updateLocalYtDlp();
+      await refreshYtDlpUpdateStatus();
+      if (result.status === 'installed' && result.installedVersion) {
+        showSuccess(t('settings.ytDlpUpdateInstalled', { version: result.installedVersion }));
+      } else if (result.status === 'up_to_date') {
+        showSuccess(t('settings.ytDlpUpdateAlreadyCurrent'));
+      } else if (result.status === 'blocked' || result.code === 'DOWNLOAD_ACTIVE') {
+        showError(t('settings.ytDlpUpdateDownloadActive'));
+      } else {
+        showError(result.message ?? result.code ?? t('settings.ytDlpUpdateFailedGeneric'));
+      }
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+      showError(getErrorMessage(code));
+    } finally {
+      setYtDlpUpdating(false);
+    }
+  }, [refreshYtDlpUpdateStatus, showError, showSuccess, t, ytDlpUpdateDisabled, ytDlpUpdateStatus?.activeTaskId]);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>
-          {t('settings.title')}
-        </Text>
-        <Pressable
-          onPress={handleClose}
-          hitSlop={8}
-          style={({ pressed }) => [
-            styles.closeButton,
-            { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
-          ]}
-        >
-          <Ionicons name="close" size={20} color={colors.text} />
-        </Pressable>
-      </View>
-
       <ScrollView
         style={styles.content}
         contentContainerStyle={styles.contentContainer}
@@ -451,6 +522,20 @@ export default function SettingsScreen() {
               value={BUILD_CONFIG.APP_VERSION}
               onPress={handleVersionPress}
               showArrow={false}
+            />
+            <SettingsItem
+              icon="cloud-download-outline"
+              title={t('settings.ytDlpUpdate')}
+              subtitle={ytDlpUpdateSubtitle}
+              onPress={handleYtDlpUpdate}
+              rightElement={ytDlpUpdating ? <ActivityIndicator size="small" color={colors.accent} /> : undefined}
+              showArrow={!ytDlpUpdateDisabled}
+            />
+            <SettingsItem
+              icon="warning-outline"
+              title={t('settings.recentFailures')}
+              subtitle={t('settings.recentFailuresHint')}
+              onPress={openRecentFailures}
             />
             {(diagnosticUnlockTaps >= 7 || __DEV__) && (
               <SettingsItem
@@ -875,25 +960,6 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-  },
-  closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   content: {
     flex: 1,

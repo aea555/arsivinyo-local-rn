@@ -3,10 +3,11 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { clearLocalPrivatePlaybackCache, setLocalSecureScreen } from '@/src/api';
+import { AppText as Text } from '@/src/components';
 import { deleteSession, getSession } from '@/src/features/privatePlayback/sessionStore';
 import { useTheme } from '@/src/theme';
 

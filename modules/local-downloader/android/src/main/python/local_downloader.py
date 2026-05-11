@@ -97,7 +97,6 @@ COOKIE_PLATFORM_DOMAINS = {
     "reddit": {"reddit.com", "redd.it", "v.redd.it"},
     "tiktok": {"tiktok.com", "vm.tiktok.com"},
 }
-YTDLP_PIN_BASELINE = "2026.2.4"
 URL_REDACTION_PATTERN = re.compile(r"/(?:data|storage|sdcard)/[^\s)]+", flags=re.IGNORECASE)
 TOKEN_REDACTION_PATTERN = re.compile(r"(po_token|visitor_data|authorization)=([^,&\\s]+)", flags=re.IGNORECASE)
 REDDIT_SHARE_PATH_PATTERN = re.compile(r"/r/[^/]+/s/[^/?#]+", flags=re.IGNORECASE)

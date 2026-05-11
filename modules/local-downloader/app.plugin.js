@@ -1,7 +1,7 @@
 const { createRunOncePlugin, withAndroidManifest, withAppBuildGradle, withGradleProperties, withProjectBuildGradle } = require('expo/config-plugins');
 
 const CHAQUOPY_VERSION = '15.0.1';
-const YT_DLP_VERSION = '2026.2.4';
+const YT_DLP_PACKAGE = 'yt-dlp';
 const CURL_CFFI_VERSION = '0.14.0';
 const IMPERSONATION_WHEELS_DIR = 'modules/local-downloader/android/chaquopy-wheels';
 const DEFAULT_REACT_NATIVE_ARCHITECTURES = process.env.LOCAL_DOWNLOADER_ABIS || 'arm64-v8a';
@@ -100,8 +100,8 @@ function ensureChaquopyApplyPlugin(contents) {
 function cleanLegacyInjectedBlocks(contents) {
   let next = contents;
 
-  next = next.replace(/\npython\s*\{[\s\S]*?yt-dlp==\d{4}\.\d{1,2}\.\d{1,2}[\s\S]*?\n\}\n?/g, '\n');
-  next = next.replace(/\nchaquopy\s*\{[\s\S]*?yt-dlp==\d{4}\.\d{1,2}\.\d{1,2}[\s\S]*?\n\}\n?/g, '\n');
+  next = next.replace(/\npython\s*\{[\s\S]*?install\(["']yt-dlp(?:==\d{4}\.\d{1,2}\.\d{1,2})?["']\)[\s\S]*?\n\}\n?/g, '\n');
+  next = next.replace(/\nchaquopy\s*\{[\s\S]*?install\(["']yt-dlp(?:==\d{4}\.\d{1,2}\.\d{1,2})?["']\)[\s\S]*?\n\}\n?/g, '\n');
   next = next.replace(/\nandroid\s*\{\s*\n\s*sourceSets\s*\{[\s\S]*?python\.srcDir\s+\(?["']\.\.\/\.\.\/modules\/local-downloader\/android\/src\/main\/python["']\)?[\s\S]*?\n\s*\}\s*\n\}\n?/g, '\n');
 
   return next;
@@ -148,7 +148,7 @@ function addAppGradleChanges(contents) {
 
   const wheelsDirNormalized = IMPERSONATION_WHEELS_DIR.replace(/\\/g, '/');
   const impersonationPipBlock = `${TAGS.impersonationPip.begin}\n            def impersonationWheelsDir = file("../../${wheelsDirNormalized}")\n            if (!impersonationWheelsDir.exists()) {\n                println("[local-downloader] Impersonation wheels not found at ${wheelsDirNormalized}; continuing without curl-cffi")\n            } else {\n                def archProp = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString()\n                def requiredAbis = archProp.split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n                def wheelFiles = impersonationWheelsDir.listFiles()?.collect { it.name } ?: []\n                def missingAbis = requiredAbis.findAll { abi ->\n                    def abiToken = abi.replace("-", "_")\n                    !wheelFiles.any { name -> name ==~ /curl_cffi-.*android.*\${abiToken}.*\\.whl/ }\n                }\n                if (missingAbis.isEmpty()) {\n                    options("--find-links", impersonationWheelsDir.absolutePath)\n                    install("curl-cffi==${CURL_CFFI_VERSION}")\n                } else {\n                    println("[local-downloader] Skipping curl-cffi install: missing Android wheel(s) for ABIs: \${missingAbis.join(', ')} at ${wheelsDirNormalized}")\n                }\n            }\n${TAGS.impersonationPip.end}`;
-  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("yt-dlp==${YT_DLP_VERSION}")\n            install("tenacity==9.0.0")\n${impersonationPipBlock}\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
+  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("${YT_DLP_PACKAGE}")\n            install("tenacity==9.0.0")\n${impersonationPipBlock}\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
 
   const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
   const abiFilterBlock = `${TAGS.abiFilterConfig.begin}\nandroid {\n    defaultConfig {\n        ndk {\n            def localDownloaderAbis = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString().split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n            abiFilters(*localDownloaderAbis)\n        }\n    }\n}\n${TAGS.abiFilterConfig.end}`;

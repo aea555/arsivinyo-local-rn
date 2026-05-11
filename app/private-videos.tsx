@@ -9,7 +9,6 @@ import {
   Modal,
   Pressable,
   StyleSheet,
-  Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,6 +21,7 @@ import {
   pickAndImportLocalVideoToPrivateVault,
   prepareLocalPrivatePlayback,
 } from '@/src/api';
+import { AppText as Text } from '@/src/components';
 import { createSession } from '@/src/features/privatePlayback/sessionStore';
 import type { LocalPrivateVideoItem } from '@/src/native/localDownloader';
 import { useTheme } from '@/src/theme';

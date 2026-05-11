@@ -2,10 +2,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { getLocalDiagnostics, runLocalImpersonationSelfTest } from '@/src/api';
+import { AppText as Text } from '@/src/components';
 import { listCookieProfiles, LOCAL_COOKIE_PLATFORMS } from '@/src/services';
 import { useTheme } from '@/src/theme';
 
@@ -13,6 +14,15 @@ type DiagnosticsState = {
   ytDlpVersion: string;
   ytDlpAvailable: boolean;
   pythonReady: boolean;
+  ytDlpBundledVersion?: string | null;
+  ytDlpActiveVersion?: string | null;
+  ytDlpOverrideVersion?: string | null;
+  ytDlpPendingVersion?: string | null;
+  ytDlpFailedVersion?: string | null;
+  ytDlpFailedReason?: string | null;
+  ytDlpOverrideSource?: string | null;
+  ytDlpOverridePath?: string | null;
+  ytDlpOverrideStorageReady?: boolean;
   normalizedUrlLast?: string | null;
   attemptTraceCount?: number;
   lastExtractorKey?: string | null;
@@ -71,6 +81,15 @@ const initialState: DiagnosticsState = {
   ytDlpVersion: 'unknown',
   ytDlpAvailable: false,
   pythonReady: false,
+  ytDlpBundledVersion: null,
+  ytDlpActiveVersion: null,
+  ytDlpOverrideVersion: null,
+  ytDlpPendingVersion: null,
+  ytDlpFailedVersion: null,
+  ytDlpFailedReason: null,
+  ytDlpOverrideSource: 'bundled',
+  ytDlpOverridePath: null,
+  ytDlpOverrideStorageReady: false,
   normalizedUrlLast: null,
   attemptTraceCount: 0,
   lastExtractorKey: null,
@@ -137,6 +156,15 @@ export default function DiagnosticsScreen() {
       ytDlpVersion: diag.ytDlpVersion,
       ytDlpAvailable: diag.ytDlpAvailable,
       pythonReady: diag.pythonReady,
+      ytDlpBundledVersion: diag.ytDlpBundledVersion ?? null,
+      ytDlpActiveVersion: diag.ytDlpActiveVersion ?? null,
+      ytDlpOverrideVersion: diag.ytDlpOverrideVersion ?? null,
+      ytDlpPendingVersion: diag.ytDlpPendingVersion ?? null,
+      ytDlpFailedVersion: diag.ytDlpFailedVersion ?? null,
+      ytDlpFailedReason: diag.ytDlpFailedReason ?? null,
+      ytDlpOverrideSource: diag.ytDlpOverrideSource ?? 'bundled',
+      ytDlpOverridePath: diag.ytDlpOverridePath ?? null,
+      ytDlpOverrideStorageReady: diag.ytDlpOverrideStorageReady ?? false,
       normalizedUrlLast: diag.normalizedUrlLast ?? null,
       attemptTraceCount: diag.attemptTraceCount ?? 0,
       lastExtractorKey: diag.lastExtractorKey ?? null,
@@ -208,6 +236,15 @@ export default function DiagnosticsScreen() {
           <Text style={[styles.title, { color: colors.text }]}>Runtime</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Python ready: {state.pythonReady ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp: {state.ytDlpVersion}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp bundled: {state.ytDlpBundledVersion ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp active: {state.ytDlpActiveVersion ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp source: {state.ytDlpOverrideSource ?? 'bundled'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp override: {state.ytDlpOverrideVersion ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp pending: {state.ytDlpPendingVersion ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp failed version: {state.ytDlpFailedVersion ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp failed reason: {state.ytDlpFailedReason ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp override storage: {state.ytDlpOverrideStorageReady ? 'ready' : 'not ready'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp override path: {state.ytDlpOverridePath ?? 'none'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp age days: {state.ytDlpVersionAgeDays ?? 'unknown'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp import: {state.ytDlpAvailable ? 'ok' : 'failed'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Normalized URL (last): {state.normalizedUrlLast ?? 'none'}</Text>

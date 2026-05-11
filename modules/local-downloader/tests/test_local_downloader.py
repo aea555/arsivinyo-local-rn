@@ -1,5 +1,6 @@
 import os
 import importlib
+import json
 import tempfile
 import unittest
 import unittest.mock
@@ -14,6 +15,143 @@ try:
     import local_downloader as ld
 except Exception:  # pragma: no cover
     ld = None
+
+try:
+    import sys
+    from pathlib import Path
+
+    python_src = Path(__file__).resolve().parent.parent / "android" / "src" / "main" / "python"
+    sys.path.insert(0, str(python_src))
+    import yt_dlp_override_bootstrap as yb
+except Exception:  # pragma: no cover
+    yb = None
+
+
+def _write_fake_ytdlp_package(root, version):
+    package_dir = os.path.join(root, "yt_dlp")
+    os.makedirs(package_dir, exist_ok=True)
+    with open(os.path.join(package_dir, "__init__.py"), "w", encoding="utf-8") as f:
+        f.write("")
+    with open(os.path.join(package_dir, "version.py"), "w", encoding="utf-8") as f:
+        f.write(f'__version__ = "{version}"\n')
+
+
+@unittest.skipIf(yb is None, "yt_dlp override bootstrap unavailable in this environment")
+class YtDlpOverrideBootstrapTests(unittest.TestCase):
+    def tearDown(self):
+        yb._clear_ytdlp_modules()
+
+    def test_pending_override_promotes_to_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = os.path.join(tmp, "bundled")
+            override_root = os.path.join(tmp, "overrides")
+            version_dir = os.path.join(override_root, "versions", "2026.3.17")
+            manifest_path = os.path.join(override_root, "manifest.json")
+            _write_fake_ytdlp_package(bundled, "2026.2.4")
+            _write_fake_ytdlp_package(version_dir, "2026.3.17")
+            os.makedirs(override_root, exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump({"schemaVersion": 1, "pendingVersion": "2026.3.17", "installed": {}}, f)
+
+            sys.path.insert(0, bundled)
+            try:
+                payload = json.loads(yb.activate(override_root, manifest_path))
+            finally:
+                sys.path.remove(bundled)
+
+            self.assertEqual(payload["source"], "override")
+            self.assertEqual(payload["activeVersion"], "2026.3.17")
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            self.assertEqual(manifest["activeVersion"], "2026.3.17")
+            self.assertIsNone(manifest["pendingVersion"])
+
+    def test_pending_override_accepts_zero_padded_runtime_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = os.path.join(tmp, "bundled")
+            override_root = os.path.join(tmp, "overrides")
+            version_dir = os.path.join(override_root, "versions", "2026.3.17")
+            manifest_path = os.path.join(override_root, "manifest.json")
+            _write_fake_ytdlp_package(bundled, "2026.02.04")
+            _write_fake_ytdlp_package(version_dir, "2026.03.17")
+            os.makedirs(override_root, exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump({"schemaVersion": 1, "pendingVersion": "2026.3.17", "installed": {}}, f)
+
+            sys.path.insert(0, bundled)
+            try:
+                payload = json.loads(yb.activate(override_root, manifest_path))
+            finally:
+                sys.path.remove(bundled)
+
+            self.assertEqual(payload["source"], "override")
+            self.assertEqual(payload["activeVersion"], "2026.03.17")
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            self.assertEqual(manifest["activeVersion"], "2026.3.17")
+            self.assertIsNone(manifest["pendingVersion"])
+            self.assertIsNone(manifest["failedVersion"])
+            self.assertIsNone(manifest["failedReason"])
+
+    def test_failed_zero_padded_mismatch_is_retried_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = os.path.join(tmp, "bundled")
+            override_root = os.path.join(tmp, "overrides")
+            version_dir = os.path.join(override_root, "versions", "2026.3.17")
+            manifest_path = os.path.join(override_root, "manifest.json")
+            _write_fake_ytdlp_package(bundled, "2026.02.04")
+            _write_fake_ytdlp_package(version_dir, "2026.03.17")
+            os.makedirs(override_root, exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "schemaVersion": 1,
+                        "activeVersion": None,
+                        "pendingVersion": None,
+                        "failedVersion": "2026.3.17",
+                        "failedReason": "OVERRIDE_VERSION_MISMATCH:2026.03.17",
+                        "installed": {},
+                    },
+                    f,
+                )
+
+            sys.path.insert(0, bundled)
+            try:
+                payload = json.loads(yb.activate(override_root, manifest_path))
+            finally:
+                sys.path.remove(bundled)
+
+            self.assertEqual(payload["source"], "override")
+            self.assertEqual(payload["activeVersion"], "2026.03.17")
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            self.assertEqual(manifest["activeVersion"], "2026.3.17")
+            self.assertIsNone(manifest["pendingVersion"])
+            self.assertIsNone(manifest["failedVersion"])
+            self.assertIsNone(manifest["failedReason"])
+
+    def test_missing_pending_override_falls_back_to_bundled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = os.path.join(tmp, "bundled")
+            override_root = os.path.join(tmp, "overrides")
+            manifest_path = os.path.join(override_root, "manifest.json")
+            _write_fake_ytdlp_package(bundled, "2026.2.4")
+            os.makedirs(override_root, exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump({"schemaVersion": 1, "pendingVersion": "2026.3.17", "installed": {}}, f)
+
+            sys.path.insert(0, bundled)
+            try:
+                payload = json.loads(yb.activate(override_root, manifest_path))
+            finally:
+                sys.path.remove(bundled)
+
+            self.assertEqual(payload["source"], "bundled")
+            self.assertEqual(payload["activeVersion"], "2026.2.4")
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            self.assertIsNone(manifest["pendingVersion"])
+            self.assertEqual(manifest["failedVersion"], "2026.3.17")
 
 
 @unittest.skipIf(ld is None, "local_downloader module unavailable in this environment")

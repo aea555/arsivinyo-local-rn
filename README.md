@@ -72,14 +72,13 @@ Important integration points:
 - Video playback: `expo-video ~3.0.16`
 - Chaquopy Gradle plugin: `15.0.1`
 - Python runtime target: `3.11`
-- `yt-dlp` pin: `2026.2.4`
+- `yt-dlp`: latest stable from PyPI at Android build time
 - `curl-cffi` pin (impersonation runtime): `0.14.0`
 - Gradle wrapper: `8.14.3`
 - Android ABI default for local-downloader pipeline: `arm64-v8a` (`x86_64` is opt-in when matching wheels are available)
 
 Version pin sources that must stay aligned:
 - `modules/local-downloader/app.plugin.js`
-- `modules/local-downloader/android/src/main/python/local_downloader.py`
 - `modules/local-downloader/android/chaquopy-wheels/VERSIONS.json`
 
 ## Prerequisites
