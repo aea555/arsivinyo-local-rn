@@ -2,6 +2,7 @@ import os
 import importlib
 import json
 import tempfile
+import types
 import unittest
 import unittest.mock
 import time
@@ -12,6 +13,25 @@ try:
 
     python_src = Path(__file__).resolve().parent.parent / "android" / "src" / "main" / "python"
     sys.path.insert(0, str(python_src))
+    if importlib.util.find_spec("yt_dlp") is None:
+        fake_ytdlp = types.ModuleType("yt_dlp")
+        fake_ytdlp.version = types.SimpleNamespace(__version__="2026.1.1")
+
+        class FakeYoutubeDL:
+            def __init__(self, opts=None):
+                self.opts = opts or {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def extract_info(self, url, download=False):
+                return {}
+
+        fake_ytdlp.YoutubeDL = FakeYoutubeDL
+        sys.modules["yt_dlp"] = fake_ytdlp
     import local_downloader as ld
 except Exception:  # pragma: no cover
     ld = None
@@ -294,6 +314,181 @@ class LocalDownloaderUnitTests(unittest.TestCase):
             platform=None,
         )
         self.assertEqual(code, "IMPERSONATION_TARGET_REQUIRED_UNAVAILABLE")
+
+    def test_retryable_preflight_classifier_accepts_transient_failures(self):
+        retryable_messages = [
+            "Remote end closed connection without response",
+            "Connection reset by peer",
+            "Read timed out while opening page",
+            "IncompleteRead: 0 bytes read",
+            "TransportError('connection closed')",
+            "HTTP Error 429: Too Many Requests",
+            "HTTP Error 503: Service Unavailable",
+            "An extractor error has occurred. (caused by KeyError('title'))",
+        ]
+        for message in retryable_messages:
+            with self.subTest(message=message):
+                self.assertTrue(ld._is_retryable_preflight_failure("PREFLIGHT_FAILED", message))
+
+    def test_retryable_preflight_classifier_rejects_hard_failures(self):
+        hard_failures = [
+            ("INVALID_URL", "Invalid URL"),
+            ("COOKIE_STALE_OR_INVALID", "Cookie required"),
+            ("COOKIE_DOMAIN_MISMATCH", "Cookie domain mismatch"),
+            ("FILE_TOO_LARGE", "File is too large"),
+            ("DOWNLOAD_CANCELLED", "Cancellation requested"),
+            ("MERGE_DEPENDENCY_MISSING", "ffmpeg is not installed"),
+            ("UNSUPPORTED_PLATFORM", "Unsupported URL"),
+            ("PREFLIGHT_FAILED", "A non-retryable validation failure"),
+        ]
+        for code, message in hard_failures:
+            with self.subTest(code=code):
+                self.assertFalse(ld._is_retryable_preflight_failure(code, message))
+
+    def test_soft_preflight_proceeds_to_download_attempts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_file = os.path.join(tmp, "clip.mp4")
+            with open(output_file, "wb") as f:
+                f.write(b"video")
+
+            def fake_attempts(**kwargs):
+                if kwargs["phase"] == "preflight":
+                    return None, "PREFLIGHT_FAILED", "Remote end closed connection without response", "default-primary"
+                return {
+                    "title": "clip",
+                    "extractor_key": "generic",
+                    "requested_downloads": [{"filepath": output_file}],
+                }, None, None, "default-progressive"
+
+            with unittest.mock.patch.object(ld, "_probe_static_media_candidates", return_value=(1, None)), \
+                unittest.mock.patch.object(ld, "_perform_attempts", side_effect=fake_attempts), \
+                unittest.mock.patch.object(ld, "_normalize_video_timestamp", return_value=True), \
+                unittest.mock.patch.object(ld, "_is_impersonation_runtime_available", return_value=False), \
+                unittest.mock.patch.object(ld, "_resolve_merge_capability", return_value=(True, None)):
+                result = json.loads(
+                    ld.run_download(
+                        "https://example.com/video",
+                        tmp,
+                        tmp,
+                        merge_capable=True,
+                    )
+                )
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["code"], "DOWNLOAD_COMPLETED")
+            self.assertEqual(result["preflight_warning"]["code"], "PREFLIGHT_FAILED")
+            self.assertEqual(result["preflight_strategy"], "default-primary")
+            self.assertEqual(result["strategy"], "default-progressive")
+
+    def test_generic_preflight_uses_limited_budget(self):
+        with unittest.mock.patch.object(ld, "_probe_static_media_candidates", return_value=(1, None)), \
+            unittest.mock.patch.object(ld, "_perform_attempts", return_value=(None, "PREFLIGHT_FAILED", "Connection reset by peer", "default-primary")) as attempts:
+            result = json.loads(ld.preflight("https://example.com/page", tempfile.gettempdir()))
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["retryable_preflight"])
+        self.assertEqual(result["preflight_budget_sec"], ld.GENERIC_PREFLIGHT_BUDGET_SEC)
+        self.assertEqual(result["preflight_attempt_limit"], ld.GENERIC_PREFLIGHT_ATTEMPT_LIMIT)
+        self.assertEqual(attempts.call_args.kwargs["attempt_limit"], ld.GENERIC_PREFLIGHT_ATTEMPT_LIMIT)
+        self.assertEqual(attempts.call_args.kwargs["per_attempt_timeout_sec"], ld.GENERIC_PREFLIGHT_EXTRACT_TIMEOUT_SEC)
+
+    def test_known_preflight_uses_broader_budget(self):
+        with unittest.mock.patch.object(ld, "_perform_attempts", return_value=(None, "PREFLIGHT_FAILED", "Connection reset by peer", "youtube-default")) as attempts:
+            result = json.loads(ld.preflight("https://www.youtube.com/watch?v=abc123", tempfile.gettempdir()))
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["preflight_budget_sec"], ld.KNOWN_PREFLIGHT_BUDGET_SEC)
+        self.assertIsNone(result.get("preflight_attempt_limit"))
+        self.assertIsNone(attempts.call_args.kwargs["attempt_limit"])
+
+    def test_static_page_without_media_candidates_soft_fails(self):
+        with unittest.mock.patch.object(ld, "_fetch_page_text_sample", return_value=("<html><a href='/next'>next</a></html>", None)), \
+            unittest.mock.patch.object(ld, "_perform_attempts") as attempts:
+            result = json.loads(ld.preflight("https://example.com/page", tempfile.gettempdir()))
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["retryable_preflight"])
+        self.assertEqual(result["message"], "STATIC_PAGE_NO_MEDIA_CANDIDATES")
+        self.assertEqual(result["static_media_candidate_count"], 0)
+        attempts.assert_not_called()
+
+    def test_static_page_with_media_candidate_reaches_probe(self):
+        with unittest.mock.patch.object(ld, "_fetch_page_text_sample", return_value=("<html><iframe src='/player/1'></iframe></html>", None)), \
+            unittest.mock.patch.object(ld, "_resolve_merge_capability", return_value=(True, None)), \
+            unittest.mock.patch.object(ld, "_perform_attempts", return_value=({"title": "clip", "extractor_key": "generic"}, None, None, "default-primary")) as attempts:
+            result = json.loads(ld.preflight("https://example.com/page", tempfile.gettempdir()))
+
+        self.assertTrue(result["success"])
+        self.assertGreater(result["static_media_candidate_count"], 0)
+        attempts.assert_called_once()
+
+    def test_static_page_fetch_error_soft_fails(self):
+        with unittest.mock.patch.object(ld, "_fetch_page_text_sample", return_value=(None, "Connection reset by peer")), \
+            unittest.mock.patch.object(ld, "_perform_attempts") as attempts:
+            result = json.loads(ld.preflight("https://example.com/page", tempfile.gettempdir()))
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["retryable_preflight"])
+        self.assertIn("STATIC_PAGE_FETCH_FAILED", result["message"])
+        attempts.assert_not_called()
+
+    def test_known_extractor_bypasses_static_generic_preflight(self):
+        with unittest.mock.patch.object(ld, "_detect_known_ytdlp_extractor", return_value="sample"), \
+            unittest.mock.patch.object(ld, "_probe_static_media_candidates") as static_probe, \
+            unittest.mock.patch.object(ld, "_perform_attempts", return_value=({"title": "clip", "extractor_key": "sample"}, None, None, "default-primary")) as attempts, \
+            unittest.mock.patch.object(ld, "_resolve_merge_capability", return_value=(True, None)):
+            result = json.loads(ld.preflight("https://media.example/watch/abc", tempfile.gettempdir()))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["preflight_budget_sec"], ld.KNOWN_PREFLIGHT_BUDGET_SEC)
+        self.assertIsNone(result.get("preflight_attempt_limit"))
+        static_probe.assert_not_called()
+        self.assertIsNone(attempts.call_args.kwargs["attempt_limit"])
+
+    def test_run_download_known_extractor_bypasses_static_soft_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_file = os.path.join(tmp, "clip.mp4")
+            with open(output_file, "wb") as f:
+                f.write(b"video")
+
+            def fake_attempts(**kwargs):
+                if kwargs["phase"] == "preflight":
+                    return {"title": "clip", "extractor_key": "sample"}, None, None, "default-primary"
+                return {
+                    "title": "clip",
+                    "extractor_key": "sample",
+                    "requested_downloads": [{"filepath": output_file}],
+                }, None, None, "default-download"
+
+            with unittest.mock.patch.object(ld, "_detect_known_ytdlp_extractor", return_value="sample"), \
+                unittest.mock.patch.object(ld, "_probe_static_media_candidates") as static_probe, \
+                unittest.mock.patch.object(ld, "_perform_attempts", side_effect=fake_attempts), \
+                unittest.mock.patch.object(ld, "_normalize_video_timestamp", return_value=True), \
+                unittest.mock.patch.object(ld, "_is_impersonation_runtime_available", return_value=False), \
+                unittest.mock.patch.object(ld, "_resolve_merge_capability", return_value=(True, None)):
+                result = json.loads(ld.run_download("https://media.example/watch/abc", tmp, tmp))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["preflight_strategy"], "default-primary")
+        self.assertIsNone(result.get("preflight_warning"))
+        static_probe.assert_not_called()
+
+    def test_generic_discovery_fallback_for_extractor_error(self):
+        self.assertTrue(
+            ld._should_try_generic_discovery(
+                "PREFLIGHT_FAILED",
+                "An extractor error has occurred. (caused by KeyError('title'))",
+            )
+        )
+        self.assertTrue(ld._should_try_generic_discovery("DOWNLOAD_FAILED", "No media formats found"))
+
+    def test_tool_output_is_bounded(self):
+        message = "ffmpeg exited with code 1\n" + ("stderr line\n" * 1000)
+        output = ld._bounded_tool_output(message)
+        self.assertIsNotNone(output)
+        self.assertLessEqual(len(output), ld.MAX_TOOL_OUTPUT_CHARS)
+        self.assertTrue(output.startswith("ffmpeg exited with code 1"))
+        self.assertIsNone(ld._bounded_tool_output("plain status update"))
 
     def test_extract_required_impersonation_targets(self):
         targets = ld._extract_required_targets_from_message(

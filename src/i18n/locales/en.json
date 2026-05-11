@@ -113,7 +113,7 @@
         "importCookieAction": "Import profile",
         "selectDefaultCookieAction": "Select default profile",
         "selectDefaultForPlatform": "Default profile for {{platform}}",
-        "about": "About",
+        "about": "System",
         "version": "Version",
         "language": "Language",
         "diagnostics": "Diagnostics",

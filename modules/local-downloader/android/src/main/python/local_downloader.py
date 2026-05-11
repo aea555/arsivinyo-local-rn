@@ -1,4 +1,5 @@
 import datetime
+import concurrent.futures
 import html
 import importlib
 import json
@@ -40,6 +41,14 @@ RETRYABLE_STATUS_MARKERS = (
     "connection reset",
     "network is unreachable",
     "downloaded file is empty",
+    "remote end closed connection",
+    "incomplete read",
+    "incompleteread",
+    "transporterror",
+    "connection aborted",
+    "connection closed",
+    "tls",
+    "ssl",
 )
 
 VIDEO_TIMESTAMP_EXTENSIONS = {".mp4", ".mov", ".m4v", ".3gp"}
@@ -56,6 +65,14 @@ GENERIC_MEDIA_RELATIVE_PATTERN = re.compile(
 )
 MAX_GENERIC_DISCOVERY_CANDIDATES = 4
 MAX_ATTEMPT_TRACE = 80
+MAX_TOOL_OUTPUT_CHARS = 6000
+EXTRACT_INFO_TIMEOUT_SEC = 45
+KNOWN_PREFLIGHT_BUDGET_SEC = 45
+GENERIC_PREFLIGHT_BUDGET_SEC = 25
+GENERIC_PREFLIGHT_EXTRACT_TIMEOUT_SEC = 8
+GENERIC_PREFLIGHT_ATTEMPT_LIMIT = 2
+STATIC_PAGE_SAMPLE_BYTES = 768 * 1024
+STATIC_PAGE_FETCH_TIMEOUT_SEC = 8
 ALLOW_REDDIT_PUBLIC_FALLBACK = True
 YTDLP_VERBOSE_DEV = os.getenv("ARSIVINYO_YTDLP_VERBOSE_DEV", "").strip().lower() in {"1", "true", "yes", "on"}
 PROGRESS_WRITE_MIN_INTERVAL_MS = 500
@@ -115,6 +132,66 @@ SOFT_REDDIT_SHARE_RESOLUTION_MARKERS = (
     "network is unreachable",
     "temporary failure in name resolution",
 )
+HARD_PREFLIGHT_CODES = {
+    "INVALID_URL",
+    "UNSUPPORTED_PLATFORM",
+    "FILE_TOO_LARGE",
+    "SERVER_BUSY",
+    "DOWNLOAD_CANCELLED",
+    "TASK_CANCELLED",
+    "COOKIE_DOMAIN_MISMATCH",
+    "COOKIE_EMPTY_OR_EXPIRED",
+    "COOKIE_STALE_OR_INVALID",
+    "REDDIT_COOKIE_REQUIRED",
+    "MERGE_DEPENDENCY_MISSING",
+    "FFMPEG_NATIVE_RUNTIME_UNAVAILABLE",
+    "FFMPEG_MISSING",
+    "FFPROBE_MISSING",
+}
+RETRYABLE_PREFLIGHT_MARKERS = (
+    "remote end closed connection",
+    "connection reset",
+    "connection aborted",
+    "connection closed",
+    "incomplete read",
+    "incompleteread",
+    "transporterror",
+    "timed out",
+    "timeout",
+    "http error 429",
+    "http error 500",
+    "http error 502",
+    "http error 503",
+    "http error 504",
+    "temporarily unavailable",
+    "temporary failure in name resolution",
+    "network is unreachable",
+    "tls",
+    "ssl",
+    "extractor error",
+    "keyerror(",
+    "static_page_no_media_candidates",
+    "static_page_fetch_failed",
+    "preflight_budget_exhausted",
+    "preflight budget exhausted",
+)
+STATIC_MEDIA_MARKERS = (
+    ".m3u8",
+    ".mpd",
+    ".mp4",
+    ".m4v",
+    ".webm",
+    "<video",
+    "<source",
+    "<iframe",
+    "embed",
+    "player",
+    "data-src",
+    "data-video",
+    "jwplayer",
+    "videojs",
+    "hls",
+)
 SPEED_PER_SEC_PATTERN = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[kmg]?i?b)\s*/\s*s", flags=re.IGNORECASE)
 
 _RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
@@ -137,12 +214,24 @@ _RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
     "redditShareResolutionLast": None,
     "progressWritesLast": 0,
     "youtubeChunkProfileLast": None,
+    "formatSelectorLast": None,
+    "toolOutputLast": None,
+    "preflightBudgetSec": None,
+    "preflightElapsedMs": None,
+    "preflightAttemptLimit": None,
+    "staticMediaCandidateCount": None,
+    "knownExtractorLast": None,
 }
 _IMPERSONATION_RUNTIME_AVAILABLE: Optional[bool] = None
+_KNOWN_EXTRACTOR_CACHE: Dict[str, Optional[str]] = {}
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _monotonic_ms() -> int:
+    return int(time.monotonic() * 1000)
 
 
 def _redact_text(value: str) -> str:
@@ -158,6 +247,13 @@ def _reset_attempt_trace() -> None:
     _RUNTIME_DIAGNOSTICS["redditShareResolutionLast"] = None
     _RUNTIME_DIAGNOSTICS["progressWritesLast"] = 0
     _RUNTIME_DIAGNOSTICS["youtubeChunkProfileLast"] = None
+    _RUNTIME_DIAGNOSTICS["formatSelectorLast"] = None
+    _RUNTIME_DIAGNOSTICS["toolOutputLast"] = None
+    _RUNTIME_DIAGNOSTICS["preflightBudgetSec"] = None
+    _RUNTIME_DIAGNOSTICS["preflightElapsedMs"] = None
+    _RUNTIME_DIAGNOSTICS["preflightAttemptLimit"] = None
+    _RUNTIME_DIAGNOSTICS["staticMediaCandidateCount"] = None
+    _RUNTIME_DIAGNOSTICS["knownExtractorLast"] = None
 
 
 def _push_attempt_trace(entry: Dict[str, Any]) -> None:
@@ -178,6 +274,29 @@ def _append_diag_target(target: Optional[str]) -> None:
     if target not in current:
         current.append(target)
     _set_runtime_diag("impersonationAttemptedTargetsLast", current)
+
+
+def _begin_preflight_profile(platform: Optional[str]) -> Tuple[int, int, Optional[int], int]:
+    if platform is None:
+        budget_sec = GENERIC_PREFLIGHT_BUDGET_SEC
+        attempt_limit: Optional[int] = GENERIC_PREFLIGHT_ATTEMPT_LIMIT
+        per_attempt_timeout_sec = GENERIC_PREFLIGHT_EXTRACT_TIMEOUT_SEC
+    else:
+        budget_sec = KNOWN_PREFLIGHT_BUDGET_SEC
+        attempt_limit = None
+        per_attempt_timeout_sec = EXTRACT_INFO_TIMEOUT_SEC
+
+    start_ms = _monotonic_ms()
+    _set_runtime_diag("preflightBudgetSec", budget_sec)
+    _set_runtime_diag("preflightAttemptLimit", attempt_limit)
+    _set_runtime_diag("preflightElapsedMs", 0)
+    return start_ms, start_ms + (budget_sec * 1000), attempt_limit, per_attempt_timeout_sec
+
+
+def _finish_preflight_profile(start_ms: Optional[int]) -> None:
+    if start_ms is None:
+        return
+    _set_runtime_diag("preflightElapsedMs", max(0, _monotonic_ms() - start_ms))
 
 
 def _is_impersonation_unavailable_message(message: str) -> bool:
@@ -311,6 +430,13 @@ def get_runtime_diagnostics() -> str:
         "redditShareResolutionLast": _RUNTIME_DIAGNOSTICS.get("redditShareResolutionLast"),
         "progressWritesLast": _RUNTIME_DIAGNOSTICS.get("progressWritesLast"),
         "youtubeChunkProfileLast": _RUNTIME_DIAGNOSTICS.get("youtubeChunkProfileLast"),
+        "formatSelectorLast": _RUNTIME_DIAGNOSTICS.get("formatSelectorLast"),
+        "toolOutputLast": _RUNTIME_DIAGNOSTICS.get("toolOutputLast"),
+        "preflightBudgetSec": _RUNTIME_DIAGNOSTICS.get("preflightBudgetSec"),
+        "preflightElapsedMs": _RUNTIME_DIAGNOSTICS.get("preflightElapsedMs"),
+        "preflightAttemptLimit": _RUNTIME_DIAGNOSTICS.get("preflightAttemptLimit"),
+        "staticMediaCandidateCount": _RUNTIME_DIAGNOSTICS.get("staticMediaCandidateCount"),
+        "knownExtractorLast": _RUNTIME_DIAGNOSTICS.get("knownExtractorLast"),
     }
     return json.dumps(payload)
 
@@ -344,6 +470,27 @@ def _result(success: bool, code: str, message: Optional[str] = None, **kwargs: A
         "code": code,
         "message": message,
     }
+    normalized_url = _RUNTIME_DIAGNOSTICS.get("normalizedUrlLast")
+    if normalized_url and "normalized_url" not in kwargs:
+        payload["normalized_url"] = normalized_url
+    attempt_trace = _RUNTIME_DIAGNOSTICS.get("attemptTrace") or []
+    if attempt_trace and "attempt_trace" not in kwargs:
+        payload["attempt_trace"] = attempt_trace
+    format_selector = _RUNTIME_DIAGNOSTICS.get("formatSelectorLast")
+    if format_selector and "format_selector" not in kwargs:
+        payload["format_selector"] = format_selector
+    tool_output = _RUNTIME_DIAGNOSTICS.get("toolOutputLast")
+    if tool_output and "tool_output" not in kwargs:
+        payload["tool_output"] = tool_output
+    for diag_key, payload_key in (
+        ("preflightBudgetSec", "preflight_budget_sec"),
+        ("preflightElapsedMs", "preflight_elapsed_ms"),
+        ("preflightAttemptLimit", "preflight_attempt_limit"),
+        ("staticMediaCandidateCount", "static_media_candidate_count"),
+    ):
+        value = _RUNTIME_DIAGNOSTICS.get(diag_key)
+        if value is not None and payload_key not in kwargs:
+            payload[payload_key] = value
     payload.update(kwargs)
     return json.dumps(payload)
 
@@ -358,6 +505,40 @@ def _detect_cookie_platform(url: str) -> Optional[str]:
             return platform
 
     return None
+
+
+def _detect_known_ytdlp_extractor(url: str, debug_logging: bool = False) -> Optional[str]:
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    cached = _KNOWN_EXTRACTOR_CACHE.get(raw)
+    if raw in _KNOWN_EXTRACTOR_CACHE:
+        _set_runtime_diag("knownExtractorLast", cached)
+        return cached
+
+    result: Optional[str] = None
+    try:
+        extractor_module = importlib.import_module("yt_dlp.extractor")
+        for extractor in extractor_module.gen_extractors():
+            name = str(getattr(extractor, "IE_NAME", "") or "").strip()
+            if not name or name.lower() == "generic":
+                continue
+            suitable = getattr(extractor, "suitable", None)
+            if not callable(suitable):
+                continue
+            try:
+                if suitable(raw):
+                    result = name
+                    break
+            except Exception:
+                continue
+    except Exception as exc:
+        _debug_log(debug_logging, f"known extractor probe unavailable: {exc}")
+        result = None
+
+    _KNOWN_EXTRACTOR_CACHE[raw] = result
+    _set_runtime_diag("knownExtractorLast", result)
+    return result
 
 
 def _extract_host(url: str) -> str:
@@ -589,6 +770,15 @@ def _is_generic_unsupported_error(message: Optional[str]) -> bool:
     return any(marker in lower for marker in GENERIC_UNSUPPORTED_MARKERS)
 
 
+def _should_try_generic_discovery(code: Optional[str], message: Optional[str]) -> bool:
+    lower = (message or "").lower()
+    if _is_generic_unsupported_error(lower):
+        return True
+    if any(marker in lower for marker in ("extractor error", "keyerror(", "no media", "no video", "unable to extract")):
+        return True
+    return (code or "").strip() in {"PREFLIGHT_FAILED", "DOWNLOAD_FAILED"} and "generic" in lower
+
+
 def _decode_embedded_web_text(text: str) -> str:
     value = html.unescape(text or "")
     value = value.replace("\\/", "/")
@@ -668,6 +858,64 @@ def _fetch_page_text(url: str, user_agent: str, debug_logging: bool = False) -> 
     except Exception as exc:
         _debug_log(debug_logging, f"generic discovery fetch failed url={url} error={exc}")
         return None, str(exc)
+
+
+def _fetch_page_text_sample(
+    url: str,
+    user_agent: str,
+    debug_logging: bool = False,
+    timeout_sec: int = STATIC_PAGE_FETCH_TIMEOUT_SEC,
+) -> Tuple[Optional[str], Optional[str]]:
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        request = Request(url, headers=headers)
+        with urlopen(request, timeout=timeout_sec) as response:
+            content = response.read(STATIC_PAGE_SAMPLE_BYTES)
+            try:
+                charset = response.headers.get_content_charset()
+            except Exception:
+                charset = None
+            return content.decode(charset or "utf-8", errors="replace"), None
+    except Exception as exc:
+        _debug_log(debug_logging, f"static sample fetch failed url={url} error={exc}")
+        return None, str(exc)
+
+
+def _is_static_media_candidate(raw_value: str) -> bool:
+    lower = (raw_value or "").lower()
+    return any(marker in lower for marker in STATIC_MEDIA_MARKERS)
+
+
+def _count_static_media_candidates(page_text: Optional[str]) -> int:
+    if not page_text:
+        return 0
+    decoded = _decode_embedded_web_text(page_text)
+    combined = f"{page_text}\n{decoded}".lower()
+    marker_count = sum(1 for marker in STATIC_MEDIA_MARKERS if marker in combined)
+    url_count = 0
+    for blob in (page_text, decoded):
+        url_count += sum(1 for match in GENERIC_URL_TOKEN_PATTERN.finditer(blob) if _is_static_media_candidate(match.group(0)))
+        url_count += sum(1 for match in GENERIC_MEDIA_RELATIVE_PATTERN.finditer(blob) if _is_static_media_candidate(match.group("path")))
+    return marker_count + url_count
+
+
+def _probe_static_media_candidates(
+    url: str,
+    user_agent: str,
+    debug_logging: bool = False,
+) -> Tuple[int, Optional[str]]:
+    page_text, fetch_error = _fetch_page_text_sample(url, user_agent, debug_logging)
+    if fetch_error:
+        _set_runtime_diag("staticMediaCandidateCount", 0)
+        return 0, fetch_error
+    candidate_count = _count_static_media_candidates(page_text)
+    _set_runtime_diag("staticMediaCandidateCount", candidate_count)
+    _debug_log(debug_logging, f"static sample candidate count={candidate_count}")
+    return candidate_count, None
 
 
 def _discover_generic_media_candidates(url: str, user_agent: str, debug_logging: bool = False) -> List[str]:
@@ -1037,10 +1285,15 @@ class _YdlLogger:
         self.attempt_id = attempt_id
 
     def _emit(self, level: str, message: str) -> None:
-        if not YTDLP_VERBOSE_DEV:
-            return
         msg = _redact_text(str(message or "").strip())
         if not msg:
+            return
+        captured = _bounded_tool_output(msg)
+        if captured:
+            existing = str(_RUNTIME_DIAGNOSTICS.get("toolOutputLast") or "").strip()
+            combined = f"{existing}\n{captured}".strip() if existing else captured
+            _set_runtime_diag("toolOutputLast", combined[:MAX_TOOL_OUTPUT_CHARS])
+        if not YTDLP_VERBOSE_DEV:
             return
         _debug_log(
             self.debug_logging,
@@ -1136,7 +1389,7 @@ def _common_ydl_opts(
         opts["impersonate"] = False
     elif impersonate:
         opts["impersonate"] = impersonate
-    if debug_logging and YTDLP_VERBOSE_DEV and debug_strategy_label and debug_attempt_id:
+    if debug_strategy_label and debug_attempt_id:
         opts["logger"] = _YdlLogger(debug_logging, debug_strategy_label, debug_attempt_id)
 
     _debug_log(debug_logging, f"ydl opts prepared url={normalized_url} opts={_sanitize_opts_for_log(opts)}")
@@ -1182,12 +1435,36 @@ def _is_retryable_message(message: str) -> bool:
     return any(marker in message for marker in RETRYABLE_STATUS_MARKERS)
 
 
+def _is_retryable_preflight_failure(code: Optional[str], message: Optional[str]) -> bool:
+    normalized_code = (code or "").strip()
+    lower = (message or "").lower()
+    if normalized_code in HARD_PREFLIGHT_CODES:
+        return False
+    if normalized_code in {"SITE_BLOCKED_403", "TIKTOK_API_STATUS_ZERO", "TIKTOK_EXTRACTOR_UNSTABLE"}:
+        return True
+    if any(marker in lower for marker in RETRYABLE_PREFLIGHT_MARKERS):
+        return True
+    return False
+
+
+def _bounded_tool_output(message: Optional[str]) -> Optional[str]:
+    value = _redact_text(str(message or "").strip())
+    if not value:
+        return None
+    lower = value.lower()
+    if not any(marker in lower for marker in ("ffmpeg", "ffprobe", "stderr", "traceback", "error", "transporterror")):
+        return None
+    return value[:MAX_TOOL_OUTPUT_CHARS]
+
+
 def _extract_info_with_retry(
     ydl: yt_dlp.YoutubeDL,
     url: str,
     *,
     download: bool,
     max_attempts: int = 3,
+    timeout_sec: Optional[float] = None,
+    deadline_ms: Optional[int] = None,
     debug_logging: bool = False,
     strategy_label: Optional[str] = None,
     attempt_id: Optional[str] = None,
@@ -1196,12 +1473,29 @@ def _extract_info_with_retry(
 
     for attempt in range(1, max_attempts + 1):
         try:
+            effective_timeout = timeout_sec or EXTRACT_INFO_TIMEOUT_SEC
+            if deadline_ms is not None:
+                remaining_sec = max(0.0, (deadline_ms - _monotonic_ms()) / 1000.0)
+                if remaining_sec <= 0:
+                    raise TimeoutError("Preflight budget exhausted")
+                effective_timeout = min(effective_timeout, remaining_sec)
             _debug_log(
                 debug_logging,
                 f"extract start strategy={strategy_label or 'single'} attempt={attempt}/{max_attempts} "
                 f"download={download} url={url} id={attempt_id or 'n/a'}",
             )
-            info = ydl.extract_info(url, download=download)
+            if download:
+                info = ydl.extract_info(url, download=download)
+            else:
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(ydl.extract_info, url, False)
+                try:
+                    info = future.result(timeout=effective_timeout)
+                except concurrent.futures.TimeoutError as exc:
+                    future.cancel()
+                    raise TimeoutError(f"Extractor timed out after {effective_timeout:.1f}s") from exc
+                finally:
+                    executor.shutdown(wait=False, cancel_futures=True)
             if isinstance(info, dict):
                 return info
             return {}
@@ -1511,6 +1805,39 @@ def _build_platform_attempts(
         return attempts
 
     attempts.append({"label": "default-primary", "use_cookie": has_cookie and cookie_integrity_ok})
+    attempts.append(
+        {
+            "label": "default-same-site-context",
+            "use_cookie": has_cookie and cookie_integrity_ok,
+            "referer_url": normalized_url,
+        }
+    )
+    attempts.append(
+        {
+            "label": "default-progressive-context",
+            "use_cookie": has_cookie and cookie_integrity_ok,
+            "referer_url": normalized_url,
+            "format_override": "best[acodec!=none][vcodec!=none][protocol!*=m3u8]/best[protocol!*=m3u8]/best",
+        }
+    )
+    if impersonation_available:
+        attempts.append(
+            {
+                "label": "default-impersonate-chrome",
+                "use_cookie": has_cookie and cookie_integrity_ok,
+                "referer_url": normalized_url,
+                "impersonate": "chrome",
+            }
+        )
+        attempts.append(
+            {
+                "label": "default-generic-impersonate-chrome",
+                "use_cookie": False,
+                "referer_url": normalized_url,
+                "impersonate": "chrome",
+                "force_generic_extractor": True,
+            }
+        )
     if not impersonation_available:
         attempts.append(
             {
@@ -1527,6 +1854,14 @@ def _build_platform_attempts(
                 "force_generic_extractor": True,
             }
         )
+    attempts.append(
+        {
+            "label": "default-generic-context",
+            "use_cookie": has_cookie and cookie_integrity_ok,
+            "referer_url": normalized_url,
+            "force_generic_extractor": True,
+        }
+    )
     return attempts
 
 
@@ -1595,16 +1930,27 @@ def _perform_attempts(
     progress_hooks: Optional[List[Any]] = None,
     debug_logging: bool = False,
     allow_discovery_fallback: bool = True,
+    deadline_ms: Optional[int] = None,
+    attempt_limit: Optional[int] = None,
+    per_attempt_timeout_sec: Optional[int] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str], Optional[str]]:
     last_error_code: Optional[str] = None
     last_error_message: Optional[str] = None
     last_strategy: Optional[str] = None
+    attempts_started = 0
     for index, strategy in enumerate(attempts, start=1):
         guarded_codes = strategy.get("guarded_for_codes")
         if guarded_codes and last_error_code not in guarded_codes:
             continue
+        if attempt_limit is not None and attempts_started >= attempt_limit:
+            break
+        if deadline_ms is not None and _monotonic_ms() >= deadline_ms:
+            last_error_code = "PREFLIGHT_FAILED"
+            last_error_message = "Preflight budget exhausted"
+            break
 
         attempt_id = str(uuid.uuid4())[:8]
+        attempts_started += 1
         use_cookie = bool(strategy.get("use_cookie")) and bool(selected_cookie_file)
         active_cookie = selected_cookie_file if use_cookie else None
         label = strategy.get("label", f"{platform or 'generic'}-{index}")
@@ -1641,6 +1987,7 @@ def _perform_attempts(
             debug_logging=debug_logging,
         )
         opts["format"] = format_override or _build_format_selector(max_file_size_mb, merge_capable)
+        _set_runtime_diag("formatSelectorLast", opts["format"])
         if merge_capable:
             opts["merge_output_format"] = "mp4"
         if ydl_overrides:
@@ -1679,6 +2026,9 @@ def _perform_attempts(
                     ydl,
                     attempt_url,
                     download=download,
+                    max_attempts=1 if phase == "preflight" and per_attempt_timeout_sec is not None else 3,
+                    timeout_sec=per_attempt_timeout_sec,
+                    deadline_ms=deadline_ms if phase == "preflight" else None,
                     debug_logging=debug_logging,
                     strategy_label=label,
                     attempt_id=attempt_id,
@@ -1713,6 +2063,9 @@ def _perform_attempts(
                 platform=platform,
                 context_url=attempt_url,
             )
+            tool_output = _bounded_tool_output(message)
+            if tool_output:
+                _set_runtime_diag("toolOutputLast", tool_output)
             if _is_impersonation_unavailable_message(message):
                 required_extractor = _extract_error_extractor_key(message)
                 required_targets = _extract_required_targets_from_message(message)
@@ -1781,6 +2134,9 @@ def _perform_attempts(
                             ydl,
                             attempt_url,
                             download=download,
+                            max_attempts=1 if phase == "preflight" and per_attempt_timeout_sec is not None else 3,
+                            timeout_sec=per_attempt_timeout_sec,
+                            deadline_ms=deadline_ms if phase == "preflight" else None,
                             debug_logging=debug_logging,
                             strategy_label=retry_label,
                             attempt_id=retry_id,
@@ -1808,6 +2164,9 @@ def _perform_attempts(
                         platform=platform,
                         context_url=attempt_url,
                     )
+                    tool_output = _bounded_tool_output(message)
+                    if tool_output:
+                        _set_runtime_diag("toolOutputLast", tool_output)
                     if _is_impersonation_unavailable_message(message) and required_extractor:
                         _set_runtime_diag("impersonationRequiredByExtractorLast", required_extractor)
             redacted = _redact_text(message)
@@ -1821,13 +2180,14 @@ def _perform_attempts(
                     "status": "failure",
                     "errorCode": code,
                     "errorMessage": redacted,
+                    "retryablePreflight": _is_retryable_preflight_failure(code, message) if phase == "preflight" else False,
                 }
             )
             if _should_replace_last_error(last_error_code, last_error_message, code, message):
                 last_error_code = code
                 last_error_message = message
 
-    if allow_discovery_fallback and platform is None and _is_generic_unsupported_error(last_error_message):
+    if allow_discovery_fallback and platform is None and _should_try_generic_discovery(last_error_code, last_error_message):
         discovery_attempts = _build_generic_discovery_attempts(
             normalized_url,
             selected_cookie_file,
@@ -1852,6 +2212,9 @@ def _perform_attempts(
                 progress_hooks=progress_hooks,
                 debug_logging=debug_logging,
                 allow_discovery_fallback=False,
+                deadline_ms=deadline_ms,
+                attempt_limit=None,
+                per_attempt_timeout_sec=per_attempt_timeout_sec,
             )
             if info is not None:
                 return info, None, None, strategy
@@ -2130,6 +2493,8 @@ def preflight(
         normalized_url = normalized_url or url
         _set_runtime_diag("normalizedUrlLast", normalized_url)
         platform = _detect_cookie_platform(normalized_url)
+        known_extractor = _detect_known_ytdlp_extractor(normalized_url, debug_logging)
+        has_known_extractor = known_extractor is not None
 
         if not selected_cookie_file and not force_no_cookie:
             selected_cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
@@ -2154,6 +2519,38 @@ def preflight(
         if platform == "reddit" and not attempts:
             return _result(False, "REDDIT_COOKIE_REQUIRED", "Reddit download requires a valid Reddit cookie profile.")
 
+        preflight_profile_platform = platform or ("known-extractor" if has_known_extractor else None)
+        preflight_start_ms, preflight_deadline_ms, preflight_attempt_limit, preflight_timeout_sec = _begin_preflight_profile(preflight_profile_platform)
+        if platform is None and not has_known_extractor:
+            if _is_static_media_candidate(normalized_url):
+                _set_runtime_diag("staticMediaCandidateCount", 1)
+            else:
+                static_count, static_error = _probe_static_media_candidates(normalized_url, user_agent, debug_logging)
+                if static_error:
+                    _finish_preflight_profile(preflight_start_ms)
+                    return _result(
+                        False,
+                        "PREFLIGHT_FAILED",
+                        f"STATIC_PAGE_FETCH_FAILED: {_redact_text(static_error)}",
+                        platform=platform,
+                        normalized_url=normalized_url,
+                        strategy="static-sample",
+                        preflight_strategy="static-sample",
+                        retryable_preflight=True,
+                    )
+                if static_count <= 0:
+                    _finish_preflight_profile(preflight_start_ms)
+                    return _result(
+                        False,
+                        "PREFLIGHT_FAILED",
+                        "STATIC_PAGE_NO_MEDIA_CANDIDATES",
+                        platform=platform,
+                        normalized_url=normalized_url,
+                        strategy="static-sample",
+                        preflight_strategy="static-sample",
+                        retryable_preflight=True,
+                    )
+
         info, fail_code, fail_message, strategy = _perform_attempts(
             phase="preflight",
             normalized_url=normalized_url,
@@ -2167,9 +2564,24 @@ def preflight(
             merge_capable=effective_merge_capable,
             impersonation_available=impersonation_available,
             debug_logging=debug_logging,
+            deadline_ms=preflight_deadline_ms,
+            attempt_limit=preflight_attempt_limit,
+            per_attempt_timeout_sec=preflight_timeout_sec,
         )
+        _finish_preflight_profile(preflight_start_ms)
         if info is None:
-            return _result(False, fail_code or "PREFLIGHT_FAILED", fail_message or "Preflight failed", platform=platform)
+            code = fail_code or "PREFLIGHT_FAILED"
+            message = fail_message or "Preflight failed"
+            return _result(
+                False,
+                code,
+                message,
+                platform=platform,
+                normalized_url=normalized_url,
+                strategy=strategy,
+                preflight_strategy=strategy,
+                retryable_preflight=_is_retryable_preflight_failure(code, message),
+            )
 
         if not effective_merge_capable and not _has_progressive_format(info):
             _debug_log(debug_logging, "preflight failed: no progressive format and merge unavailable")
@@ -2218,8 +2630,11 @@ def preflight(
             platform=_detect_cookie_platform(url),
             context_url=url,
         )
+        tool_output = _bounded_tool_output(message)
+        if tool_output:
+            _set_runtime_diag("toolOutputLast", tool_output)
         _debug_log(debug_logging, f"preflight exception code={code} message={message}")
-        return _result(False, code, message)
+        return _result(False, code, message, retryable_preflight=_is_retryable_preflight_failure(code, message))
 
 
 def run_download(
@@ -2266,6 +2681,8 @@ def run_download(
         normalized_url = normalized_url or url
         _set_runtime_diag("normalizedUrlLast", normalized_url)
         platform = _detect_cookie_platform(normalized_url)
+        known_extractor = _detect_known_ytdlp_extractor(normalized_url, debug_logging)
+        has_known_extractor = known_extractor is not None
 
         if not selected_cookie_file and not force_no_cookie:
             selected_cookie_file = _resolve_cookie_file(cookies_dir, platform, cookie_profile)
@@ -2291,6 +2708,9 @@ def run_download(
         )
         if platform == "reddit" and not attempts:
             return _result(False, "REDDIT_COOKIE_REQUIRED", "Reddit download requires a valid Reddit cookie profile.")
+
+        preflight_profile_platform = platform or ("known-extractor" if has_known_extractor else None)
+        preflight_start_ms, preflight_deadline_ms, preflight_attempt_limit, preflight_timeout_sec = _begin_preflight_profile(preflight_profile_platform)
 
         def _progress_hook(progress: Dict[str, Any]) -> None:
             if _is_cancel_requested(cancel_flag_path):
@@ -2358,33 +2778,98 @@ def run_download(
         last_download_percent_emitted: Optional[float] = None
         last_progress_status: Optional[str] = None
 
-        preflight_info, preflight_fail_code, preflight_fail_message, preflight_strategy = _perform_attempts(
-            phase="preflight",
-            normalized_url=normalized_url,
-            platform=platform,
-            attempts=attempts,
-            selected_cookie_file=selected_cookie_file,
-            ffmpeg_location=ffmpeg_location,
-            user_agent=user_agent,
-            download=False,
-            max_file_size_mb=max_file_size_mb,
-            merge_capable=effective_merge_capable,
-            impersonation_available=impersonation_available,
-            debug_logging=debug_logging,
-        )
+        if platform is None and not has_known_extractor:
+            if _is_static_media_candidate(normalized_url):
+                _set_runtime_diag("staticMediaCandidateCount", 1)
+                static_count = 1
+                static_error = None
+            else:
+                static_count, static_error = _probe_static_media_candidates(normalized_url, user_agent, debug_logging)
+
+            if static_error:
+                preflight_info = None
+                preflight_fail_code = "PREFLIGHT_FAILED"
+                preflight_fail_message = f"STATIC_PAGE_FETCH_FAILED: {_redact_text(static_error)}"
+                preflight_strategy = "static-sample"
+            elif static_count <= 0:
+                preflight_info = None
+                preflight_fail_code = "PREFLIGHT_FAILED"
+                preflight_fail_message = "STATIC_PAGE_NO_MEDIA_CANDIDATES"
+                preflight_strategy = "static-sample"
+            else:
+                preflight_info, preflight_fail_code, preflight_fail_message, preflight_strategy = _perform_attempts(
+                    phase="preflight",
+                    normalized_url=normalized_url,
+                    platform=platform,
+                    attempts=attempts,
+                    selected_cookie_file=selected_cookie_file,
+                    ffmpeg_location=ffmpeg_location,
+                    user_agent=user_agent,
+                    download=False,
+                    max_file_size_mb=max_file_size_mb,
+                    merge_capable=effective_merge_capable,
+                    impersonation_available=impersonation_available,
+                    debug_logging=debug_logging,
+                    deadline_ms=preflight_deadline_ms,
+                    attempt_limit=preflight_attempt_limit,
+                    per_attempt_timeout_sec=preflight_timeout_sec,
+                )
+        else:
+            preflight_info, preflight_fail_code, preflight_fail_message, preflight_strategy = _perform_attempts(
+                phase="preflight",
+                normalized_url=normalized_url,
+                platform=platform,
+                attempts=attempts,
+                selected_cookie_file=selected_cookie_file,
+                ffmpeg_location=ffmpeg_location,
+                user_agent=user_agent,
+                download=False,
+                max_file_size_mb=max_file_size_mb,
+                merge_capable=effective_merge_capable,
+                impersonation_available=impersonation_available,
+                debug_logging=debug_logging,
+                deadline_ms=preflight_deadline_ms,
+                attempt_limit=preflight_attempt_limit,
+                per_attempt_timeout_sec=preflight_timeout_sec,
+            )
+        _finish_preflight_profile(preflight_start_ms)
+        preflight_warning: Optional[Dict[str, Any]] = None
+
         if _is_cancel_requested(cancel_flag_path):
             return _result(False, "DOWNLOAD_CANCELLED", "Cancellation requested")
         if preflight_info is None:
-            return _result(
-                False,
-                preflight_fail_code or "DOWNLOAD_FAILED",
-                preflight_fail_message or "Download preflight failed",
-                platform=platform,
-            )
+            soft_code = preflight_fail_code or "DOWNLOAD_FAILED"
+            soft_message = preflight_fail_message or "Download preflight failed"
+            if _is_retryable_preflight_failure(soft_code, soft_message):
+                preflight_warning = {
+                    "code": soft_code,
+                    "message": _redact_text(soft_message),
+                    "strategy": preflight_strategy,
+                }
+                _push_attempt_trace(
+                    {
+                        "timeMs": _now_ms(),
+                        "phase": "preflight",
+                        "strategy": preflight_strategy,
+                        "status": "soft-failure",
+                        "errorCode": soft_code,
+                        "errorMessage": _redact_text(soft_message),
+                    }
+                )
+            else:
+                return _result(
+                    False,
+                    soft_code,
+                    soft_message,
+                    platform=platform,
+                    normalized_url=normalized_url,
+                    preflight_strategy=preflight_strategy,
+                    retryable_preflight=False,
+                )
 
-        info = preflight_info
+        info = preflight_info or {}
 
-        if not effective_merge_capable and not _has_progressive_format(info):
+        if preflight_info is not None and not effective_merge_capable and not _has_progressive_format(info):
             _debug_log(debug_logging, "download failed: no progressive format and merge unavailable")
             return _result(
                 False,
@@ -2393,7 +2878,7 @@ def run_download(
                 or "This media requires stream merge but ffmpeg/ffprobe merge runtime is unavailable.",
             )
 
-        estimated_mb, _ = _estimate_file_size_mb(info)
+        estimated_mb, _ = _estimate_file_size_mb(info) if preflight_info is not None else (0.0, None)
         if max_file_size_mb > 0 and estimated_mb > 0 and estimated_mb > max_file_size_mb:
             return _result(
                 False,
@@ -2429,6 +2914,10 @@ def run_download(
                 download_fail_code or "DOWNLOAD_FAILED",
                 download_fail_message or "Download failed",
                 platform=platform,
+                normalized_url=normalized_url,
+                preflight_warning=preflight_warning,
+                preflight_strategy=preflight_strategy,
+                strategy=download_strategy,
             )
 
         if _is_cancel_requested(cancel_flag_path):
@@ -2477,6 +2966,7 @@ def run_download(
             warning_code=warning_code,
             format_mode="merged" if effective_merge_capable else "progressive",
             normalized_url=normalized_url,
+            preflight_warning=preflight_warning,
             preflight_strategy=preflight_strategy,
             strategy=download_strategy,
             extractor_key=info.get("extractor_key"),
@@ -2491,5 +2981,8 @@ def run_download(
             platform=_detect_cookie_platform(url),
             context_url=url,
         )
+        tool_output = _bounded_tool_output(message)
+        if tool_output:
+            _set_runtime_diag("toolOutputLast", tool_output)
         _debug_log(debug_logging, f"download exception code={code} message={message}")
         return _result(False, code, message)

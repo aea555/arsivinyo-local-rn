@@ -59,6 +59,18 @@ export interface LocalDownloadFailureLog {
   taskId?: string | null;
   code?: string | null;
   url?: string | null;
+  normalizedUrl?: string | null;
+  preflightWarning?: Record<string, unknown> | null;
+  preflightStrategy?: string | null;
+  downloadStrategy?: string | null;
+  extractorKey?: string | null;
+  formatSelector?: string | null;
+  attemptTrace?: Array<Record<string, unknown>> | null;
+  toolOutput?: string | null;
+  preflightBudgetSec?: number | null;
+  preflightElapsedMs?: number | null;
+  preflightAttemptLimit?: number | null;
+  staticMediaCandidateCount?: number | null;
   message: string;
 }
 

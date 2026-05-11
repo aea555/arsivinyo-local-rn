@@ -83,6 +83,18 @@ data class TaskState(
   var speedBytesPerSec: Double? = null,
   var errorCode: String? = null,
   var errorMessage: String? = null,
+  var normalizedUrl: String? = null,
+  var preflightWarning: Map<String, Any?>? = null,
+  var preflightStrategy: String? = null,
+  var downloadStrategy: String? = null,
+  var extractorKey: String? = null,
+  var formatSelector: String? = null,
+  var attemptTrace: List<Map<String, Any?>>? = null,
+  var toolOutput: String? = null,
+  var preflightBudgetSec: Int? = null,
+  var preflightElapsedMs: Long? = null,
+  var preflightAttemptLimit: Int? = null,
+  var staticMediaCandidateCount: Int? = null,
   var estimatedSizeMb: Double? = null,
   var timestampNormalized: Boolean? = null,
   var warningCode: String? = null
@@ -1180,6 +1192,7 @@ class LocalDownloaderModule : Module() {
           debug("Task[$taskId] preflight retry(no-cookie) result=$preflightResult")
         }
         preflightResult = normalizeRuntimeError(preflightResult, ffmpegInfo)
+        applyRuntimeDiagnostics(taskId, preflightResult, "preflight")
 
         if (shouldIgnoreTaskResult(taskId)) {
           return@runCatching
@@ -1197,7 +1210,7 @@ class LocalDownloaderModule : Module() {
           return@runCatching
         }
 
-        if (!preflightResult.optBoolean("success", false)) {
+        if (!preflightResult.optBoolean("success", false) && !preflightResult.optBoolean("retryable_preflight", false)) {
           val code = preflightResult.optString("code", "INTERNAL_ERROR")
           val msg = preflightResult.optString("message", "Preflight failed")
           debug("Task[$taskId] preflight failed code=$code message=$msg")
@@ -1211,6 +1224,15 @@ class LocalDownloaderModule : Module() {
           emitProgress(taskId, "FAILURE", "error", msg)
           addError("$code: $msg")
           return@runCatching
+        } else if (!preflightResult.optBoolean("success", false)) {
+          val code = preflightResult.optString("code", "PREFLIGHT_FAILED")
+          val msg = preflightResult.optString("message", "Preflight warning")
+          tasks[taskId]?.preflightWarning = mapOf(
+            "code" to code,
+            "message" to msg,
+            "strategy" to tasks[taskId]?.preflightStrategy
+          )
+          debug("Task[$taskId] soft preflight failure code=$code message=$msg")
         }
 
         val freeMb = getFreeSpaceMb(outputDir)
@@ -1284,6 +1306,7 @@ class LocalDownloaderModule : Module() {
         progressWatcher?.cancel()
         progressWatcher = null
         result = normalizeRuntimeError(result, ffmpegInfo)
+        applyRuntimeDiagnostics(taskId, result, "download")
 
         if (shouldIgnoreTaskResult(taskId)) {
           return@runCatching
@@ -1907,6 +1930,85 @@ class LocalDownloaderModule : Module() {
     val json = JSONObject(result.toString())
     debug("Python download response code=${json.optString("code")} success=${json.optBoolean("success")} msg=${json.optString("message")}")
     return json
+  }
+
+  private fun applyRuntimeDiagnostics(taskId: String, result: JSONObject, phase: String) {
+    val task = tasks[taskId] ?: return
+    task.normalizedUrl = result.optString("normalized_url")
+      .ifBlank { result.optString("normalizedUrl") }
+      .ifBlank { task.normalizedUrl }
+    task.preflightStrategy = result.optString("preflight_strategy")
+      .ifBlank { result.optString("preflightStrategy") }
+      .ifBlank { if (phase == "preflight") result.optString("strategy") else "" }
+      .ifBlank { task.preflightStrategy }
+    task.downloadStrategy = result.optString("download_strategy")
+      .ifBlank { result.optString("downloadStrategy") }
+      .ifBlank { if (phase == "download") result.optString("strategy") else "" }
+      .ifBlank { task.downloadStrategy }
+    task.extractorKey = result.optString("extractor_key")
+      .ifBlank { result.optString("extractorKey") }
+      .ifBlank { task.extractorKey }
+    task.formatSelector = result.optString("format_selector")
+      .ifBlank { result.optString("formatSelector") }
+      .ifBlank { task.formatSelector }
+    task.toolOutput = result.optString("tool_output")
+      .ifBlank { result.optString("toolOutput") }
+      .ifBlank { task.toolOutput }
+    task.preflightBudgetSec = result.optInt("preflight_budget_sec", Int.MIN_VALUE)
+      .takeIf { it != Int.MIN_VALUE }
+      ?: result.optInt("preflightBudgetSec", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }
+      ?: task.preflightBudgetSec
+    task.preflightElapsedMs = result.optLong("preflight_elapsed_ms", Long.MIN_VALUE)
+      .takeIf { it != Long.MIN_VALUE }
+      ?: result.optLong("preflightElapsedMs", Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE }
+      ?: task.preflightElapsedMs
+    task.preflightAttemptLimit = result.optInt("preflight_attempt_limit", Int.MIN_VALUE)
+      .takeIf { it != Int.MIN_VALUE }
+      ?: result.optInt("preflightAttemptLimit", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }
+      ?: task.preflightAttemptLimit
+    task.staticMediaCandidateCount = result.optInt("static_media_candidate_count", Int.MIN_VALUE)
+      .takeIf { it != Int.MIN_VALUE }
+      ?: result.optInt("staticMediaCandidateCount", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }
+      ?: task.staticMediaCandidateCount
+
+    result.optJSONObject("preflight_warning")?.let {
+      task.preflightWarning = jsonObjectToMap(it)
+    }
+    result.optJSONObject("preflightWarning")?.let {
+      task.preflightWarning = jsonObjectToMap(it)
+    }
+    val traceArray = result.optJSONArray("attempt_trace") ?: result.optJSONArray("attemptTrace")
+    if (traceArray != null) {
+      task.attemptTrace = jsonArrayToMapList(traceArray, MAX_FAILURE_LOG_ATTEMPTS)
+    }
+    tasks[taskId] = task
+    persistTaskSnapshot()
+  }
+
+  private fun jsonArrayToMapList(array: JSONArray, maxItems: Int): List<Map<String, Any?>> {
+    return (0 until minOf(array.length(), maxItems)).mapNotNull { index ->
+      val item = array.optJSONObject(index) ?: return@mapNotNull null
+      jsonObjectToMap(item)
+    }
+  }
+
+  private fun jsonObjectToMap(obj: JSONObject): Map<String, Any?> {
+    val result = mutableMapOf<String, Any?>()
+    val keys = obj.keys()
+    while (keys.hasNext()) {
+      val key = keys.next()
+      result[key] = jsonValueToAny(obj.opt(key))
+    }
+    return result
+  }
+
+  private fun jsonValueToAny(value: Any?): Any? {
+    return when (value) {
+      null, JSONObject.NULL -> null
+      is JSONObject -> jsonObjectToMap(value)
+      is JSONArray -> (0 until value.length()).map { index -> jsonValueToAny(value.opt(index)) }
+      else -> value
+    }
   }
 
   private fun getYtDlpUpdateStatusInternal(includeLatest: Boolean): Map<String, Any?> {
@@ -5425,7 +5527,8 @@ class LocalDownloaderModule : Module() {
     val context = appContext.reactContext ?: return
     val safeCode = code?.takeIf { it.isNotBlank() } ?: "UNKNOWN_ERROR"
     val safeMessage = message?.takeIf { it.isNotBlank() } ?: safeCode
-    val sourceUrl = tasks[taskId]?.url?.takeIf { it.isNotBlank() }
+    val task = tasks[taskId]
+    val sourceUrl = task?.url?.takeIf { it.isNotBlank() }
 
     synchronized(failureLogLock) {
       runCatching {
@@ -5438,6 +5541,18 @@ class LocalDownloaderModule : Module() {
             put("taskId", taskId)
             put("code", safeCode)
             put("url", sourceUrl)
+            put("normalizedUrl", task?.normalizedUrl)
+            put("preflightWarning", task?.preflightWarning?.let { JSONObject(it) })
+            put("preflightStrategy", task?.preflightStrategy)
+            put("downloadStrategy", task?.downloadStrategy)
+            put("extractorKey", task?.extractorKey)
+            put("formatSelector", task?.formatSelector)
+            put("attemptTrace", task?.attemptTrace?.let { JSONArray(it.map { item -> JSONObject(item) }) })
+            put("toolOutput", task?.toolOutput?.take(MAX_FAILURE_LOG_TOOL_OUTPUT_CHARS))
+            put("preflightBudgetSec", task?.preflightBudgetSec)
+            put("preflightElapsedMs", task?.preflightElapsedMs)
+            put("preflightAttemptLimit", task?.preflightAttemptLimit)
+            put("staticMediaCandidateCount", task?.staticMediaCandidateCount)
             put("message", safeMessage.take(MAX_FAILURE_LOG_MESSAGE_CHARS))
           }
         )
@@ -5465,6 +5580,18 @@ class LocalDownloaderModule : Module() {
           "taskId" to item.optString("taskId").ifBlank { null },
           "code" to item.optString("code").ifBlank { null },
           "url" to item.optString("url").ifBlank { null },
+          "normalizedUrl" to item.optString("normalizedUrl").ifBlank { null },
+          "preflightWarning" to item.optJSONObject("preflightWarning")?.let { jsonObjectToMap(it) },
+          "preflightStrategy" to item.optString("preflightStrategy").ifBlank { null },
+          "downloadStrategy" to item.optString("downloadStrategy").ifBlank { null },
+          "extractorKey" to item.optString("extractorKey").ifBlank { null },
+          "formatSelector" to item.optString("formatSelector").ifBlank { null },
+          "attemptTrace" to item.optJSONArray("attemptTrace")?.let { jsonArrayToMapList(it, MAX_FAILURE_LOG_ATTEMPTS) },
+          "toolOutput" to item.optString("toolOutput").ifBlank { null },
+          "preflightBudgetSec" to item.optInt("preflightBudgetSec", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
+          "preflightElapsedMs" to item.optLong("preflightElapsedMs", Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE },
+          "preflightAttemptLimit" to item.optInt("preflightAttemptLimit", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
+          "staticMediaCandidateCount" to item.optInt("staticMediaCandidateCount", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
           "message" to message
         )
       }
@@ -5536,6 +5663,18 @@ class LocalDownloaderModule : Module() {
           } else {
             obj.optString("errorMessage").ifBlank { null }
           },
+          normalizedUrl = obj.optString("normalizedUrl").ifBlank { null },
+          preflightWarning = obj.optJSONObject("preflightWarning")?.let { jsonObjectToMap(it) },
+          preflightStrategy = obj.optString("preflightStrategy").ifBlank { null },
+          downloadStrategy = obj.optString("downloadStrategy").ifBlank { null },
+          extractorKey = obj.optString("extractorKey").ifBlank { null },
+          formatSelector = obj.optString("formatSelector").ifBlank { null },
+          attemptTrace = obj.optJSONArray("attemptTrace")?.let { jsonArrayToMapList(it, MAX_FAILURE_LOG_ATTEMPTS) },
+          toolOutput = obj.optString("toolOutput").ifBlank { null },
+          preflightBudgetSec = obj.optInt("preflightBudgetSec", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
+          preflightElapsedMs = obj.optLong("preflightElapsedMs", Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE },
+          preflightAttemptLimit = obj.optInt("preflightAttemptLimit", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
+          staticMediaCandidateCount = obj.optInt("staticMediaCandidateCount", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
           estimatedSizeMb = obj.optDouble("estimatedSizeMb", Double.NaN).takeIf { !it.isNaN() },
           timestampNormalized = if (obj.has("timestampNormalized")) obj.optBoolean("timestampNormalized") else null,
           warningCode = obj.optString("warningCode").ifBlank { null }
@@ -5569,6 +5708,18 @@ class LocalDownloaderModule : Module() {
       "speedBytesPerSec" to speedBytesPerSec,
       "errorCode" to errorCode,
       "errorMessage" to errorMessage,
+      "normalizedUrl" to normalizedUrl,
+      "preflightWarning" to preflightWarning,
+      "preflightStrategy" to preflightStrategy,
+      "downloadStrategy" to downloadStrategy,
+      "extractorKey" to extractorKey,
+      "formatSelector" to formatSelector,
+      "attemptTrace" to attemptTrace,
+      "toolOutput" to toolOutput,
+      "preflightBudgetSec" to preflightBudgetSec,
+      "preflightElapsedMs" to preflightElapsedMs,
+      "preflightAttemptLimit" to preflightAttemptLimit,
+      "staticMediaCandidateCount" to staticMediaCandidateCount,
       "estimatedSizeMb" to estimatedSizeMb,
       "timestampNormalized" to timestampNormalized,
       "warningCode" to warningCode
@@ -5654,7 +5805,9 @@ class LocalDownloaderModule : Module() {
     private const val MAX_PENDING_QUICK_REQUESTS = MAX_QUEUED_DOWNLOADS
     private const val MAX_ERROR_LOGS = 20
     private const val MAX_DOWNLOAD_FAILURE_LOGS = 50
-    private const val MAX_FAILURE_LOG_MESSAGE_CHARS = 20_000
+    private const val MAX_FAILURE_LOG_MESSAGE_CHARS = 30_000
+    private const val MAX_FAILURE_LOG_TOOL_OUTPUT_CHARS = 12_000
+    private const val MAX_FAILURE_LOG_ATTEMPTS = 80
     private const val QUICK_DEDUP_WINDOW_MS = 20_000L
     private const val PRIVATE_IMPORT_PICK_TIMEOUT_SECONDS = 180L
     private const val PRIVATE_PUBLIC_COPY_RELATIVE_PATH = "DCIM/Arsivinyo"

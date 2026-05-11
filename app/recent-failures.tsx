@@ -18,6 +18,39 @@ function formatFailureDate(value: number): string | null {
   return new Date(value).toLocaleString();
 }
 
+function formatUnknown(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function buildFailureDetails(log: LocalDownloadFailureLog): string[] {
+  const lines: string[] = [];
+  const normalizedUrl = formatUnknown(log.normalizedUrl);
+  if (normalizedUrl && normalizedUrl !== log.url) lines.push(`Normalized URL: ${normalizedUrl}`);
+  const warning = formatUnknown(log.preflightWarning);
+  if (warning) lines.push(`Preflight warning: ${warning}`);
+  if (log.preflightStrategy) lines.push(`Preflight strategy: ${log.preflightStrategy}`);
+  if (log.downloadStrategy) lines.push(`Download strategy: ${log.downloadStrategy}`);
+  if (log.extractorKey) lines.push(`Extractor: ${log.extractorKey}`);
+  if (log.formatSelector) lines.push(`Format: ${log.formatSelector}`);
+  if (typeof log.preflightBudgetSec === 'number') lines.push(`Preflight budget: ${log.preflightBudgetSec}s`);
+  if (typeof log.preflightElapsedMs === 'number') lines.push(`Preflight elapsed: ${log.preflightElapsedMs}ms`);
+  if (typeof log.preflightAttemptLimit === 'number') lines.push(`Preflight attempt limit: ${log.preflightAttemptLimit}`);
+  if (typeof log.staticMediaCandidateCount === 'number') {
+    lines.push(`Static media candidates: ${log.staticMediaCandidateCount}`);
+  }
+  if (log.toolOutput) lines.push(`Tool output:\n${log.toolOutput}`);
+  if (log.attemptTrace?.length) {
+    lines.push(`Attempts:\n${JSON.stringify(log.attemptTrace, null, 2)}`);
+  }
+  return lines;
+}
+
 export default function RecentFailuresScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -62,6 +95,7 @@ export default function RecentFailuresScreen() {
       log.code ? `Code: ${log.code}` : null,
       log.taskId ? `Task: ${log.taskId}` : null,
       log.url ? `URL: ${log.url}` : null,
+      ...buildFailureDetails(log),
       '',
       log.message,
     ].filter((line) => line !== null).join('\n');
@@ -131,6 +165,11 @@ export default function RecentFailuresScreen() {
                         URL: {log.url}
                       </Text>
                     ) : null}
+                    {buildFailureDetails(log).map((line, index) => (
+                      <Text key={`${log.id}-detail-${index}`} style={[styles.detailText, { color: colors.textMuted }]}>
+                        {line}
+                      </Text>
+                    ))}
                     <Text style={[styles.messageText, { color: colors.textMuted }]}>
                       {log.message}
                     </Text>
@@ -223,6 +262,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     fontWeight: '700',
+  },
+  detailText: {
+    fontSize: 11,
+    lineHeight: 16,
   },
   logBody: {
     paddingHorizontal: 14,

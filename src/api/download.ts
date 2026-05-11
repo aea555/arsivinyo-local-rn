@@ -165,8 +165,7 @@ export async function pollTaskStatus(
     if (status.status === 'FAILURE') {
       const code = (status.errorCode || 'INTERNAL_ERROR') as ApiErrorCode;
       const translated = getErrorMessage(code);
-      const details = status.errorMessage?.trim();
-      throw new Error(details ? `${translated} (${details})` : translated);
+      throw new Error(translated);
     }
 
     const elapsed = Date.now() - startTime;
