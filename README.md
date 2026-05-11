@@ -255,10 +255,6 @@ When you change version pins, update all together:
 - Confirm notification permission granted.
 - Check foreground service and receiver entries in generated manifest.
 
-For deeper internal docs:
-- `devdocs/API_GUIDE.md`
-- `devdocs/VIP_GUIDE.md`
-
 ## Security, Privacy, and Legal Notes
 
 - This project handles sensitive user inputs (URLs, cookies, private vault content). Avoid logging sensitive values in production builds.
