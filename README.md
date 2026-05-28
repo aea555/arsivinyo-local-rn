@@ -50,7 +50,7 @@ Current runtime focus:
 - Cookie profile management (platform-bound and custom-domain) + a `curl-cffi` impersonation runtime for stricter extractors.
 - Self-updating `yt-dlp` (on-device override of the bundled wheel, with rollback safety).
 
-**Private vault** (the interesting part)
+**Private vault** 
 - Downloads can be routed straight into an **encrypted on-device vault**, gated behind biometric / device-credential auth per action.
 - **Authenticated chunked encryption (cipher v4):** Google Tink `AesGcmHkdfStreaming` (1 MB segments). Per-segment GCM tags give both confidentiality *and* tamper-detection, and the format is seekable for random-access playback.
 - **Zero-plaintext playback:** v4 items play through an in-process loopback HTTP server that decrypts on the fly as the player requests byte ranges — the decrypted video never touches disk. A per-session random token gates the stream.
