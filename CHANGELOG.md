@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+## [2.2.0-beta.2]
+
+### Fixed
+- **Vault videos failed to play and thumbnails failed to load in release builds.** The vault streams v4 playback and thumbnails from an in-process loopback HTTP server (`http://127.0.0.1:<port>`). Android 9+ blocks cleartext traffic by default in non-debuggable builds, so every vault item failed in the release APK while working in debug (debug permits cleartext for Metro). Added `usesCleartextTraffic: true` via `expo-build-properties` so release builds permit the loopback connection. Low risk: the vault is loopback-only and the downloader's network goes through Python/curl-cffi, which isn't governed by Android's cleartext policy.
+
 ## [2.2.0-beta.1] — vault organization (tags + folders)
 
 Tags and folders for the private vault, plus batch operations for both.

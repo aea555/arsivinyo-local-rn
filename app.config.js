@@ -3,7 +3,7 @@ export default ({ config }) => {
     ...config,
     name: "Arsivinyo Local",
     slug: "arsivinyo-local-rn",
-    version: "2.2.0-beta.1",
+    version: "2.2.0-beta.2",
     orientation: "portrait",
     icon: "./assets/images/play_store_512.png",
     scheme: "arsivinyo-local-rn",
@@ -14,7 +14,7 @@ export default ({ config }) => {
       bundleIdentifier: "com.arsivinyo.local",
     },
     android: {
-      versionCode: 20200,
+      versionCode: 20201,
       adaptiveIcon: {
         backgroundColor: "#000000",
         foregroundImage: "./assets/images/ic_launcher_foreground.png",
@@ -60,6 +60,14 @@ export default ({ config }) => {
             useFrameworks: "static",
           },
           android: {
+            // The private vault streams v4 playback + thumbnails from an in-process
+            // loopback HTTP server (http://127.0.0.1:<port>). Android 9+ blocks cleartext
+            // by default in non-debuggable (release) builds, which makes every vault video
+            // fail to play and thumbnails fail to load — but only in release, since debug
+            // builds already permit cleartext for Metro. This flips cleartext on for release
+            // too. Low risk here: the vault is loopback-only and the downloader's network
+            // goes through Python/curl-cffi (Chaquopy), which isn't governed by this policy.
+            usesCleartextTraffic: true,
             extraProguardRules: [
               "# Tink (vault cipher v4) uses reflection on its key managers.",
               "-keep class com.google.crypto.tink.** { *; }",
