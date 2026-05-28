@@ -3,8 +3,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // Storage keys
 const KEYS = {
     DOWNLOAD_LOCATION: '@arsivinyo_download_location',
-    DOWNLOAD_COUNT: '@arsivinyo_download_count',
-    LAST_AD_SHOWN: '@arsivinyo_last_ad_shown',
     PRIVATE_VAULT_SORT: '@arsivinyo_private_vault_sort_v1',
     PRIVATE_VAULT_SHOW_TAGS: '@arsivinyo_private_vault_show_tags_v1',
 } as const;
@@ -82,48 +80,6 @@ export async function getDownloadLocation(): Promise<string | null> {
 export async function setDownloadLocation(path: string): Promise<boolean> {
     return setItem(KEYS.DOWNLOAD_LOCATION, path);
 }
-
-// ============================================
-// Download Count (for ad tracking)
-// ============================================
-
-/**
- * Get the current download count since last ad
- */
-export async function getDownloadCount(): Promise<number> {
-    return getItem<number>(KEYS.DOWNLOAD_COUNT, 0);
-}
-
-/**
- * Increment download count and return new value
- * Returns -1 if failed
- */
-export async function incrementDownloadCount(): Promise<number> {
-    const current = await getDownloadCount();
-    const newCount = current + 1;
-    const success = await setItem(KEYS.DOWNLOAD_COUNT, newCount);
-    return success ? newCount : -1;
-}
-
-/**
- * Reset download count (after showing ad)
- */
-export async function resetDownloadCount(): Promise<boolean> {
-    return setItem(KEYS.DOWNLOAD_COUNT, 0);
-}
-
-/**
- * Check if it's time to show an interstitial ad
- * Returns true every 3 successful downloads
- */
-export async function shouldShowInterstitialAd(): Promise<boolean> {
-    const count = await getDownloadCount();
-    return count > 0 && count % 3 === 0;
-}
-
-// ============================================
-// Utility
-// ============================================
 
 // ============================================
 // Private Vault Sort Preference

@@ -4,6 +4,19 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+## [2.2.0-beta.3]
+
+### Added
+- **GPL-3.0 license.** The project is now formally open source under GPL-3.0-or-later (`LICENSE` + `package.json` license field). Derivatives that are distributed must also be GPL with source available.
+- **Release signing config plugin** (`plugins/withReleaseSigning.js`). Release builds can now be signed with a private keystore (credentials read from Gradle properties), falling back to debug signing when absent. See README "Release signing".
+- **Signing verification helper** (`scripts/verify-signing.ps1`, `npm run verify:signing`). Prints the APK file SHA-256 + signing-cert SHA-256 and confirms an APK was signed with your release key (prefers `apksigner`, falls back to `keytool`).
+
+### Removed
+- **In-app ads.** Vestigial banner/interstitial scaffolding carried over from the old server-side version of the app — the `BannerAd` component, its home-screen render, and the unused download-count/interstitial helpers in `services/storage.ts`. No ad SDK was present; this clears the leftover stubs. Removing them also tightens the privacy story for an off-store, sideloaded app (nothing phones home from the RN/Java layer).
+
+### Changed
+- README expanded with vault internals, versioning, and release-signing sections; documents the loopback-cleartext gotcha.
+
 ## [2.2.0-beta.2]
 
 ### Fixed

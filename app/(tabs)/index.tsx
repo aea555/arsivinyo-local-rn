@@ -26,7 +26,7 @@ import {
   setLocalStickyNotificationEnabled,
 } from '@/src/api';
 import type { DownloadState } from '@/src/api/types';
-import { AppText as Text, BannerAd, DownloadButton } from '@/src/components';
+import { AppText as Text, DownloadButton } from '@/src/components';
 import {
   downloadAndSaveFile,
   getUrlFromClipboard,
@@ -701,9 +701,6 @@ export default function HomeScreen() {
             </Text>
           ) : null}
         </View>
-
-        {/* Banner Ad */}
-        <BannerAd />
 
         <Modal
           visible={showCancelConfirm}

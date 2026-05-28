@@ -1,7 +1,8 @@
 {
   "name": "arsivinyo-local-rn",
   "main": "expo-router/entry",
-  "version": "2.2.0-beta.2",
+  "version": "2.2.0-beta.3",
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
@@ -12,7 +13,8 @@
     "test:python": "python3 -m unittest modules/local-downloader/tests/test_local_downloader.py",
     "build:impersonation-wheels": "bash ./scripts/build-impersonation-wheels.sh",
     "verify:impersonation-wheels": "bash ./scripts/verify-impersonation-wheels.sh",
-    "verify:prebuild": "bash ./scripts/verify-local-downloader-prebuild.sh"
+    "verify:prebuild": "bash ./scripts/verify-local-downloader-prebuild.sh",
+    "verify:signing": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-signing.ps1"
   },
   "dependencies": {
     "@expo-google-fonts/monda": "^0.4.1",

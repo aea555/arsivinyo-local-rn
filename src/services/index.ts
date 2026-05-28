@@ -24,8 +24,8 @@ export {
     type CustomDomainSummary,
 } from './cookies';
 export {
-    clearAllStorage, getDownloadCount, getDownloadLocation, getPrivateVaultShowTags, getPrivateVaultSort, incrementDownloadCount,
-    resetDownloadCount, setDownloadLocation, setPrivateVaultShowTags, setPrivateVaultSort, shouldShowInterstitialAd,
+    clearAllStorage, getDownloadLocation, getPrivateVaultShowTags, getPrivateVaultSort,
+    setDownloadLocation, setPrivateVaultShowTags, setPrivateVaultSort,
     type PrivateVaultSortDirection,
     type PrivateVaultSortMode,
     type PrivateVaultSortPreference,

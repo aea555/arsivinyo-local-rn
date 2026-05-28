@@ -3,7 +3,7 @@ export default ({ config }) => {
     ...config,
     name: "Arsivinyo Local",
     slug: "arsivinyo-local-rn",
-    version: "2.2.0-beta.2",
+    version: "2.2.0-beta.3",
     orientation: "portrait",
     icon: "./assets/images/play_store_512.png",
     scheme: "arsivinyo-local-rn",
@@ -14,7 +14,7 @@ export default ({ config }) => {
       bundleIdentifier: "com.arsivinyo.local",
     },
     android: {
-      versionCode: 20201,
+      versionCode: 20202,
       adaptiveIcon: {
         backgroundColor: "#000000",
         foregroundImage: "./assets/images/ic_launcher_foreground.png",
@@ -81,6 +81,7 @@ export default ({ config }) => {
         },
       ],
       "./modules/local-downloader/app.plugin.js",
+      "./plugins/withReleaseSigning.js",
     ],
     experiments: {
       typedRoutes: true,

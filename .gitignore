@@ -13,9 +13,14 @@ expo-env.d.ts
 .kotlin/
 *.orig.*
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
+
+# Release signing secrets — keep these OUT of the repo (prefer ~/.gradle/gradle.properties)
+keystore.properties
+signing.properties
 *.mobileprovision
 
 # Metro

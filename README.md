@@ -1,23 +1,31 @@
 # Arsivinyo Local RN
 
-Android-first Expo app that downloads media on-device using a local native module (Kotlin + Python + yt-dlp), with background queueing and private vault support.
+Android-first Expo app that downloads media **entirely on-device** — no backend, no remote API — using a local native module (Kotlin + Python + yt-dlp), with background queueing and an encrypted private vault.
+
+The vault is the centerpiece: downloads can be routed into an authenticated, AES-encrypted on-device store, played back without ever writing plaintext to disk, organized with tags and folders, and re-encrypted in place as the cipher format evolves — all locally.
 
 This repo is designed for engineers who need to build, modify, and ship their own version from scratch.
+
+Licensed under **GPL-3.0-or-later** (see [License](#license)).
 
 ## Table of Contents
 
 1. [What This Project Is](#what-this-project-is)
 2. [Feature Overview](#feature-overview)
 3. [Architecture](#architecture)
-4. [Tech Stack and Version Pins](#tech-stack-and-version-pins)
-5. [Prerequisites](#prerequisites)
-6. [Quick Start (Existing Contributors)](#quick-start-existing-contributors)
-7. [Build From Scratch (New Machine)](#build-from-scratch-new-machine)
-8. [Required Binary/Wheel Artifacts](#required-binarywheel-artifacts)
-9. [Verification Workflow](#verification-workflow)
-10. [Common Customization Paths](#common-customization-paths)
-11. [Troubleshooting](#troubleshooting)
-12. [Security, Privacy, and Legal Notes](#security-privacy-and-legal-notes)
+4. [Private Vault Internals](#private-vault-internals)
+5. [Tech Stack and Version Pins](#tech-stack-and-version-pins)
+6. [Versioning](#versioning)
+7. [Prerequisites](#prerequisites)
+8. [Quick Start (Existing Contributors)](#quick-start-existing-contributors)
+9. [Build From Scratch (New Machine)](#build-from-scratch-new-machine)
+10. [Release Signing](#release-signing)
+11. [Required Binary/Wheel Artifacts](#required-binarywheel-artifacts)
+12. [Verification Workflow](#verification-workflow)
+13. [Common Customization Paths](#common-customization-paths)
+14. [Troubleshooting](#troubleshooting)
+15. [Security, Privacy, and Legal Notes](#security-privacy-and-legal-notes)
+16. [License](#license)
 
 ## What This Project Is
 
@@ -35,13 +43,25 @@ Current runtime focus:
 
 ## Feature Overview
 
-- On-device media extraction/download through `yt-dlp` (Python runtime via Chaquopy).
+**Downloader**
+- On-device media extraction/download through `yt-dlp` (Python runtime via Chaquopy) — no server, nothing leaves the device except the requests yt-dlp itself makes.
 - Background download foreground-service flow with sticky notification controls.
-- Queueing for quick background downloads.
-- Private mode downloads into an app-private vault with gated access.
-- In-app private video playback via `expo-video`.
-- Cookie profile management (platform-bound and custom-domain).
-- Diagnostics screen for runtime health (yt-dlp, FFmpeg, impersonation, cookies, vault).
+- Queueing for quick background downloads (share-sheet / clipboard capture).
+- Cookie profile management (platform-bound and custom-domain) + a `curl-cffi` impersonation runtime for stricter extractors.
+- Self-updating `yt-dlp` (on-device override of the bundled wheel, with rollback safety).
+
+**Private vault** (the interesting part)
+- Downloads can be routed straight into an **encrypted on-device vault**, gated behind biometric / device-credential auth per action.
+- **Authenticated chunked encryption (cipher v4):** Google Tink `AesGcmHkdfStreaming` (1 MB segments). Per-segment GCM tags give both confidentiality *and* tamper-detection, and the format is seekable for random-access playback.
+- **Zero-plaintext playback:** v4 items play through an in-process loopback HTTP server that decrypts on the fly as the player requests byte ranges — the decrypted video never touches disk. A per-session random token gates the stream.
+- **Encrypted thumbnails** generated at import (MediaMetadataRetriever, ffmpeg fallback), stored encrypted, served from the same loopback server.
+- **Organization:** user-defined tags (many per video, colored, filterable), flat folders (move in/out), sort (alphabetical / date / size / duration), title search, and multi-select with confirmation-gated batch delete / copy-to-gallery / tag / move.
+- **Opt-in re-encryption migration** (legacy v2/v3 → v4) with pause/resume, disk-space and battery pre-flight.
+- **Rename**, copy-to-gallery, and a diagnostics surface reporting cipher counts, loopback server state, and migration status.
+
+**Cross-cutting**
+- Diagnostics screen for runtime health (app version/channel, yt-dlp, FFmpeg, impersonation, cookies, vault).
+- 10-language i18n scaffold (`i18next`); English and Turkish are fully translated and newer vault strings fall back to English in the other locales. NativeWind styling, typed Expo Router.
 
 ## Architecture
 
@@ -64,12 +84,66 @@ Important integration points:
 - Kotlin native module and background service/controller:
   - `modules/local-downloader/android/src/main/java/expo/modules/localdownloader/LocalDownloaderModule.kt`
 
+The vault is its own subsystem inside the Kotlin module, under `.../localdownloader/vault/`:
+
+```text
+LocalDownloaderModule.kt   orchestration: index.json, tags/folders, auth gating, module functions
+  └─ vault/
+       VaultCipherV4.kt          Tink AesGcmHkdfStreaming wrapper + Keystore-wrapped DEK
+       VaultLoopbackServer.kt    NanoHTTPD server (127.0.0.1) streaming decrypt for playback + thumbs
+       VaultPlaybackSession.kt   per-session token + provider interface
+       ThumbnailGenerator.kt     MMR primary, ffmpeg-via-Chaquopy fallback
+       VaultMigrator.kt          v3→v4 re-encryption walker (pause/resume, pre-flight)
+```
+
+Crypto key hierarchy: an Android Keystore-backed AES-GCM **master key** wraps a vault-wide **DEK** (persisted at `private_vault/keys/dek.v4.bin`); Tink HKDF-derives per-segment keys from the DEK. The master key never leaves the Keystore, so a copied vault file is useless on another device.
+
+## Private Vault Internals
+
+This is the part of the app that's genuinely non-trivial, so it gets its own section.
+
+### Cipher versions
+
+The on-disk format is versioned (`cipherVersion` per entry in `private_vault/index.json`). Older versions stay readable so upgrades never strand a user's data:
+
+| Version | Content cipher | Integrity | Status |
+|---|---|---|---|
+| v1 | AES-GCM (one-shot) | GCM tag | Legacy, blocked for playback (delete + re-import) |
+| v2 | AES-GCM | GCM tag | Legacy, readable |
+| v3 | AES-CTR + HMAC | HMAC-SHA256 (tail) | Legacy, readable — **no per-chunk integrity** |
+| **v4** | **Tink AES-GCM-HKDF streaming, 1 MB segments** | **per-segment GCM tags** | **Current.** Integrity-authenticated + seekable |
+
+New imports use v4. The opt-in "Re-encrypt vault" action (`VaultMigrator`) upgrades older items, streaming v3 → v4 with the v3 HMAC verified *before* the v4 file is atomically renamed into place (so a failed/tampered source never produces a trusted v4 file).
+
+### Why a loopback HTTP server for playback
+
+`expo-video` (ExoPlayer underneath) needs a *URL* to stream from. We don't want to decrypt a whole vault file to a plaintext temp file just to play it (that would defeat the encryption while the file plays). So `VaultLoopbackServer` runs a NanoHTTPD instance bound to `127.0.0.1` on an ephemeral port and hands the player a URL like `http://127.0.0.1:<port>/v/<token>/<id>`.
+
+- The server answers HTTP `Range` requests by seeking into the v4 file (Tink's `SeekableByteChannel`) and decrypting just the requested bytes — plaintext exists only as in-flight bytes, never on disk.
+- A **32-byte per-session token** in the URL path is the access control: another app on the device can connect to `127.0.0.1` but doesn't know the token, so it gets a 404. (TLS would add nothing here — loopback has no network "middle" to protect against.)
+- The server lazy-starts on first playback, stops on app background or 30 s idle, and invalidates sessions with a short 410-Gone grace so in-flight ExoPlayer requests fail cleanly instead of hanging.
+- Because this is cleartext HTTP, release builds need `usesCleartextTraffic: true` (set via `expo-build-properties`) — Android 9+ blocks cleartext by default in non-debuggable builds, even to localhost.
+
+### AAD binding
+
+Every encrypted blob is bound to its identity via Tink AAD: a video uses the entry id as AAD, a thumbnail uses `thumb:<id>`. Swapping one encrypted file for another on disk fails the GCM check at decrypt time.
+
+### Auth model
+
+Per-action biometric / device-credential prompts (purposes: `view`, `delete`, `export`, `unprivate`, `rename`, `migrate`, `tag`, `folder`). The vault list view itself unlocks once per screen session (so navigating to the player and back doesn't re-prompt), while destructive/mutating actions each re-authenticate.
+
+### Tags + folders
+
+Stored in `index.json` (`tagDefinitions[]`, `folders[]`; per-entry `tags: string[]` and `folderId`). Tags are inclusive labels (many per video, OR-filter); folders are exclusive locations (flat, one per video). The vault list composes a single memoized filter chain: `folder scope → active tags → search query → sort`.
+
 ## Tech Stack and Version Pins
 
 - Expo SDK: `~54.0.33`
 - React Native: `0.81.5`
 - Expo Router: `~6.0.23`
 - Video playback: `expo-video ~3.0.16`
+- Vault crypto: Google Tink `tink-android 1.13.0` (AES-GCM-HKDF streaming AEAD)
+- Vault playback server: `org.nanohttpd:nanohttpd 2.3.1`
 - Chaquopy Gradle plugin: `15.0.1`
 - Python runtime target: `3.11`
 - `yt-dlp`: latest stable from PyPI at Android build time
@@ -80,6 +154,11 @@ Important integration points:
 Version pin sources that must stay aligned:
 - `modules/local-downloader/app.plugin.js`
 - `modules/local-downloader/android/chaquopy-wheels/VERSIONS.json`
+- `android/app/proguard-rules.pro` + `expo-build-properties.extraProguardRules` (Tink/NanoHTTPD keep rules, if you enable R8)
+
+## Versioning
+
+`app.config.js` is the single source of truth for both `version` (SemVer, `-beta.N` for prereleases) and `android.versionCode` (monotonic integer). `expo prebuild` propagates both into `android/app/build.gradle` — never hand-edit the generated values. Every version bump updates `CHANGELOG.md` (Keep-a-Changelog). The diagnostics screen surfaces `version` / `versionCode` / `channel`. See `CLAUDE.md` for the full convention.
 
 ## Prerequisites
 
@@ -158,6 +237,72 @@ Minimum viable vs recommended:
 - Optional expansion: add x86_64 wheel coverage, then set `reactNativeArchitectures=arm64-v8a,x86_64` for emulator-focused builds.
   - For prebuild-driven setup, use: `LOCAL_DOWNLOADER_ABIS=arm64-v8a,x86_64 npx expo prebuild --clean --platform android --no-install`
 
+## Release Signing
+
+By default the generated project signs release builds with the **debug keystore** — the public, shared key (`androiddebugkey` / password `android`) baked into every Android SDK. That's fine for running on your own device, but it gives zero authenticity to APKs you hand to other people: anyone could forge a "signed update". If you distribute the app (forums, direct APK, GitHub Releases), sign releases with your own private keystore.
+
+The signing wiring is handled by `plugins/withReleaseSigning.js` (applied on prebuild, so it survives `prebuild --clean`). It reads credentials from Gradle properties and **falls back to debug signing if they're absent** — so contributors without your keystore can still build.
+
+**1. Generate your keystore** (once; keep it forever — losing it means you can never ship an in-place update again):
+
+```bash
+keytool -genkeypair -v \
+  -keystore arsivinyo-release.keystore \
+  -alias arsivinyo \
+  -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Store the `.keystore` file **outside the repo** (the whole `android/` folder is regenerated and `*.keystore` is gitignored regardless). A stable spot like `~/keystores/` is ideal.
+
+**2. Point Gradle at it via the GLOBAL `~/.gradle/gradle.properties`** (never in the repo):
+
+```properties
+AV_UPLOAD_STORE_FILE=/absolute/path/to/arsivinyo-release.keystore
+AV_UPLOAD_STORE_PASSWORD=your-store-password
+AV_UPLOAD_KEY_ALIAS=arsivinyo
+AV_UPLOAD_KEY_PASSWORD=your-key-password
+```
+
+**3. Build a signed release:**
+
+```bash
+npx expo prebuild --platform android
+cd android && ./gradlew :app:assembleRelease   # gradlew.bat on Windows
+# signed APK: android/app/build/outputs/apk/release/app-release.apk
+```
+
+**4. Publish the certificate fingerprint** so people can verify updates come from you.
+
+The repo ships a helper that does all of this in one shot — prints the APK file's SHA-256, the signing certificate's SHA-256, and (reading your keystore from `~/.gradle/gradle.properties`) confirms the APK was actually signed with your release key:
+
+```powershell
+npm run verify:signing
+# or, for a non-default APK path:
+powershell -ExecutionPolicy Bypass -File scripts/verify-signing.ps1 -ApkPath path\to\app.apk
+```
+
+It prefers `apksigner` (handles APK Signature Scheme v2/v3) and falls back to `keytool`. The raw commands, if you want them manually:
+
+```bash
+keytool -list -v -keystore arsivinyo-release.keystore -alias arsivinyo   # keystore cert SHA-256
+apksigner verify --print-certs app-release.apk                            # APK signing cert SHA-256
+sha256sum app-release.apk                                                 # APK file hash
+```
+
+Put the **signing-cert SHA-256** in your README / release notes / showcase post (it's your app's stable identity across versions), and publish the **APK file SHA-256** alongside each download (per-file integrity).
+
+A consistent signing fingerprint across versions is what lets users trust that `v2.3` came from the same author as `v2.2`; the per-file SHA-256 lets them confirm the download wasn't tampered with in transit. Prefer attaching APKs to **GitHub Releases** tied to the `v…` tag so the binary is traceable to a commit.
+
+### Official release fingerprint
+
+Official builds of this app are signed with the following certificate. Verify any APK you download against it (`npm run verify:signing -- -ApkPath <file>` or `apksigner verify --print-certs <file>`):
+
+```text
+Signing cert SHA-256: 15a13fcbc5830cd47b381675e325a6f124f104a3c818ce0d9e3fb551835c1089
+```
+
+If an APK's signing-cert SHA-256 doesn't match this value, it was **not** built by this project's maintainer — do not trust it as an update.
+
 ## Required Binary/Wheel Artifacts
 
 The downloader stack depends on external binary artifacts not fetched automatically during app build.
@@ -220,6 +365,12 @@ Downloader behavior:
 - Kotlin orchestration, background behavior, storage, auth-gated private flows:
   - `modules/local-downloader/android/src/main/java/expo/modules/localdownloader/LocalDownloaderModule.kt`
 
+Vault crypto / playback / organization:
+- `modules/local-downloader/android/src/main/java/expo/modules/localdownloader/vault/*` (cipher, loopback server, thumbnails, migrator)
+- `app/private-videos.tsx` (list, tags/folders UI, multi-select, sort, search)
+- `src/components/Chip.tsx` (reusable tag pill)
+- JVM tests: `modules/local-downloader/android/src/test/java/.../vault/VaultCipherV4Test.kt`
+
 Type/API surface:
 - TS bridge types:
   - `modules/local-downloader/src/LocalDownloader.types.ts`
@@ -255,10 +406,32 @@ When you change version pins, update all together:
 - Confirm notification permission granted.
 - Check foreground service and receiver entries in generated manifest.
 
+6. Vault videos / thumbnails work in debug but fail in the release APK
+- Almost always the cleartext policy. The vault plays back over `http://127.0.0.1` and Android 9+ blocks cleartext in non-debuggable builds.
+- Confirm `android.usesCleartextTraffic: true` is set in `app.config.js` under `expo-build-properties`, re-run `npx expo prebuild --platform android`, and verify `android:usesCleartextTraffic="true"` is present on `<application>` in the generated `android/app/src/main/AndroidManifest.xml`.
+
+7. Vault crypto crashes only in a minified release build
+- If you enabled R8 (`android.enableMinifyInReleaseBuilds=true`), Tink fails with reflection errors unless its keep rules survive. They're injected via `expo-build-properties.extraProguardRules`; verify they landed in `android/app/proguard-rules.pro` after prebuild.
+
 ## Security, Privacy, and Legal Notes
 
-- This project handles sensitive user inputs (URLs, cookies, private vault content). Avoid logging sensitive values in production builds.
-- Private vault content is app-private and auth-gated in-app; still treat rooted/compromised devices as out-of-scope for full confidentiality guarantees.
+- This project handles sensitive user inputs (URLs, cookies, private vault content). Avoid logging sensitive values in production builds. In particular, never log the loopback playback URL — its per-session token is the access control.
+- Vault content is encrypted at rest (cipher v4: authenticated chunked AEAD) with a key wrapped by an Android Keystore master key, and auth-gated per action. Caveats:
+  - The Keystore master key binds the vault to the device — a copied vault file won't decrypt elsewhere. This also means a factory reset or lock-screen credential change can invalidate the key (`KeyPermanentlyInvalidatedException`); the v4 paths handle this gracefully, legacy v2/v3 paths do not.
+  - `usesCleartextTraffic` is enabled so the loopback playback server works in release. It's loopback-only traffic; the downloader's own network goes through Python/curl-cffi, which isn't governed by Android's cleartext policy.
+  - Rooted / compromised devices are out of scope for full confidentiality guarantees.
 - Keep any secrets out of source control (`.env`, keystores, private creds are gitignored).
 - Ensure legal compliance for content downloading/distribution in your jurisdiction and target markets.
 - If you ship modified FFmpeg binaries, review codec/library licensing obligations.
+
+## License
+
+This project is licensed under **GPL-3.0-or-later** — see the [`LICENSE`](LICENSE) file for the full text.
+
+The gist (not legal advice):
+- You may use, study, modify, and redistribute this software.
+- If you **distribute** the app or a derivative (e.g. handing out APKs, publishing a fork), you must release your **complete corresponding source** under GPL-3.0-or-later as well, and preserve the license/copyright notices.
+- There is **no warranty**.
+- Running it privately on your own device imposes no obligation to share anything.
+
+Bundled and depended-on third-party components keep their own licenses — notably `yt-dlp` (Unlicense), Google Tink (Apache-2.0), NanoHTTPD (BSD-3-Clause), the Expo/React Native stack (MIT), and any **FFmpeg** binaries you supply (LGPL/GPL depending on how they were built — review your build's flags before redistributing). Their terms govern those components; GPL-3.0-or-later governs this project's own code.
