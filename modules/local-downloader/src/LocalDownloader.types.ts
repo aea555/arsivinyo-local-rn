@@ -208,7 +208,18 @@ export interface LocalPrivateModeState {
   enabled: boolean;
 }
 
-export type LocalPrivateAuthPurpose = 'view' | 'delete' | 'unprivate' | 'import' | 'export';
+export type LocalPrivateAuthPurpose =
+  | 'view'
+  | 'delete'
+  | 'unprivate'
+  | 'import'
+  | 'export'
+  | 'rename'
+  | 'migrate'
+  | 'tag'
+  | 'folder'
+  | 'bundleExport'
+  | 'bundleImport';
 
 export interface LocalPrivateAuthResult {
   granted: boolean;
@@ -224,6 +235,105 @@ export interface LocalPrivateVideoItem {
   durationSec?: number | null;
   sizeBytesEncrypted: number;
   cipherVersion: string;
+  containerExt?: string | null;
+  hasThumbnail?: boolean;
+  thumbnailUri?: string | null;
+  thumbWidth?: number | null;
+  thumbHeight?: number | null;
+  migrationFailed?: boolean;
+  migrationFailedCode?: string | null;
+  tags?: string[];
+  folderId?: string | null;
+}
+
+export interface PrivateVaultTag {
+  id: string;
+  name: string;
+  color: string;
+  createdAt: number;
+}
+
+export interface PrivateVaultFolder {
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
+export interface PrivateVaultTagDeleteResult {
+  success: boolean;
+  removedFromCount?: number;
+  code?: string;
+}
+
+export interface PrivateVaultFolderDeleteResult {
+  success: boolean;
+  movedToRootCount?: number;
+  code?: string;
+}
+
+export interface LocalPrivateRenameResult {
+  success: boolean;
+  code?: string;
+  entry?: LocalPrivateVideoItem;
+}
+
+export interface LocalPrivateThumbnailUriResult {
+  success: boolean;
+  uri?: string | null;
+  hasThumbnail?: boolean;
+  code?: string;
+}
+
+export type LocalPrivateMigrationOutcome = 'STARTED' | 'COMPLETED' | 'CANCELLED' | 'BLOCKED_KEY_INVALIDATED';
+
+export interface LocalPrivateMigrationStartResult {
+  success: boolean;
+  outcome?: LocalPrivateMigrationOutcome;
+  total?: number;
+  code?: string;
+  freeBytes?: number;
+  requiredBytes?: number;
+  batteryLevel?: number;
+  isCharging?: boolean;
+}
+
+export interface LocalPrivateMigrationCancelResult {
+  success: boolean;
+  wasRunning?: boolean;
+}
+
+export interface LocalPrivateMigrationProgress {
+  total: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  currentEntryId?: string | null;
+  currentTitle?: string | null;
+  lastErrorCode?: string | null;
+  lastErrorDetail?: string | null;
+}
+
+export interface LocalPrivateMigrationStatus extends LocalPrivateMigrationProgress {
+  running: boolean;
+}
+
+export interface LocalVaultDiagnostics {
+  loopbackRunning: boolean;
+  loopbackPort?: number | null;
+  activeVideoSessions: number;
+  evictedVideoSessions: number;
+  cipherCounts: {
+    v4: number;
+    v3: number;
+    other: number;
+  };
+  migration: {
+    running: boolean;
+    lastProcessed?: number | null;
+    lastTotal?: number | null;
+    lastErrorCode?: string | null;
+  };
 }
 
 export interface LocalPrivateCopyToPublicResult {
@@ -308,7 +418,7 @@ export interface LocalDiagnostics {
   queuedDownloadCount?: number;
   privateModeEnabled?: boolean;
   privateVaultCount?: number;
-  privateVaultCipherActive?: 'v1' | 'v2';
+  privateVaultCipherActive?: 'v1' | 'v2' | 'v3' | 'v4';
   privateVaultLegacyCount?: number;
   privateLastEncryptMs?: number | null;
   privateLastDecryptMs?: number | null;

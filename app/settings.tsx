@@ -13,13 +13,21 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { getErrorMessage } from '@/src/api/errors';
 import {
+  authenticateLocalPrivateAccess,
+  cancelLocalPrivateVaultMigration,
   getLocalYtDlpUpdateStatus,
+  listenLocalPrivateVaultMigration,
   listenYtDlpUpdateProgress,
+  startLocalPrivateVaultMigration,
   updateLocalYtDlp,
 } from '@/src/api';
 import { AppText as Text, AppTextInput as TextInput, SettingsItem, ThemePicker } from '@/src/components';
 import { BUILD_CONFIG } from '@/src/config';
-import type { LocalYtDlpUpdateProgressEvent, LocalYtDlpUpdateStatus } from '@/src/native/localDownloader';
+import type {
+  LocalPrivateMigrationProgress,
+  LocalYtDlpUpdateProgressEvent,
+  LocalYtDlpUpdateStatus,
+} from '@/src/native/localDownloader';
 import {
   type CookiePlatform,
   type CookieProfile,
@@ -77,6 +85,10 @@ export default function SettingsScreen() {
   const [ytDlpUpdateStatus, setYtDlpUpdateStatus] = useState<LocalYtDlpUpdateStatus | null>(null);
   const [ytDlpUpdateProgress, setYtDlpUpdateProgress] = useState<LocalYtDlpUpdateProgressEvent | null>(null);
   const [ytDlpUpdating, setYtDlpUpdating] = useState(false);
+  const [vaultMigrationVisible, setVaultMigrationVisible] = useState(false);
+  const [vaultMigrationProgress, setVaultMigrationProgress] = useState<LocalPrivateMigrationProgress | null>(null);
+  const [vaultMigrationStarting, setVaultMigrationStarting] = useState(false);
+  const [vaultMigrationFinished, setVaultMigrationFinished] = useState(false);
 
   const showError = useCallback((message: string) => {
     setFeedback({ title: t('common.error'), message, tone: 'error' });
@@ -420,6 +432,69 @@ export default function SettingsScreen() {
 
   const ytDlpUpdateDisabled = ytDlpUpdating || Boolean(ytDlpUpdateStatus?.activeTaskId) || ytDlpUpdateStatus?.storageReady === false;
 
+  useEffect(() => {
+    if (!vaultMigrationVisible) return;
+    const subscription = listenLocalPrivateVaultMigration((event) => {
+      setVaultMigrationProgress(event);
+      if (event.currentEntryId == null && event.processed > 0 && event.processed === event.total) {
+        setVaultMigrationFinished(true);
+      }
+    });
+    return () => subscription.remove();
+  }, [vaultMigrationVisible]);
+
+  const handleStartVaultMigration = useCallback(async () => {
+    if (vaultMigrationStarting || vaultMigrationVisible) return;
+    setVaultMigrationStarting(true);
+    try {
+      const auth = await authenticateLocalPrivateAccess('migrate');
+      if (!auth.granted) {
+        showError(t(`errors.${auth.reason ?? 'PRIVATE_AUTH_FAILED'}`, { defaultValue: t('errors.PRIVATE_AUTH_FAILED') }));
+        return;
+      }
+      const start = await startLocalPrivateVaultMigration();
+      if (!start.success) {
+        const codeKey = `errors.${start.code ?? 'PRIVATE_MIGRATION_BLOCKED'}`;
+        const localized = t(codeKey, { defaultValue: t('errors.UNKNOWN_ERROR') });
+        showError(localized);
+        return;
+      }
+      if (start.outcome === 'COMPLETED') {
+        showSuccess(t('settings.vaultMigrationAlreadyCurrent'));
+        return;
+      }
+      setVaultMigrationProgress({
+        total: start.total ?? 0,
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        skipped: 0,
+      });
+      setVaultMigrationFinished(false);
+      setVaultMigrationVisible(true);
+    } catch (e) {
+      const code = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
+      showError(getErrorMessage(code));
+    } finally {
+      setVaultMigrationStarting(false);
+    }
+  }, [showError, showSuccess, t, vaultMigrationStarting, vaultMigrationVisible]);
+
+  const handleCancelVaultMigration = useCallback(async () => {
+    try {
+      await cancelLocalPrivateVaultMigration();
+    } catch (e) {
+      const code = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
+      showError(getErrorMessage(code));
+    }
+  }, [showError]);
+
+  const handleCloseVaultMigration = useCallback(() => {
+    setVaultMigrationVisible(false);
+    setVaultMigrationProgress(null);
+    setVaultMigrationFinished(false);
+  }, []);
+
   const handleYtDlpUpdate = useCallback(async () => {
     if (ytDlpUpdateDisabled) {
       if (ytDlpUpdateStatus?.activeTaskId) {
@@ -508,6 +583,24 @@ export default function SettingsScreen() {
                 onPress={() => handleCustomDomainPress(entry.domain)}
               />
             ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>
+            {t('settings.privateVault')}
+          </Text>
+          <View style={[styles.sectionContent, { backgroundColor: colors.surface }]}>
+            <SettingsItem
+              icon="shield-checkmark-outline"
+              title={t('settings.vaultMigrate')}
+              subtitle={t('settings.vaultMigrateHint')}
+              onPress={handleStartVaultMigration}
+              rightElement={
+                vaultMigrationStarting ? <ActivityIndicator size="small" color={colors.accent} /> : undefined
+              }
+              showArrow={!vaultMigrationStarting}
+            />
           </View>
         </View>
 
@@ -920,6 +1013,70 @@ export default function SettingsScreen() {
                 <Text style={[styles.modalCloseText, { color: colors.background }]}>{t('settings.importCustomCookieAction')}</Text>
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={vaultMigrationVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={vaultMigrationFinished ? handleCloseVaultMigration : undefined}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {t('settings.vaultMigrate')}
+            </Text>
+            <Text style={[styles.modalDescription, { color: colors.textMuted }]}>
+              {vaultMigrationProgress
+                ? t('settings.vaultMigrationProgress', {
+                    processed: vaultMigrationProgress.processed,
+                    total: vaultMigrationProgress.total,
+                  })
+                : t('settings.vaultMigrationStarting')}
+            </Text>
+            {vaultMigrationProgress?.currentTitle ? (
+              <Text style={[styles.modalDescription, { color: colors.textMuted }]} numberOfLines={1}>
+                {vaultMigrationProgress.currentTitle}
+              </Text>
+            ) : null}
+            {vaultMigrationProgress?.lastErrorCode ? (
+              <>
+                <Text style={[styles.modalDescription, { color: colors.error }]} numberOfLines={2}>
+                  {vaultMigrationProgress.lastErrorCode}
+                </Text>
+                {vaultMigrationProgress.lastErrorDetail ? (
+                  <Text style={[styles.modalDescription, { color: colors.error, fontSize: 11 }]} numberOfLines={4} selectable>
+                    {vaultMigrationProgress.lastErrorDetail}
+                  </Text>
+                ) : null}
+                {vaultMigrationProgress.failed > 0 ? (
+                  <Text style={[styles.modalDescription, { color: colors.error }]}>
+                    {`${vaultMigrationProgress.failed} failed, ${vaultMigrationProgress.succeeded} succeeded`}
+                  </Text>
+                ) : null}
+              </>
+            ) : null}
+            {!vaultMigrationFinished ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                <ActivityIndicator size="small" color={colors.accent} />
+                <Text style={[styles.modalDescription, { color: colors.textMuted, marginTop: 0 }]}>
+                  {t('settings.vaultMigrationKeepOpen')}
+                </Text>
+              </View>
+            ) : null}
+            <Pressable
+              onPress={vaultMigrationFinished ? handleCloseVaultMigration : () => void handleCancelVaultMigration()}
+              style={({ pressed }) => [
+                styles.modalCloseButton,
+                { backgroundColor: pressed ? colors.surfaceHover : colors.background },
+              ]}
+            >
+              <Text style={[styles.modalCloseText, { color: colors.text }]}>
+                {vaultMigrationFinished ? t('common.close') : t('common.cancel')}
+              </Text>
+            </Pressable>
           </View>
         </View>
       </Modal>

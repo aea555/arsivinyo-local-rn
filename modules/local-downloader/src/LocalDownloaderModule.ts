@@ -26,8 +26,19 @@ import type {
   LocalSaveToMediaStoreResult,
   LocalPlatform,
   LocalPrivateImportResult,
+  LocalPrivateMigrationCancelResult,
+  LocalPrivateMigrationProgress,
+  LocalPrivateMigrationStartResult,
+  LocalPrivateMigrationStatus,
+  LocalPrivateRenameResult,
+  LocalPrivateThumbnailUriResult,
+  PrivateVaultFolder,
+  PrivateVaultFolderDeleteResult,
+  PrivateVaultTag,
+  PrivateVaultTagDeleteResult,
   LocalQuickDownloadResult,
   LocalTaskStatusResult,
+  LocalVaultDiagnostics,
   LocalYtDlpUpdateCheckResult,
   LocalYtDlpUpdateProgressEvent,
   LocalYtDlpUpdateResult,
@@ -52,9 +63,26 @@ type LocalDownloaderNativeModule = {
   copyPrivateVideoToPublicGallery(input: { id: string }): Promise<LocalPrivateCopyToPublicResult>;
   pickAndImportVideoToPrivateVault(): Promise<LocalPrivateImportResult>;
   makeVideoPublic(input: { id: string }): Promise<{ success: boolean; uri?: string; code?: string; message?: string }>;
-  preparePrivatePlayback(input: { id: string; traceId?: string }): Promise<{ success: boolean; tempUri?: string; mimeType?: string }>;
+  preparePrivatePlayback(input: { id: string; traceId?: string }): Promise<{ success: boolean; tempUri?: string; mimeType?: string; streaming?: boolean }>;
   setSecureScreen(input: { enabled: boolean }): Promise<{ success: boolean }>;
   clearPrivatePlaybackCache(): Promise<void>;
+  renamePrivateVideo(input: { id: string; title: string }): Promise<LocalPrivateRenameResult>;
+  getPrivateThumbnailUri(input: { id: string }): Promise<LocalPrivateThumbnailUriResult>;
+  listVaultTags(): Promise<PrivateVaultTag[]>;
+  createVaultTag(input: { name: string; color?: string }): Promise<PrivateVaultTag>;
+  renameVaultTag(input: { id: string; name: string }): Promise<PrivateVaultTag>;
+  setVaultTagColor(input: { id: string; color: string }): Promise<PrivateVaultTag>;
+  deleteVaultTag(input: { id: string }): Promise<PrivateVaultTagDeleteResult>;
+  setVaultEntryTags(input: { ids: string[]; tagIds: string[] }): Promise<{ success: boolean; updatedCount?: number }>;
+  listVaultFolders(): Promise<PrivateVaultFolder[]>;
+  createVaultFolder(input: { name: string }): Promise<PrivateVaultFolder>;
+  renameVaultFolder(input: { id: string; name: string }): Promise<PrivateVaultFolder>;
+  deleteVaultFolder(input: { id: string }): Promise<PrivateVaultFolderDeleteResult>;
+  setVaultEntryFolder(input: { ids: string[]; folderId: string | null }): Promise<{ success: boolean; updatedCount?: number }>;
+  startPrivateVaultMigration(): Promise<LocalPrivateMigrationStartResult>;
+  cancelPrivateVaultMigration(): Promise<LocalPrivateMigrationCancelResult>;
+  getPrivateVaultMigrationStatus(): Promise<LocalPrivateMigrationStatus>;
+  getVaultDiagnostics(): Promise<LocalVaultDiagnostics>;
   importCookie(input: { platform: LocalPlatform; uri: string; profileName: string }): Promise<{ profileName: string; path: string }>;
   listCookieProfiles(platform: LocalPlatform): Promise<LocalCookieProfile[]>;
   setCookieDefault(input: { platform: LocalPlatform; profileName: string }): Promise<{ success: boolean }>;
@@ -102,6 +130,23 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       preparePrivatePlayback: async () => unsupported(),
       setSecureScreen: async () => unsupported(),
       clearPrivatePlaybackCache: async () => unsupported(),
+      renamePrivateVideo: async () => unsupported(),
+      getPrivateThumbnailUri: async () => unsupported(),
+      listVaultTags: async () => unsupported(),
+      createVaultTag: async () => unsupported(),
+      renameVaultTag: async () => unsupported(),
+      setVaultTagColor: async () => unsupported(),
+      deleteVaultTag: async () => unsupported(),
+      setVaultEntryTags: async () => unsupported(),
+      listVaultFolders: async () => unsupported(),
+      createVaultFolder: async () => unsupported(),
+      renameVaultFolder: async () => unsupported(),
+      deleteVaultFolder: async () => unsupported(),
+      setVaultEntryFolder: async () => unsupported(),
+      startPrivateVaultMigration: async () => unsupported(),
+      cancelPrivateVaultMigration: async () => unsupported(),
+      getPrivateVaultMigrationStatus: async () => unsupported(),
+      getVaultDiagnostics: async () => unsupported(),
       importCookie: async () => unsupported(),
       listCookieProfiles: async () => unsupported(),
       setCookieDefault: async () => unsupported(),
@@ -142,6 +187,15 @@ export function addYtDlpUpdateProgressListener(listener: (event: LocalYtDlpUpdat
     return { remove: () => undefined };
   }
   return emitter.addListener('ytDlpUpdateProgress', listener);
+}
+
+export function addPrivateVaultMigrationProgressListener(
+  listener: (event: LocalPrivateMigrationProgress) => void
+): EventSubscription {
+  if (!emitter) {
+    return { remove: () => undefined };
+  }
+  return emitter.addListener('privateVaultMigrationProgress', listener);
 }
 
 export default NativeLocalDownloader;

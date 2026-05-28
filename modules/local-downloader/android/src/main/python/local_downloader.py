@@ -2986,3 +2986,56 @@ def run_download(
             _set_runtime_diag("toolOutputLast", tool_output)
         _debug_log(debug_logging, f"download exception code={code} message={message}")
         return _result(False, code, message)
+
+
+def generate_video_thumbnail(
+    input_path: str,
+    ffmpeg_path: str,
+    offset_sec: float,
+    width: int,
+    height: int,
+    quality: int = 5,
+    timeout_sec: float = 30.0,
+) -> bytes:
+    """Decode a single frame and return JPEG bytes.
+
+    Used as the fallback path when Android's MediaMetadataRetriever can't decode the
+    container (commonly: VP9/WebM on older OEMs, AV1 on pre-Q devices, some HEVC-in-MKV).
+    Output is piped on stdout — no plaintext frame is ever written to disk.
+
+    ffmpeg `-q:v` is inverted: lower number = higher quality. Quality 5 maps roughly to
+    JPEG q=80. Width/height set a `scale` filter that preserves aspect ratio if either
+    dimension is -1.
+    """
+    if not input_path or not os.path.exists(input_path):
+        return b""
+    if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+        return b""
+
+    safe_offset = max(0.0, float(offset_sec))
+    scale_filter = f"scale={int(width)}:{int(height)}:force_original_aspect_ratio=decrease"
+    cmd = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel", "error",
+        "-ss", f"{safe_offset:.3f}",
+        "-i", input_path,
+        "-frames:v", "1",
+        "-vf", scale_filter,
+        "-q:v", str(int(quality)),
+        "-f", "image2pipe",
+        "-vcodec", "mjpeg",
+        "-",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            timeout=max(1.0, float(timeout_sec)),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return b""
+    if proc.returncode != 0:
+        return b""
+    return proc.stdout or b""

@@ -13,6 +13,7 @@ import android.os.Environment
 import android.os.Looper
 import android.os.StatFs
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
@@ -27,6 +28,14 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.localdownloader.vault.ThumbnailGenerator
+import expo.modules.localdownloader.vault.VaultCipherV4
+import expo.modules.localdownloader.vault.VaultLoopbackProvider
+import expo.modules.localdownloader.vault.VaultLoopbackServer
+import expo.modules.localdownloader.vault.VaultMigrator
+import expo.modules.localdownloader.vault.VaultThumbnailResource
+import expo.modules.localdownloader.vault.VaultVideoResource
+import expo.modules.localdownloader.vault.VaultVideoSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -183,7 +192,29 @@ data class PrivateVideoEntry(
   val durationSec: Double? = null,
   val sizeBytesEncrypted: Long,
   val cipherVersion: String,
-  val encFileName: String
+  val encFileName: String,
+  val containerExt: String? = null,
+  val thumbFileName: String? = null,
+  val thumbWidth: Int? = null,
+  val thumbHeight: Int? = null,
+  val migrationFailed: Boolean = false,
+  val migrationFailedCode: String? = null,
+  val migrationFailedDetail: String? = null,
+  val tags: List<String> = emptyList(),
+  val folderId: String? = null,
+)
+
+data class TagDefinition(
+  val id: String,
+  val name: String,
+  val color: String,
+  val createdAt: Long,
+)
+
+data class FolderDefinition(
+  val id: String,
+  val name: String,
+  val createdAt: Long,
 )
 
 data class YtDlpReleaseAsset(
@@ -205,6 +236,11 @@ class LocalDownloaderModule : Module() {
   private val queueLock = Any()
   private val privateVaultLock = Any()
   private val privateVaultIoLock = Any()
+  private val vaultLoopbackLock = Any()
+  @Volatile private var vaultLoopbackServer: VaultLoopbackServer? = null
+  @Volatile private var cachedVaultDekV4: ByteArray? = null
+  @Volatile private var activeMigrationCancel: VaultMigrator.CancelToken? = null
+  @Volatile private var lastMigrationProgress: VaultMigrator.Progress? = null
   private val ytDlpUpdateLock = Any()
   private val queuedQuickDownloads = ArrayDeque<QueuedQuickDownload>()
   private val recentQuickUrls = LinkedHashMap<String, Long>()
@@ -261,7 +297,7 @@ class LocalDownloaderModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("LocalDownloader")
-    Events("downloadProgress", "backgroundStateChanged", "ytDlpUpdateProgress")
+    Events("downloadProgress", "backgroundStateChanged", "ytDlpUpdateProgress", "privateVaultMigrationProgress")
 
     OnCreate {
       activeModule = this@LocalDownloaderModule
@@ -304,6 +340,8 @@ class LocalDownloaderModule : Module() {
       if (activeModule === this@LocalDownloaderModule) {
         activeModule = null
       }
+      runCatching { activeMigrationCancel?.cancel() }
+      runCatching { stopVaultLoopbackServer() }
       syncForegroundNotification("idle", "Stopping background notification")
       appContext.reactContext?.let { DownloadNotificationController.stop(it) }
       emitBackgroundStateChanged()
@@ -492,6 +530,143 @@ class LocalDownloaderModule : Module() {
 
     AsyncFunction("clearPrivatePlaybackCache") {
       cleanupPrivatePlaybackCacheInternal()
+    }
+
+    AsyncFunction("renamePrivateVideo") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      val title = (input["title"] as? String).orEmpty()
+      renamePrivateVideoInternal(id, title)
+    }
+
+    AsyncFunction("listVaultTags") {
+      listTagsInternal()
+    }
+
+    AsyncFunction("createVaultTag") { input: Map<String, Any?> ->
+      val name = (input["name"] as? String).orEmpty()
+      val color = (input["color"] as? String)?.trim()
+      createTagInternal(name, color)
+    }
+
+    AsyncFunction("renameVaultTag") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      val name = (input["name"] as? String).orEmpty()
+      renameTagInternal(id, name)
+    }
+
+    AsyncFunction("setVaultTagColor") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      val color = (input["color"] as? String).orEmpty()
+      setTagColorInternal(id, color)
+    }
+
+    AsyncFunction("deleteVaultTag") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      deleteTagInternal(id)
+    }
+
+    AsyncFunction("setVaultEntryTags") { input: Map<String, Any?> ->
+      @Suppress("UNCHECKED_CAST")
+      val entryIds = (input["ids"] as? List<String>) ?: emptyList()
+      @Suppress("UNCHECKED_CAST")
+      val tagIds = (input["tagIds"] as? List<String>) ?: emptyList()
+      setEntryTagsInternal(entryIds, tagIds)
+    }
+
+    AsyncFunction("listVaultFolders") {
+      listFoldersInternal()
+    }
+
+    AsyncFunction("createVaultFolder") { input: Map<String, Any?> ->
+      val name = (input["name"] as? String).orEmpty()
+      createFolderInternal(name)
+    }
+
+    AsyncFunction("renameVaultFolder") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      val name = (input["name"] as? String).orEmpty()
+      renameFolderInternal(id, name)
+    }
+
+    AsyncFunction("deleteVaultFolder") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      deleteFolderInternal(id)
+    }
+
+    AsyncFunction("setVaultEntryFolder") { input: Map<String, Any?> ->
+      @Suppress("UNCHECKED_CAST")
+      val entryIds = (input["ids"] as? List<String>) ?: emptyList()
+      val folderId = (input["folderId"] as? String)?.trim()?.ifBlank { null }
+      setEntryFolderInternal(entryIds, folderId)
+    }
+
+    AsyncFunction("getPrivateThumbnailUri") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      if (id.isBlank()) {
+        return@AsyncFunction mapOf("success" to false, "code" to "PRIVATE_VIDEO_NOT_FOUND")
+      }
+      getPrivateThumbnailUriInternal(id)
+    }
+
+    AsyncFunction("startPrivateVaultMigration") {
+      startPrivateVaultMigrationInternal()
+    }
+
+    AsyncFunction("cancelPrivateVaultMigration") {
+      cancelPrivateVaultMigrationInternal()
+    }
+
+    AsyncFunction("getPrivateVaultMigrationStatus") {
+      val progress = lastMigrationProgress
+      val running = activeMigrationCancel?.let { !it.isCancelled() } ?: false
+      mapOf(
+        "running" to running,
+        "total" to (progress?.total ?: 0),
+        "processed" to (progress?.processed ?: 0),
+        "succeeded" to (progress?.succeeded ?: 0),
+        "failed" to (progress?.failed ?: 0),
+        "skipped" to (progress?.skipped ?: 0),
+        "currentEntryId" to progress?.currentEntryId,
+        "currentTitle" to progress?.currentTitle,
+        "lastErrorCode" to progress?.lastError?.code,
+        "lastErrorDetail" to progress?.lastError?.detail,
+      )
+    }
+
+    AsyncFunction("getVaultDiagnostics") {
+      val server = vaultLoopbackServer
+      val snapshot = server?.snapshot()
+      val (v3Count, v4Count, otherCount) = synchronized(privateVaultLock) {
+        val index = readPrivateVaultIndex()
+        val items = index.optJSONArray("items") ?: JSONArray()
+        var v3 = 0; var v4 = 0; var other = 0
+        for (i in 0 until items.length()) {
+          val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+          when (entry.cipherVersion) {
+            PRIVATE_STORE_VERSION_V4 -> v4 += 1
+            PRIVATE_STORE_VERSION_V3 -> v3 += 1
+            else -> other += 1
+          }
+        }
+        Triple(v3, v4, other)
+      }
+      mapOf(
+        "loopbackRunning" to (snapshot?.isRunning == true),
+        "loopbackPort" to snapshot?.port,
+        "activeVideoSessions" to (snapshot?.activeVideoSessions ?: 0),
+        "evictedVideoSessions" to (snapshot?.evictedVideoSessions ?: 0),
+        "cipherCounts" to mapOf(
+          "v4" to v4Count,
+          "v3" to v3Count,
+          "other" to otherCount,
+        ),
+        "migration" to mapOf(
+          "running" to (activeMigrationCancel?.let { !it.isCancelled() } ?: false),
+          "lastProcessed" to lastMigrationProgress?.processed,
+          "lastTotal" to lastMigrationProgress?.total,
+          "lastErrorCode" to lastMigrationProgress?.lastError?.code,
+        ),
+      )
     }
 
     AsyncFunction("importCookie") { input: Map<String, String> ->
@@ -1044,7 +1219,7 @@ class LocalDownloaderModule : Module() {
         "impersonationBootstrapError" to impersonationBootstrapError,
         "privateModeEnabled" to privateModeEnabled,
         "privateVaultCount" to countPrivateVaultItems(),
-        "privateVaultCipherActive" to PRIVATE_STORE_VERSION_V3,
+        "privateVaultCipherActive" to PRIVATE_DEFAULT_CIPHER_VERSION,
         "privateVaultLegacyCount" to countPrivateVaultLegacyItems(),
         "privateLastEncryptMs" to privateLastEncryptMs,
         "privateLastDecryptMs" to privateLastDecryptMs,
@@ -2695,12 +2870,17 @@ class LocalDownloaderModule : Module() {
 
     val now = System.currentTimeMillis()
     val id = UUID.randomUUID().toString()
-    val encFileName = "$id.pv"
+    val encFileName = "$id.pv4"
     val objectsDir = privateVaultObjectsDir(create = true)
     val encryptedTarget = File(objectsDir, encFileName)
     val encryptedTemp = File(objectsDir, ".$encFileName.partial")
     val sourceHash = sha256Base64(sourceUrl)
     val safeTitle = sanitizePrivateTitle(filename)
+    val containerExt = run {
+      val fromMime = extensionForMimeType(mimeType).takeIf { it.isNotBlank() }
+      val fromName = filename.substringAfterLast('.', "").lowercase().takeIf { it.isNotBlank() && it.length <= 5 }
+      (fromMime ?: fromName ?: "mp4").lowercase()
+    }
 
     // Remove stale partials from previously interrupted operations before space checks.
     cleanupPrivateVaultPartials()
@@ -2720,9 +2900,26 @@ class LocalDownloaderModule : Module() {
       )
     }
 
+    // Probe duration first via MMR metadata (fast, succeeds in many codec cases where
+    // a full frame decode would fail). The result feeds both the thumbnail's seek
+    // offset and the persisted PrivateVideoEntry.durationSec field (which the vault
+    // list uses for the "sort by duration" mode).
+    val extractedDurationSec: Double? = runCatching {
+      ThumbnailGenerator.extractDuration(sourceFile)
+    }.getOrNull()
+
+    val thumbnailResult: ThumbnailGenerator.Result? = runCatching {
+      val ffmpegPath = cachedFfmpegInfo?.takeIf { it.exists && it.runtimeSource == "native_library" }?.path
+      ThumbnailGenerator.generate(
+        plaintextSource = sourceFile,
+        ffmpegPath = ffmpegPath,
+        durationSec = extractedDurationSec,
+      )
+    }.getOrNull()
+
     runCatching {
       synchronized(privateVaultIoLock) {
-        encryptFileForPrivateVaultV3(sourceFile, encryptedTemp)
+        encryptFileForPrivateVaultV4(sourceFile, encryptedTemp, id)
       }
       if (!encryptedTemp.renameTo(encryptedTarget)) {
         encryptedTemp.copyTo(encryptedTarget, overwrite = true)
@@ -2735,6 +2932,14 @@ class LocalDownloaderModule : Module() {
       throw IllegalStateException("PRIVATE_STORAGE_WRITE_FAILED: $cause", it)
     }
 
+    val thumbFileName = if (thumbnailResult != null) {
+      runCatching {
+        synchronized(privateVaultIoLock) {
+          encryptThumbnailBytesV4(thumbnailResult.data, id, "$id.t4")
+        }
+      }.getOrNull()
+    } else null
+
     val entry = PrivateVideoEntry(
       id = id,
       title = safeTitle,
@@ -2742,10 +2947,14 @@ class LocalDownloaderModule : Module() {
       updatedAt = now,
       sourceUrlHash = sourceHash,
       mimeType = mimeType,
-      durationSec = null,
+      durationSec = extractedDurationSec,
       sizeBytesEncrypted = encryptedTarget.length(),
-      cipherVersion = PRIVATE_STORE_VERSION_V3,
-      encFileName = encFileName
+      cipherVersion = PRIVATE_STORE_VERSION_V4,
+      encFileName = encFileName,
+      containerExt = containerExt,
+      thumbFileName = thumbFileName,
+      thumbWidth = thumbnailResult?.width?.takeIf { it > 0 },
+      thumbHeight = thumbnailResult?.height?.takeIf { it > 0 },
     )
 
     synchronized(privateVaultLock) {
@@ -2763,20 +2972,25 @@ class LocalDownloaderModule : Module() {
   }
 
   private fun listPrivateVideosInternal(): List<Map<String, Any?>> {
-    synchronized(privateVaultLock) {
+    val parsed = synchronized(privateVaultLock) {
       val index = readPrivateVaultIndex()
       val items = index.optJSONArray("items") ?: JSONArray()
-      val parsed = mutableListOf<PrivateVideoEntry>()
+      val out = mutableListOf<PrivateVideoEntry>()
       for (i in 0 until items.length()) {
-        privateVideoEntryFromJson(items.optJSONObject(i))?.let { parsed.add(it) }
+        privateVideoEntryFromJson(items.optJSONObject(i))?.let { out.add(it) }
       }
-      return parsed
-        .sortedByDescending { it.updatedAt }
-        .map { entry -> privateVideoEntryToMap(entry) }
+      out.sortedByDescending { it.updatedAt }
     }
+    if (parsed.any { it.thumbFileName != null }) {
+      runCatching { ensureVaultLoopbackServer() }
+    }
+    return parsed.map { entry -> privateVideoEntryToMap(entry) }
   }
 
   private fun privateVideoEntryToMap(entry: PrivateVideoEntry): Map<String, Any?> {
+    val thumbnailUri = if (entry.thumbFileName != null) {
+      runCatching { vaultLoopbackServer?.thumbnailUrl(entry.id) }.getOrNull()
+    } else null
     return mapOf(
       "id" to entry.id,
       "title" to entry.title,
@@ -2785,9 +2999,31 @@ class LocalDownloaderModule : Module() {
       "mimeType" to entry.mimeType,
       "durationSec" to entry.durationSec,
       "sizeBytesEncrypted" to entry.sizeBytesEncrypted,
-      "cipherVersion" to entry.cipherVersion
+      "cipherVersion" to entry.cipherVersion,
+      "containerExt" to entry.containerExt,
+      "hasThumbnail" to (entry.thumbFileName != null),
+      "thumbnailUri" to thumbnailUri,
+      "thumbWidth" to entry.thumbWidth,
+      "thumbHeight" to entry.thumbHeight,
+      "migrationFailed" to entry.migrationFailed,
+      "migrationFailedCode" to entry.migrationFailedCode,
+      "tags" to entry.tags,
+      "folderId" to entry.folderId,
     )
   }
+
+  private fun tagDefinitionToMap(def: TagDefinition): Map<String, Any?> = mapOf(
+    "id" to def.id,
+    "name" to def.name,
+    "color" to def.color,
+    "createdAt" to def.createdAt,
+  )
+
+  private fun folderDefinitionToMap(def: FolderDefinition): Map<String, Any?> = mapOf(
+    "id" to def.id,
+    "name" to def.name,
+    "createdAt" to def.createdAt,
+  )
 
   private fun deletePrivateVideoInternal(id: String): Boolean {
     if (id.isBlank()) return false
@@ -2812,7 +3048,14 @@ class LocalDownloaderModule : Module() {
         index.put("items", remaining)
         writePrivateVaultIndex(index)
         runCatching { File(privateVaultObjectsDir(create = true), removed.encFileName).delete() }
+        deleteThumbnailFile(removed.thumbFileName)
         runCatching { File(privatePlaybackCacheDir(create = true), "${removed.id}.mp4").delete() }
+        runCatching {
+          synchronized(vaultLoopbackLock) {
+            // Invalidate any in-flight playback sessions for the deleted entry.
+            vaultLoopbackServer?.invalidateAllVideoSessions()
+          }
+        }
         return true
       }
     }
@@ -2824,6 +3067,534 @@ class LocalDownloaderModule : Module() {
       "code" to "PRIVATE_EXPORT_DISABLED",
       "message" to "PRIVATE_EXPORT_DISABLED"
     )
+  }
+
+  // ----- Tag CRUD + tagging entries -----
+
+  private fun listTagsInternal(): List<Map<String, Any?>> {
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("tagDefinitions") ?: JSONArray()
+      val out = mutableListOf<Map<String, Any?>>()
+      for (i in 0 until arr.length()) {
+        tagDefinitionFromJson(arr.optJSONObject(i))?.let { out.add(tagDefinitionToMap(it)) }
+      }
+      out.sortedBy { (it["createdAt"] as? Long) ?: 0L }
+    }
+  }
+
+  private fun createTagInternal(rawName: String, colorHint: String?): Map<String, Any?> {
+    val sanitized = rawName.trim()
+    if (sanitized.isBlank()) {
+      throw IllegalStateException("PRIVATE_TAG_INVALID_NAME")
+    }
+    if (sanitized.length > TAG_NAME_MAX_LENGTH) {
+      throw IllegalStateException("PRIVATE_TAG_NAME_TOO_LONG")
+    }
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("tagDefinitions") ?: JSONArray()
+      for (i in 0 until arr.length()) {
+        val existing = tagDefinitionFromJson(arr.optJSONObject(i)) ?: continue
+        if (existing.name.equals(sanitized, ignoreCase = true)) {
+          throw IllegalStateException("PRIVATE_TAG_NAME_TAKEN")
+        }
+      }
+      val resolvedColor = colorHint?.takeIf { HEX_COLOR_REGEX.matches(it) }
+        ?: TAG_COLOR_PALETTE[arr.length() % TAG_COLOR_PALETTE.size]
+      val tag = TagDefinition(
+        id = "tg_${UUID.randomUUID().toString().replace("-", "")}",
+        name = sanitized,
+        color = resolvedColor,
+        createdAt = System.currentTimeMillis(),
+      )
+      arr.put(tagDefinitionToJson(tag))
+      index.put("tagDefinitions", arr)
+      writePrivateVaultIndex(index)
+      tagDefinitionToMap(tag)
+    }
+  }
+
+  private fun renameTagInternal(id: String, rawName: String): Map<String, Any?> {
+    if (id.isBlank()) throw IllegalStateException("PRIVATE_TAG_NOT_FOUND")
+    val sanitized = rawName.trim()
+    if (sanitized.isBlank()) throw IllegalStateException("PRIVATE_TAG_INVALID_NAME")
+    if (sanitized.length > TAG_NAME_MAX_LENGTH) throw IllegalStateException("PRIVATE_TAG_NAME_TOO_LONG")
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("tagDefinitions") ?: JSONArray()
+      var foundIndex = -1
+      var found: TagDefinition? = null
+      for (i in 0 until arr.length()) {
+        val existing = tagDefinitionFromJson(arr.optJSONObject(i)) ?: continue
+        if (existing.id == id) {
+          found = existing
+          foundIndex = i
+        } else if (existing.name.equals(sanitized, ignoreCase = true)) {
+          throw IllegalStateException("PRIVATE_TAG_NAME_TAKEN")
+        }
+      }
+      val current = found ?: throw IllegalStateException("PRIVATE_TAG_NOT_FOUND")
+      val updated = current.copy(name = sanitized)
+      arr.put(foundIndex, tagDefinitionToJson(updated))
+      index.put("tagDefinitions", arr)
+      writePrivateVaultIndex(index)
+      tagDefinitionToMap(updated)
+    }
+  }
+
+  private fun setTagColorInternal(id: String, color: String): Map<String, Any?> {
+    if (id.isBlank()) throw IllegalStateException("PRIVATE_TAG_NOT_FOUND")
+    if (!HEX_COLOR_REGEX.matches(color)) throw IllegalStateException("PRIVATE_TAG_INVALID_COLOR")
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("tagDefinitions") ?: JSONArray()
+      var foundIndex = -1
+      var found: TagDefinition? = null
+      for (i in 0 until arr.length()) {
+        val tag = tagDefinitionFromJson(arr.optJSONObject(i)) ?: continue
+        if (tag.id == id) {
+          found = tag
+          foundIndex = i
+          break
+        }
+      }
+      val current = found ?: throw IllegalStateException("PRIVATE_TAG_NOT_FOUND")
+      val updated = current.copy(color = color)
+      arr.put(foundIndex, tagDefinitionToJson(updated))
+      index.put("tagDefinitions", arr)
+      writePrivateVaultIndex(index)
+      tagDefinitionToMap(updated)
+    }
+  }
+
+  private fun deleteTagInternal(id: String): Map<String, Any?> {
+    if (id.isBlank()) return mapOf("success" to false, "code" to "PRIVATE_TAG_NOT_FOUND")
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("tagDefinitions") ?: JSONArray()
+      var existed = false
+      val remaining = JSONArray()
+      for (i in 0 until arr.length()) {
+        val tag = tagDefinitionFromJson(arr.optJSONObject(i)) ?: continue
+        if (tag.id == id) {
+          existed = true
+          continue
+        }
+        remaining.put(tagDefinitionToJson(tag))
+      }
+      if (!existed) {
+        return@synchronized mapOf("success" to false, "code" to "PRIVATE_TAG_NOT_FOUND")
+      }
+      index.put("tagDefinitions", remaining)
+      // Cascade-remove the deleted tag id from every entry's tags[].
+      val items = index.optJSONArray("items") ?: JSONArray()
+      var removedFromCount = 0
+      val now = System.currentTimeMillis()
+      for (i in 0 until items.length()) {
+        val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+        if (entry.tags.contains(id)) {
+          val updatedEntry = entry.copy(tags = entry.tags - id, updatedAt = now)
+          items.put(i, privateVideoEntryToJson(updatedEntry))
+          removedFromCount += 1
+        }
+      }
+      index.put("items", items)
+      writePrivateVaultIndex(index)
+      mapOf("success" to true, "removedFromCount" to removedFromCount)
+    }
+  }
+
+  private fun setEntryTagsInternal(entryIds: List<String>, tagIds: List<String>): Map<String, Any?> {
+    if (entryIds.isEmpty()) return mapOf("success" to true, "updatedCount" to 0)
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val defsArr = index.optJSONArray("tagDefinitions") ?: JSONArray()
+      val validTagIds = HashSet<String>(defsArr.length())
+      for (i in 0 until defsArr.length()) {
+        val tag = tagDefinitionFromJson(defsArr.optJSONObject(i)) ?: continue
+        validTagIds.add(tag.id)
+      }
+      // Drop unknown tag ids defensively. Preserve caller's order on the validated set.
+      val filteredTags = tagIds.asSequence().distinct().filter { validTagIds.contains(it) }.toList()
+      val items = index.optJSONArray("items") ?: JSONArray()
+      val targetIdSet = entryIds.toHashSet()
+      val now = System.currentTimeMillis()
+      var updatedCount = 0
+      for (i in 0 until items.length()) {
+        val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+        if (!targetIdSet.contains(entry.id)) continue
+        val updatedEntry = entry.copy(tags = filteredTags, updatedAt = now)
+        items.put(i, privateVideoEntryToJson(updatedEntry))
+        updatedCount += 1
+      }
+      index.put("items", items)
+      writePrivateVaultIndex(index)
+      mapOf("success" to true, "updatedCount" to updatedCount)
+    }
+  }
+
+  // ----- Folder CRUD + moving entries -----
+
+  private fun listFoldersInternal(): List<Map<String, Any?>> {
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("folders") ?: JSONArray()
+      val out = mutableListOf<Map<String, Any?>>()
+      for (i in 0 until arr.length()) {
+        folderDefinitionFromJson(arr.optJSONObject(i))?.let { out.add(folderDefinitionToMap(it)) }
+      }
+      out.sortedBy { (it["createdAt"] as? Long) ?: 0L }
+    }
+  }
+
+  private fun createFolderInternal(rawName: String): Map<String, Any?> {
+    val sanitized = rawName.trim()
+    if (sanitized.isBlank()) throw IllegalStateException("PRIVATE_FOLDER_INVALID_NAME")
+    if (sanitized.length > FOLDER_NAME_MAX_LENGTH) throw IllegalStateException("PRIVATE_FOLDER_NAME_TOO_LONG")
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("folders") ?: JSONArray()
+      for (i in 0 until arr.length()) {
+        val existing = folderDefinitionFromJson(arr.optJSONObject(i)) ?: continue
+        if (existing.name.equals(sanitized, ignoreCase = true)) {
+          throw IllegalStateException("PRIVATE_FOLDER_NAME_TAKEN")
+        }
+      }
+      val folder = FolderDefinition(
+        id = "fl_${UUID.randomUUID().toString().replace("-", "")}",
+        name = sanitized,
+        createdAt = System.currentTimeMillis(),
+      )
+      arr.put(folderDefinitionToJson(folder))
+      index.put("folders", arr)
+      writePrivateVaultIndex(index)
+      folderDefinitionToMap(folder)
+    }
+  }
+
+  private fun renameFolderInternal(id: String, rawName: String): Map<String, Any?> {
+    if (id.isBlank()) throw IllegalStateException("PRIVATE_FOLDER_NOT_FOUND")
+    val sanitized = rawName.trim()
+    if (sanitized.isBlank()) throw IllegalStateException("PRIVATE_FOLDER_INVALID_NAME")
+    if (sanitized.length > FOLDER_NAME_MAX_LENGTH) throw IllegalStateException("PRIVATE_FOLDER_NAME_TOO_LONG")
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("folders") ?: JSONArray()
+      var foundIndex = -1
+      var found: FolderDefinition? = null
+      for (i in 0 until arr.length()) {
+        val existing = folderDefinitionFromJson(arr.optJSONObject(i)) ?: continue
+        if (existing.id == id) {
+          found = existing
+          foundIndex = i
+        } else if (existing.name.equals(sanitized, ignoreCase = true)) {
+          throw IllegalStateException("PRIVATE_FOLDER_NAME_TAKEN")
+        }
+      }
+      val current = found ?: throw IllegalStateException("PRIVATE_FOLDER_NOT_FOUND")
+      val updated = current.copy(name = sanitized)
+      arr.put(foundIndex, folderDefinitionToJson(updated))
+      index.put("folders", arr)
+      writePrivateVaultIndex(index)
+      folderDefinitionToMap(updated)
+    }
+  }
+
+  private fun deleteFolderInternal(id: String): Map<String, Any?> {
+    if (id.isBlank()) return mapOf("success" to false, "code" to "PRIVATE_FOLDER_NOT_FOUND")
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val arr = index.optJSONArray("folders") ?: JSONArray()
+      var existed = false
+      val remaining = JSONArray()
+      for (i in 0 until arr.length()) {
+        val folder = folderDefinitionFromJson(arr.optJSONObject(i)) ?: continue
+        if (folder.id == id) {
+          existed = true
+          continue
+        }
+        remaining.put(folderDefinitionToJson(folder))
+      }
+      if (!existed) {
+        return@synchronized mapOf("success" to false, "code" to "PRIVATE_FOLDER_NOT_FOUND")
+      }
+      index.put("folders", remaining)
+      // Cascade-move contained entries to root.
+      val items = index.optJSONArray("items") ?: JSONArray()
+      val now = System.currentTimeMillis()
+      var movedToRootCount = 0
+      for (i in 0 until items.length()) {
+        val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+        if (entry.folderId == id) {
+          val updatedEntry = entry.copy(folderId = null, updatedAt = now)
+          items.put(i, privateVideoEntryToJson(updatedEntry))
+          movedToRootCount += 1
+        }
+      }
+      index.put("items", items)
+      writePrivateVaultIndex(index)
+      mapOf("success" to true, "movedToRootCount" to movedToRootCount)
+    }
+  }
+
+  private fun setEntryFolderInternal(entryIds: List<String>, folderId: String?): Map<String, Any?> {
+    if (entryIds.isEmpty()) return mapOf("success" to true, "updatedCount" to 0)
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      // Validate the folder id (null is fine = root).
+      if (folderId != null) {
+        val arr = index.optJSONArray("folders") ?: JSONArray()
+        var exists = false
+        for (i in 0 until arr.length()) {
+          val folder = folderDefinitionFromJson(arr.optJSONObject(i)) ?: continue
+          if (folder.id == folderId) {
+            exists = true
+            break
+          }
+        }
+        if (!exists) throw IllegalStateException("PRIVATE_FOLDER_NOT_FOUND")
+      }
+      val items = index.optJSONArray("items") ?: JSONArray()
+      val targetIdSet = entryIds.toHashSet()
+      val now = System.currentTimeMillis()
+      var updatedCount = 0
+      for (i in 0 until items.length()) {
+        val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+        if (!targetIdSet.contains(entry.id)) continue
+        val updatedEntry = entry.copy(folderId = folderId, updatedAt = now)
+        items.put(i, privateVideoEntryToJson(updatedEntry))
+        updatedCount += 1
+      }
+      index.put("items", items)
+      writePrivateVaultIndex(index)
+      mapOf("success" to true, "updatedCount" to updatedCount)
+    }
+  }
+
+  private fun renamePrivateVideoInternal(id: String, newTitle: String): Map<String, Any?> {
+    if (id.isBlank()) {
+      return mapOf("success" to false, "code" to "PRIVATE_VIDEO_NOT_FOUND")
+    }
+    val sanitized = sanitizePrivateTitle(newTitle)
+    if (sanitized.isBlank()) {
+      return mapOf("success" to false, "code" to "PRIVATE_INVALID_TITLE")
+    }
+    val nowMs = System.currentTimeMillis()
+    val updated = synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val items = index.optJSONArray("items") ?: JSONArray()
+      var found: PrivateVideoEntry? = null
+      var replaceIndex = -1
+      for (i in 0 until items.length()) {
+        val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+        if (entry.id == id) {
+          found = entry
+          replaceIndex = i
+          break
+        }
+      }
+      val current = found ?: return@synchronized null
+      val backfilledContainer = current.containerExt ?: resolveContainerExt(current)
+      val next = current.copy(
+        title = sanitized,
+        updatedAt = nowMs,
+        containerExt = backfilledContainer,
+      )
+      items.put(replaceIndex, privateVideoEntryToJson(next))
+      index.put("items", items)
+      writePrivateVaultIndex(index)
+      next
+    } ?: return mapOf("success" to false, "code" to "PRIVATE_VIDEO_NOT_FOUND")
+    return mapOf("success" to true, "entry" to privateVideoEntryToMap(updated))
+  }
+
+  private fun getPrivateThumbnailUriInternal(id: String): Map<String, Any?> {
+    val entry = findPrivateVideoById(id) ?: return mapOf("success" to false, "code" to "PRIVATE_VIDEO_NOT_FOUND")
+    if (entry.thumbFileName == null) {
+      return mapOf("success" to true, "uri" to null, "hasThumbnail" to false)
+    }
+    val server = try { ensureVaultLoopbackServer() } catch (t: Throwable) {
+      return mapOf("success" to false, "code" to (t.message?.substringBefore(':') ?: "PRIVATE_VIDEO_NOT_FOUND"))
+    }
+    val uri = server.thumbnailUrl(entry.id)
+    return mapOf("success" to true, "uri" to uri, "hasThumbnail" to (uri != null))
+  }
+
+  private val vaultMigratorHost = object : VaultMigrator.Host {
+    override fun loadMigrationCandidates(): List<VaultMigrator.Candidate> {
+      return synchronized(privateVaultLock) {
+        val index = readPrivateVaultIndex()
+        val items = index.optJSONArray("items") ?: JSONArray()
+        val out = mutableListOf<VaultMigrator.Candidate>()
+        for (i in 0 until items.length()) {
+          val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+          if (entry.cipherVersion == PRIVATE_STORE_VERSION_V4) continue
+          if (entry.cipherVersion == PRIVATE_STORE_VERSION_V1) continue // legacy v1 already blocked
+          // Note: previously-failed entries (migrationFailed=true) are intentionally retried
+          // on each invocation. The flag is informational — it surfaces "last attempt failed"
+          // to the UI, but should not exclude the entry from retry. The flag is cleared on
+          // successful migration by commitMigratedEntry.
+          out.add(
+            VaultMigrator.Candidate(
+              id = entry.id,
+              encFileName = entry.encFileName,
+              cipherVersion = entry.cipherVersion,
+              title = entry.title,
+              sizeBytesEncrypted = entry.sizeBytesEncrypted,
+            )
+          )
+        }
+        out.sortedBy { it.id }
+      }
+    }
+
+    override fun loadMigrationCursor(): String? {
+      return synchronized(privateVaultLock) {
+        val index = readPrivateVaultIndex()
+        index.optString("migrationCursor").trim().ifBlank { null }
+      }
+    }
+
+    override fun storeMigrationCursor(entryId: String?) {
+      synchronized(privateVaultLock) {
+        val index = readPrivateVaultIndex()
+        if (entryId == null) index.remove("migrationCursor") else index.put("migrationCursor", entryId)
+        writePrivateVaultIndex(index)
+      }
+    }
+
+    override fun decryptLegacyToStream(encryptedFile: File, sink: OutputStream, cipherVersion: String) {
+      when (cipherVersion) {
+        PRIVATE_STORE_VERSION_V3 -> decryptPrivateVaultFileV3ToStream(encryptedFile, sink, traceId = "migrate")
+        PRIVATE_STORE_VERSION_V2 -> decryptPrivateVaultFileV2ToStream(encryptedFile, sink, traceId = "migrate")
+        else -> throw IllegalStateException("PRIVATE_MIGRATION_UNSUPPORTED_VERSION: $cipherVersion")
+      }
+    }
+
+    override fun openV4EncryptingStream(output: OutputStream, entryId: String): OutputStream {
+      val dek = getOrCreateVaultDekV4()
+      return VaultCipherV4.openEncryptingStream(output, entryId, dek)
+    }
+
+    override fun commitMigratedEntry(entryId: String, newEncFileName: String, newCipherSize: Long) {
+      synchronized(privateVaultLock) {
+        val index = readPrivateVaultIndex()
+        val items = index.optJSONArray("items") ?: JSONArray()
+        for (i in 0 until items.length()) {
+          val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+          if (entry.id != entryId) continue
+          val containerBackfilled = entry.containerExt ?: resolveContainerExt(entry)
+          val next = entry.copy(
+            cipherVersion = PRIVATE_STORE_VERSION_V4,
+            encFileName = newEncFileName,
+            sizeBytesEncrypted = newCipherSize,
+            updatedAt = System.currentTimeMillis(),
+            containerExt = containerBackfilled,
+            migrationFailed = false,
+            migrationFailedCode = null,
+            migrationFailedDetail = null,
+          )
+          items.put(i, privateVideoEntryToJson(next))
+          break
+        }
+        index.put("items", items)
+        writePrivateVaultIndex(index)
+      }
+    }
+
+    override fun markEntryMigrationFailed(entryId: String, code: String, detail: String?) {
+      synchronized(privateVaultLock) {
+        val index = readPrivateVaultIndex()
+        val items = index.optJSONArray("items") ?: JSONArray()
+        for (i in 0 until items.length()) {
+          val entry = privateVideoEntryFromJson(items.optJSONObject(i)) ?: continue
+          if (entry.id != entryId) continue
+          val next = entry.copy(
+            migrationFailed = true,
+            migrationFailedCode = code,
+            migrationFailedDetail = detail,
+            updatedAt = System.currentTimeMillis(),
+          )
+          items.put(i, privateVideoEntryToJson(next))
+          break
+        }
+        index.put("items", items)
+        writePrivateVaultIndex(index)
+      }
+    }
+
+    override fun objectsDir(): File = privateVaultObjectsDir(create = true)
+  }
+
+  private fun startPrivateVaultMigrationInternal(): Map<String, Any?> {
+    val context = appContext.reactContext ?: return mapOf("success" to false, "code" to "PRIVATE_MODE_UNAVAILABLE")
+    val candidates = vaultMigratorHost.loadMigrationCandidates()
+    if (candidates.isEmpty()) {
+      return mapOf("success" to true, "total" to 0, "processed" to 0, "succeeded" to 0, "failed" to 0, "outcome" to "COMPLETED")
+    }
+    val vaultUsedBytes = candidates.sumOf { it.sizeBytesEncrypted }
+    val preflight = VaultMigrator.checkPreflight(context, vaultUsedBytes)
+    if (!preflight.ok) {
+      return mapOf(
+        "success" to false,
+        "code" to (preflight.blockingCode ?: "PRIVATE_MIGRATION_BLOCKED"),
+        "freeBytes" to preflight.freeBytes,
+        "requiredBytes" to preflight.requiredBytes,
+        "batteryLevel" to preflight.batteryLevel,
+        "isCharging" to preflight.isCharging,
+      )
+    }
+    val existing = activeMigrationCancel
+    if (existing != null && !existing.isCancelled()) {
+      return mapOf("success" to false, "code" to "PRIVATE_MIGRATION_ALREADY_RUNNING")
+    }
+    val cancelToken = VaultMigrator.CancelToken()
+    activeMigrationCancel = cancelToken
+    val migrator = VaultMigrator(vaultMigratorHost)
+    scope.launch {
+      try {
+        migrator.migrate(cancelToken) { progress ->
+          lastMigrationProgress = progress
+          emitMigrationProgress(progress)
+        }
+      } catch (t: Throwable) {
+        debug("[PRIVATE] migration crashed: ${t.javaClass.simpleName}:${t.message}")
+      } finally {
+        if (activeMigrationCancel === cancelToken) {
+          activeMigrationCancel = null
+        }
+      }
+    }
+    return mapOf(
+      "success" to true,
+      "total" to candidates.size,
+      "outcome" to "STARTED",
+    )
+  }
+
+  private fun cancelPrivateVaultMigrationInternal(): Map<String, Any?> {
+    val token = activeMigrationCancel
+    if (token == null) {
+      return mapOf("success" to true, "wasRunning" to false)
+    }
+    token.cancel()
+    return mapOf("success" to true, "wasRunning" to true)
+  }
+
+  private fun emitMigrationProgress(progress: VaultMigrator.Progress) {
+    val payload = mapOf(
+      "total" to progress.total,
+      "processed" to progress.processed,
+      "succeeded" to progress.succeeded,
+      "failed" to progress.failed,
+      "skipped" to progress.skipped,
+      "currentEntryId" to progress.currentEntryId,
+      "currentTitle" to progress.currentTitle,
+      "lastErrorCode" to progress.lastError?.code,
+      "lastErrorDetail" to progress.lastError?.detail,
+    )
+    runCatching { sendEvent("privateVaultMigrationProgress", payload) }
   }
 
   private fun copyPrivateVideoToPublicGalleryInternal(id: String): Map<String, Any?> {
@@ -2882,7 +3653,7 @@ class LocalDownloaderModule : Module() {
           dateTakenMs = entry.updatedAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
           relativePath = PRIVATE_PUBLIC_COPY_RELATIVE_PATH
         ) { output ->
-          decryptPrivateVaultFileToOutput(encryptedFile, output, effectiveVersion, traceId = "copy_${entry.id.take(8)}")
+          decryptPrivateVaultFileToOutput(encryptedFile, output, effectiveVersion, traceId = "copy_${entry.id.take(8)}", entryId = entry.id)
         }
       }
     }.map { saved ->
@@ -3035,14 +3806,8 @@ class LocalDownloaderModule : Module() {
     privateTrace(traceId, "prepare internal cleanup playback cache start")
     cleanupPrivatePlaybackCacheInternal()
     privateTrace(traceId, "prepare internal cleanup playback cache done")
-    val playbackDir = privatePlaybackCacheDir(create = true)
-    val suffix = entry.title.substringAfterLast('.', "").lowercase().ifBlank { "mp4" }
-    val output = File(playbackDir, "${entry.id}.$suffix")
     val effectiveVersion = detectPrivateCipherVersion(encryptedFile, entry.cipherVersion)
-    privateTrace(
-      traceId,
-      "prepare internal decrypt plan version=$effectiveVersion output=${output.absolutePath} outputExists=${output.exists()}"
-    )
+    privateTrace(traceId, "prepare internal decrypt plan version=$effectiveVersion")
     if (effectiveVersion == PRIVATE_STORE_VERSION_V1) {
       privateTrace(
         traceId,
@@ -3050,6 +3815,31 @@ class LocalDownloaderModule : Module() {
       )
       throw IllegalStateException("PRIVATE_LEGACY_VAULT_UNSUPPORTED")
     }
+
+    if (effectiveVersion == PRIVATE_STORE_VERSION_V4) {
+      return try {
+        val server = ensureVaultLoopbackServer()
+        val session = server.registerVideoSession(entry.id)
+        val url = server.videoUrl(session)
+          ?: throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND")
+        privateTrace(traceId, "prepare internal v4 streaming uri assigned session=${session.token.take(6)}…")
+        mapOf(
+          "success" to true,
+          "tempUri" to url,
+          "mimeType" to entry.mimeType.ifBlank { guessMimeType(entry.title) },
+          "streaming" to true,
+        )
+      } catch (t: Throwable) {
+        privateTrace(traceId, "prepare internal v4 streaming failed id=${entry.id} error=${t.javaClass.simpleName}:${t.message}")
+        throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND", t)
+      }
+    }
+
+    val playbackDir = privatePlaybackCacheDir(create = true)
+    val suffix = resolveContainerExt(entry)
+    val output = File(playbackDir, "${entry.id}.$suffix")
+    privateTrace(traceId, "prepare internal decrypt output=${output.absolutePath} outputExists=${output.exists()}")
+
     runCatching {
       val lockWaitStartedAt = System.currentTimeMillis()
       privateTrace(traceId, "prepare internal waiting io-lock")
@@ -3075,7 +3865,8 @@ class LocalDownloaderModule : Module() {
     return mapOf(
       "success" to true,
       "tempUri" to Uri.fromFile(output).toString(),
-      "mimeType" to entry.mimeType.ifBlank { guessMimeType(entry.title) }
+      "mimeType" to entry.mimeType.ifBlank { guessMimeType(entry.title) },
+      "streaming" to false,
     )
   }
 
@@ -3083,6 +3874,11 @@ class LocalDownloaderModule : Module() {
     runCatching { privatePlaybackCacheDir(create = false).deleteRecursively() }
     runCatching { privateExportCacheDir(create = false).deleteRecursively() }
     runCatching { privateImportCacheDir(create = false).deleteRecursively() }
+    runCatching {
+      synchronized(vaultLoopbackLock) {
+        vaultLoopbackServer?.invalidateAllVideoSessions()
+      }
+    }
   }
 
   private fun setSecureScreenInternal(enabled: Boolean) {
@@ -3153,6 +3949,175 @@ class LocalDownloaderModule : Module() {
     return File(root, PRIVATE_VAULT_INDEX_FILENAME)
   }
 
+  private fun privateVaultThumbsDir(create: Boolean): File {
+    val dir = File(privateVaultRoot(create), PRIVATE_VAULT_THUMBS_DIRNAME)
+    if (create) dir.mkdirs()
+    return dir
+  }
+
+  private fun privateVaultKeysDir(create: Boolean): File {
+    val dir = File(privateVaultRoot(create), PRIVATE_VAULT_KEYS_DIRNAME)
+    if (create) dir.mkdirs()
+    return dir
+  }
+
+  private fun findPrivateVideoById(id: String): PrivateVideoEntry? {
+    if (id.isBlank()) return null
+    return synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val items = index.optJSONArray("items") ?: JSONArray()
+      for (i in 0 until items.length()) {
+        val entry = privateVideoEntryFromJson(items.optJSONObject(i))
+        if (entry?.id == id) return@synchronized entry
+      }
+      null
+    }
+  }
+
+  private fun getOrCreateVaultDekV4(): ByteArray {
+    cachedVaultDekV4?.let { return it }
+    synchronized(privateVaultIoLock) {
+      cachedVaultDekV4?.let { return it }
+      val vaultRoot = privateVaultRoot(create = true)
+      try {
+        val dek = VaultCipherV4.getOrCreateVaultDek(vaultRoot) { getOrCreatePrivateVaultMasterKeyV2() }
+        cachedVaultDekV4 = dek
+        return dek
+      } catch (kpe: KeyPermanentlyInvalidatedException) {
+        throw IllegalStateException("PRIVATE_KEY_INVALIDATED: ${kpe.message}", kpe)
+      }
+    }
+  }
+
+  private fun encryptFileForPrivateVaultV4(source: File, output: File, entryId: String) {
+    val dek = getOrCreateVaultDekV4()
+    source.inputStream().use { input ->
+      output.outputStream().use { fileOut ->
+        VaultCipherV4.encryptStream(input, fileOut, entryId, dek)
+      }
+    }
+  }
+
+  private fun decryptPrivateVaultFileV4(source: File, output: File, entryId: String) {
+    output.outputStream().use { out ->
+      decryptPrivateVaultFileV4ToStream(source, out, entryId)
+    }
+  }
+
+  private fun decryptPrivateVaultFileV4ToStream(source: File, output: OutputStream, entryId: String) {
+    val dek = getOrCreateVaultDekV4()
+    source.inputStream().use { input ->
+      VaultCipherV4.decryptStream(input, output, entryId, dek)
+    }
+  }
+
+  private fun encryptThumbnailBytesV4(jpegBytes: ByteArray, entryId: String, thumbName: String): String? {
+    val dek = getOrCreateVaultDekV4()
+    val target = File(privateVaultThumbsDir(create = true), thumbName)
+    val tmp = File(target.parentFile, "$thumbName.tmp")
+    return try {
+      java.io.ByteArrayInputStream(jpegBytes).use { input ->
+        tmp.outputStream().use { fileOut ->
+          VaultCipherV4.encryptStream(input, fileOut, thumbnailAad(entryId), dek)
+        }
+      }
+      if (target.exists() && !target.delete()) {
+        tmp.delete()
+        return null
+      }
+      if (tmp.renameTo(target)) thumbName else { tmp.delete(); null }
+    } catch (t: Throwable) {
+      runCatching { tmp.delete() }
+      null
+    }
+  }
+
+  private fun loadThumbnailBytesV4(entry: PrivateVideoEntry): ByteArray? {
+    val name = entry.thumbFileName ?: return null
+    val file = File(privateVaultThumbsDir(create = false), name)
+    if (!file.exists() || !file.isFile) return null
+    val out = ByteArrayOutputStream(64 * 1024)
+    return try {
+      decryptPrivateVaultFileV4ToStream(file, out, thumbnailAad(entry.id))
+      out.toByteArray()
+    } catch (t: Throwable) {
+      null
+    }
+  }
+
+  private fun deleteThumbnailFile(thumbFileName: String?) {
+    if (thumbFileName.isNullOrBlank()) return
+    runCatching { File(privateVaultThumbsDir(create = false), thumbFileName).delete() }
+  }
+
+  private fun thumbnailAad(entryId: String): String = "thumb:$entryId"
+
+  private fun resolveContainerExt(entry: PrivateVideoEntry): String {
+    entry.containerExt?.takeIf { it.isNotBlank() }?.let { return it.lowercase() }
+    val fromMime = extensionForMimeType(entry.mimeType).takeIf { it.isNotBlank() }
+    val fromTitle = entry.title.substringAfterLast('.', "").lowercase().takeIf { it.isNotBlank() && it.length <= 5 }
+    return (fromMime ?: fromTitle ?: "mp4").lowercase()
+  }
+
+  private fun ensureVaultLoopbackServer(): VaultLoopbackServer {
+    val existing = vaultLoopbackServer
+    if (existing != null && existing.isAlive) {
+      existing.ensureStarted()
+      return existing
+    }
+    return synchronized(vaultLoopbackLock) {
+      var server = vaultLoopbackServer
+      if (server == null || !server.isAlive) {
+        val captured = arrayOfNulls<VaultLoopbackServer>(1)
+        server = VaultLoopbackServer(
+          provider = vaultLoopbackProvider,
+          onAutoStopped = {
+            synchronized(vaultLoopbackLock) {
+              if (vaultLoopbackServer === captured[0]) {
+                vaultLoopbackServer = null
+              }
+            }
+          },
+        )
+        captured[0] = server
+        vaultLoopbackServer = server
+      }
+      server.ensureStarted()
+      server
+    }
+  }
+
+  private fun stopVaultLoopbackServer() {
+    synchronized(vaultLoopbackLock) {
+      runCatching { vaultLoopbackServer?.stop() }
+      vaultLoopbackServer = null
+    }
+  }
+
+  private val vaultLoopbackProvider = object : VaultLoopbackProvider {
+    override fun openVideoResource(entryId: String): VaultVideoResource? {
+      val entry = findPrivateVideoById(entryId) ?: return null
+      if (entry.cipherVersion != PRIVATE_STORE_VERSION_V4) return null
+      val file = File(privateVaultObjectsDir(create = false), entry.encFileName)
+      if (!file.exists() || !file.isFile) return null
+      return try {
+        val dek = getOrCreateVaultDekV4()
+        val channel = VaultCipherV4.openDecryptingChannel(file, entryId, dek)
+        val plaintextLength = channel.size()
+        val contentType = entry.mimeType.ifBlank { guessMimeType(entry.title) }
+        VaultVideoResource(channel, contentType, plaintextLength)
+      } catch (t: Throwable) {
+        null
+      }
+    }
+
+    override fun loadThumbnailResource(entryId: String): VaultThumbnailResource? {
+      val entry = findPrivateVideoById(entryId) ?: return null
+      val bytes = loadThumbnailBytesV4(entry) ?: return null
+      return VaultThumbnailResource(bytes, VaultLoopbackServer.MIME_JPEG)
+    }
+  }
+
   private fun privatePlaybackCacheDir(create: Boolean): File {
     val dir = File(requireNotNull(appContext.reactContext).cacheDir, PRIVATE_PLAYBACK_CACHE_DIRNAME)
     if (create) {
@@ -3203,8 +4168,10 @@ class LocalDownloaderModule : Module() {
 
   private fun defaultPrivateVaultIndex(): JSONObject {
     return JSONObject().apply {
-      put("version", 2)
+      put("version", 3)
       put("items", JSONArray())
+      put("tagDefinitions", JSONArray())
+      put("folders", JSONArray())
     }
   }
 
@@ -3219,6 +4186,16 @@ class LocalDownloaderModule : Module() {
       val parsed = JSONObject(file.readText(Charsets.UTF_8))
       if (!parsed.has("items")) {
         parsed.put("items", JSONArray())
+      }
+      // v2.2.0: backwards-compatible additive fields. Older index.json (version 2)
+      // lacks these; treat missing as empty. Don't bump the on-disk version field
+      // here — that happens implicitly on the next write via writePrivateVaultIndex
+      // when callers do their own mutations.
+      if (!parsed.has("tagDefinitions")) {
+        parsed.put("tagDefinitions", JSONArray())
+      }
+      if (!parsed.has("folders")) {
+        parsed.put("folders", JSONArray())
       }
       parsed
     }.getOrElse {
@@ -3245,6 +4222,15 @@ class LocalDownloaderModule : Module() {
     if (id.isBlank() || title.isBlank() || encFileName.isBlank()) {
       return null
     }
+    val tagsArr = obj.optJSONArray("tags")
+    val tagsList = if (tagsArr != null) {
+      val out = ArrayList<String>(tagsArr.length())
+      for (i in 0 until tagsArr.length()) {
+        val tagId = tagsArr.optString(i).trim()
+        if (tagId.isNotBlank()) out.add(tagId)
+      }
+      out
+    } else emptyList()
     return PrivateVideoEntry(
       id = id,
       title = title,
@@ -3255,7 +4241,16 @@ class LocalDownloaderModule : Module() {
       durationSec = obj.optDouble("durationSec", Double.NaN).takeIf { !it.isNaN() },
       sizeBytesEncrypted = sizeBytesEncrypted,
       cipherVersion = cipherVersion,
-      encFileName = encFileName
+      encFileName = encFileName,
+      containerExt = obj.optString("containerExt").trim().ifBlank { null },
+      thumbFileName = obj.optString("thumbFileName").trim().ifBlank { null },
+      thumbWidth = obj.optInt("thumbWidth", -1).takeIf { it > 0 },
+      thumbHeight = obj.optInt("thumbHeight", -1).takeIf { it > 0 },
+      migrationFailed = obj.optBoolean("migrationFailed", false),
+      migrationFailedCode = obj.optString("migrationFailedCode").trim().ifBlank { null },
+      migrationFailedDetail = obj.optString("migrationFailedDetail").trim().ifBlank { null },
+      tags = tagsList,
+      folderId = obj.optString("folderId").trim().ifBlank { null },
     )
   }
 
@@ -3271,7 +4266,57 @@ class LocalDownloaderModule : Module() {
       put("sizeBytesEncrypted", entry.sizeBytesEncrypted)
       put("cipherVersion", entry.cipherVersion)
       put("encFileName", entry.encFileName)
+      if (entry.containerExt != null) put("containerExt", entry.containerExt)
+      if (entry.thumbFileName != null) put("thumbFileName", entry.thumbFileName)
+      if (entry.thumbWidth != null) put("thumbWidth", entry.thumbWidth)
+      if (entry.thumbHeight != null) put("thumbHeight", entry.thumbHeight)
+      if (entry.migrationFailed) put("migrationFailed", true)
+      if (entry.migrationFailedCode != null) put("migrationFailedCode", entry.migrationFailedCode)
+      if (entry.migrationFailedDetail != null) put("migrationFailedDetail", entry.migrationFailedDetail)
+      if (entry.tags.isNotEmpty()) {
+        put("tags", JSONArray().also { arr -> entry.tags.forEach { arr.put(it) } })
+      }
+      if (entry.folderId != null) put("folderId", entry.folderId)
     }
+  }
+
+  private fun tagDefinitionFromJson(obj: JSONObject?): TagDefinition? {
+    if (obj == null) return null
+    val id = obj.optString("id").trim()
+    val name = obj.optString("name").trim()
+    val color = obj.optString("color").trim()
+    if (id.isBlank() || name.isBlank() || color.isBlank()) return null
+    return TagDefinition(
+      id = id,
+      name = name,
+      color = color,
+      createdAt = obj.optLong("createdAt", 0L),
+    )
+  }
+
+  private fun tagDefinitionToJson(def: TagDefinition): JSONObject = JSONObject().apply {
+    put("id", def.id)
+    put("name", def.name)
+    put("color", def.color)
+    put("createdAt", def.createdAt)
+  }
+
+  private fun folderDefinitionFromJson(obj: JSONObject?): FolderDefinition? {
+    if (obj == null) return null
+    val id = obj.optString("id").trim()
+    val name = obj.optString("name").trim()
+    if (id.isBlank() || name.isBlank()) return null
+    return FolderDefinition(
+      id = id,
+      name = name,
+      createdAt = obj.optLong("createdAt", 0L),
+    )
+  }
+
+  private fun folderDefinitionToJson(def: FolderDefinition): JSONObject = JSONObject().apply {
+    put("id", def.id)
+    put("name", def.name)
+    put("createdAt", def.createdAt)
   }
 
   private fun sanitizePrivateTitle(value: String): String {
@@ -3435,12 +4480,22 @@ class LocalDownloaderModule : Module() {
     )
   }
 
-  private fun decryptPrivateVaultFile(source: File, output: File, effectiveVersion: String, traceId: String = "n/a") {
+  private fun decryptPrivateVaultFile(
+    source: File,
+    output: File,
+    effectiveVersion: String,
+    traceId: String = "n/a",
+    entryId: String? = null,
+  ) {
     privateTrace(
       traceId,
       "decrypt dispatch source=${source.name} version=$effectiveVersion sourceBytes=${source.length()} output=${output.absolutePath}"
     )
     when (effectiveVersion) {
+      PRIVATE_STORE_VERSION_V4 -> {
+        val id = entryId ?: throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND")
+        decryptPrivateVaultFileV4(source, output, id)
+      }
       PRIVATE_STORE_VERSION_V3 -> decryptPrivateVaultFileV3(source, output, traceId)
       PRIVATE_STORE_VERSION_V2 -> decryptPrivateVaultFileV2(source, output, traceId)
       PRIVATE_STORE_VERSION_V1 -> decryptPrivateVaultFileV1Legacy(source, output, traceId)
@@ -3452,13 +4507,18 @@ class LocalDownloaderModule : Module() {
     source: File,
     output: OutputStream,
     effectiveVersion: String,
-    traceId: String = "n/a"
+    traceId: String = "n/a",
+    entryId: String? = null,
   ) {
     privateTrace(
       traceId,
       "decrypt dispatch (stream) source=${source.name} version=$effectiveVersion sourceBytes=${source.length()}"
     )
     when (effectiveVersion) {
+      PRIVATE_STORE_VERSION_V4 -> {
+        val id = entryId ?: throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND")
+        decryptPrivateVaultFileV4ToStream(source, output, id)
+      }
       PRIVATE_STORE_VERSION_V3 -> decryptPrivateVaultFileV3ToStream(source, output, traceId)
       PRIVATE_STORE_VERSION_V2 -> decryptPrivateVaultFileV2ToStream(source, output, traceId)
       PRIVATE_STORE_VERSION_V1 -> decryptPrivateVaultFileV1ToStream(source, output, traceId)
@@ -3929,6 +4989,12 @@ class LocalDownloaderModule : Module() {
     if (!source.exists() || !source.isFile) {
       return entryCipherVersion.ifBlank { PRIVATE_STORE_VERSION_V1 }
     }
+    // v4 uses Tink's StreamingAead format which has no project-specific magic byte.
+    // The entry's recorded cipherVersion is the authoritative source for v4 items; we
+    // only sniff bytes to recover when the entry's tag is missing/wrong for legacy items.
+    if (entryCipherVersion == PRIVATE_STORE_VERSION_V4) {
+      return PRIVATE_STORE_VERSION_V4
+    }
     return runCatching {
       FileInputStream(source).use { input ->
         val magic = ByteArray(PRIVATE_VAULT_V2_MAGIC.size)
@@ -4212,6 +5278,12 @@ class LocalDownloaderModule : Module() {
             "import" -> "Confirm import"
             "export" -> "Confirm copy"
             "unprivate" -> "Confirm export"
+            "rename" -> "Confirm rename"
+            "migrate" -> "Re-encrypt vault"
+            "tag" -> "Confirm tag change"
+            "folder" -> "Confirm move"
+            "bundleExport" -> "Export vault"
+            "bundleImport" -> "Import vault"
             else -> "Unlock private vault"
           }
         )
@@ -5746,6 +6818,20 @@ class LocalDownloaderModule : Module() {
     private const val PRIVATE_STORE_VERSION_V1 = "v1"
     private const val PRIVATE_STORE_VERSION_V2 = "v2"
     private const val PRIVATE_STORE_VERSION_V3 = "v3"
+    private const val PRIVATE_STORE_VERSION_V4 = "v4"
+    private const val PRIVATE_DEFAULT_CIPHER_VERSION = PRIVATE_STORE_VERSION_V4
+    private const val PRIVATE_VAULT_THUMBS_DIRNAME = "thumbs"
+    // 12-color Material-derived palette used for auto-assigning tag colors round-robin.
+    // Picked for sufficient contrast on both light and dark surfaces.
+    private val TAG_COLOR_PALETTE: List<String> = listOf(
+      "#EF5350", "#EC407A", "#AB47BC", "#5C6BC0",
+      "#42A5F5", "#26C6DA", "#26A69A", "#66BB6A",
+      "#9CCC65", "#FFCA28", "#FFA726", "#8D6E63",
+    )
+    private val HEX_COLOR_REGEX = Regex("^#[A-Fa-f0-9]{6}$")
+    private const val TAG_NAME_MAX_LENGTH = 64
+    private const val FOLDER_NAME_MAX_LENGTH = 64
+    private const val PRIVATE_VAULT_KEYS_DIRNAME = "keys"
     private const val COOKIE_MIGRATION_MARKER_FILENAME = ".migration_complete"
     private const val SECURE_COOKIES_DIRNAME = "cookies_secure"
     private const val PREFS_NAME = "local_downloader_prefs"

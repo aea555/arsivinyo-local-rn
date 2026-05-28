@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import LocalDownloaderModule, {
   addBackgroundStateListener,
   addDownloadProgressListener,
+  addPrivateVaultMigrationProgressListener,
   addYtDlpUpdateProgressListener,
   type LocalBackgroundPermissionResult,
   type LocalBackgroundDownloadsState,
@@ -23,13 +24,24 @@ import LocalDownloaderModule, {
   type LocalPrivateAuthResult,
   type LocalPrivateCopyToPublicResult,
   type LocalPrivateImportResult,
+  type LocalPrivateMigrationCancelResult,
+  type LocalPrivateMigrationProgress,
+  type LocalPrivateMigrationStartResult,
+  type LocalPrivateMigrationStatus,
   type LocalPrivateModeState,
+  type LocalPrivateRenameResult,
+  type LocalPrivateThumbnailUriResult,
   type LocalPrivateVideoItem,
   type LocalSaveToMediaStoreInput,
   type LocalSaveToMediaStoreResult,
   type LocalPlatform,
   type LocalQuickDownloadResult,
   type LocalTaskStatusResult,
+  type LocalVaultDiagnostics,
+  type PrivateVaultFolder,
+  type PrivateVaultFolderDeleteResult,
+  type PrivateVaultTag,
+  type PrivateVaultTagDeleteResult,
   type LocalYtDlpUpdateCheckResult,
   type LocalYtDlpUpdateProgressEvent,
   type LocalYtDlpUpdateResult,
@@ -55,6 +67,11 @@ export function listenBackgroundState(listener: (event: LocalBackgroundStateEven
 export function listenYtDlpUpdateProgress(listener: (event: LocalYtDlpUpdateProgressEvent) => void) {
   ensureAndroid();
   return addYtDlpUpdateProgressListener(listener);
+}
+
+export function listenLocalPrivateVaultMigration(listener: (event: LocalPrivateMigrationProgress) => void) {
+  ensureAndroid();
+  return addPrivateVaultMigrationProgressListener(listener);
 }
 
 export async function startLocalDownload(input: LocalDownloadStartInput): Promise<LocalDownloadStartResult> {
@@ -145,7 +162,7 @@ export async function makeLocalVideoPublic(id: string): Promise<{ success: boole
 export async function prepareLocalPrivatePlayback(
   id: string,
   traceId?: string
-): Promise<{ success: boolean; tempUri?: string; mimeType?: string }> {
+): Promise<{ success: boolean; tempUri?: string; mimeType?: string; streaming?: boolean }> {
   ensureAndroid();
   return LocalDownloaderModule.preparePrivatePlayback({ id, traceId });
 }
@@ -158,6 +175,101 @@ export async function setLocalSecureScreen(enabled: boolean): Promise<{ success:
 export async function clearLocalPrivatePlaybackCache(): Promise<void> {
   ensureAndroid();
   return LocalDownloaderModule.clearPrivatePlaybackCache();
+}
+
+export async function renameLocalPrivateVideo(id: string, title: string): Promise<LocalPrivateRenameResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.renamePrivateVideo({ id, title });
+}
+
+export async function getLocalPrivateThumbnailUri(id: string): Promise<LocalPrivateThumbnailUriResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.getPrivateThumbnailUri({ id });
+}
+
+export async function startLocalPrivateVaultMigration(): Promise<LocalPrivateMigrationStartResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.startPrivateVaultMigration();
+}
+
+export async function cancelLocalPrivateVaultMigration(): Promise<LocalPrivateMigrationCancelResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.cancelPrivateVaultMigration();
+}
+
+export async function getLocalPrivateVaultMigrationStatus(): Promise<LocalPrivateMigrationStatus> {
+  ensureAndroid();
+  return LocalDownloaderModule.getPrivateVaultMigrationStatus();
+}
+
+export async function getLocalVaultDiagnostics(): Promise<LocalVaultDiagnostics> {
+  ensureAndroid();
+  return LocalDownloaderModule.getVaultDiagnostics();
+}
+
+// ----- Tags -----
+
+export async function listLocalVaultTags(): Promise<PrivateVaultTag[]> {
+  ensureAndroid();
+  return LocalDownloaderModule.listVaultTags();
+}
+
+export async function createLocalVaultTag(name: string, color?: string): Promise<PrivateVaultTag> {
+  ensureAndroid();
+  return LocalDownloaderModule.createVaultTag({ name, color });
+}
+
+export async function renameLocalVaultTag(id: string, name: string): Promise<PrivateVaultTag> {
+  ensureAndroid();
+  return LocalDownloaderModule.renameVaultTag({ id, name });
+}
+
+export async function setLocalVaultTagColor(id: string, color: string): Promise<PrivateVaultTag> {
+  ensureAndroid();
+  return LocalDownloaderModule.setVaultTagColor({ id, color });
+}
+
+export async function deleteLocalVaultTag(id: string): Promise<PrivateVaultTagDeleteResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.deleteVaultTag({ id });
+}
+
+export async function setLocalVaultEntryTags(
+  ids: string[],
+  tagIds: string[],
+): Promise<{ success: boolean; updatedCount?: number }> {
+  ensureAndroid();
+  return LocalDownloaderModule.setVaultEntryTags({ ids, tagIds });
+}
+
+// ----- Folders -----
+
+export async function listLocalVaultFolders(): Promise<PrivateVaultFolder[]> {
+  ensureAndroid();
+  return LocalDownloaderModule.listVaultFolders();
+}
+
+export async function createLocalVaultFolder(name: string): Promise<PrivateVaultFolder> {
+  ensureAndroid();
+  return LocalDownloaderModule.createVaultFolder({ name });
+}
+
+export async function renameLocalVaultFolder(id: string, name: string): Promise<PrivateVaultFolder> {
+  ensureAndroid();
+  return LocalDownloaderModule.renameVaultFolder({ id, name });
+}
+
+export async function deleteLocalVaultFolder(id: string): Promise<PrivateVaultFolderDeleteResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.deleteVaultFolder({ id });
+}
+
+export async function setLocalVaultEntryFolder(
+  ids: string[],
+  folderId: string | null,
+): Promise<{ success: boolean; updatedCount?: number }> {
+  ensureAndroid();
+  return LocalDownloaderModule.setVaultEntryFolder({ ids, folderId });
 }
 
 export async function importLocalCookie(input: {

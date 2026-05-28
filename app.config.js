@@ -3,7 +3,7 @@ export default ({ config }) => {
     ...config,
     name: "Arsivinyo Local",
     slug: "arsivinyo-local-rn",
-    version: "2.0.1",
+    version: "2.2.0-beta.1",
     orientation: "portrait",
     icon: "./assets/images/play_store_512.png",
     scheme: "arsivinyo-local-rn",
@@ -14,6 +14,7 @@ export default ({ config }) => {
       bundleIdentifier: "com.arsivinyo.local",
     },
     android: {
+      versionCode: 20200,
       adaptiveIcon: {
         backgroundColor: "#000000",
         foregroundImage: "./assets/images/ic_launcher_foreground.png",
@@ -57,6 +58,17 @@ export default ({ config }) => {
         {
           ios: {
             useFrameworks: "static",
+          },
+          android: {
+            extraProguardRules: [
+              "# Tink (vault cipher v4) uses reflection on its key managers.",
+              "-keep class com.google.crypto.tink.** { *; }",
+              "-keepclassmembers class com.google.crypto.tink.** { *; }",
+              "-dontwarn com.google.crypto.tink.**",
+              "# NanoHTTPD (vault loopback playback server)",
+              "-keep class fi.iki.elonen.** { *; }",
+              "-dontwarn fi.iki.elonen.**",
+            ].join("\n"),
           },
         },
       ],

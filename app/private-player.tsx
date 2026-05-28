@@ -52,7 +52,9 @@ export default function PrivatePlayerScreen() {
   }, [player, session]);
 
   useEffect(() => {
-    void setLocalSecureScreen(true).catch(() => undefined);
+    // FLAG_SECURE is applied by the caller before navigation (see app/private-videos.tsx)
+    // to close a one-frame screenshot window on the destination's recents thumbnail.
+    // We only need cleanup here.
     return () => {
       void setLocalSecureScreen(false).catch(() => undefined);
       deleteSession(sid);

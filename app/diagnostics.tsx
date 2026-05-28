@@ -5,8 +5,10 @@ import { useTranslation } from 'react-i18next';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { getLocalDiagnostics, runLocalImpersonationSelfTest } from '@/src/api';
+import { getLocalDiagnostics, getLocalVaultDiagnostics, runLocalImpersonationSelfTest } from '@/src/api';
 import { AppText as Text } from '@/src/components';
+import { BUILD_CONFIG } from '@/src/config';
+import type { LocalVaultDiagnostics } from '@/src/native/localDownloader';
 import { listCookieProfiles, LOCAL_COOKIE_PLATFORMS } from '@/src/services';
 import { useTheme } from '@/src/theme';
 
@@ -140,9 +142,10 @@ export default function DiagnosticsScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const [state, setState] = useState<DiagnosticsState>(initialState);
+  const [vaultDiag, setVaultDiag] = useState<LocalVaultDiagnostics | null>(null);
 
   const loadDiagnostics = useCallback(async () => {
-    const [diag, cookieCounts] = await Promise.all([
+    const [diag, cookieCounts, vault] = await Promise.all([
       getLocalDiagnostics(),
       Promise.all(
         LOCAL_COOKIE_PLATFORMS.map(async (platform) => {
@@ -150,7 +153,9 @@ export default function DiagnosticsScreen() {
           return [platform, profiles.length] as const;
         })
       ),
+      getLocalVaultDiagnostics().catch(() => null),
     ]);
+    setVaultDiag(vault);
 
     setState({
       ytDlpVersion: diag.ytDlpVersion,
@@ -232,7 +237,42 @@ export default function DiagnosticsScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.contentContainer}>
-        <View style={[styles.card, { backgroundColor: colors.surface }]}> 
+        <View style={[styles.card, { backgroundColor: colors.surface }]}>
+          <Text style={[styles.title, { color: colors.text }]}>App</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Version: {BUILD_CONFIG.APP_VERSION || 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Version code: {BUILD_CONFIG.APP_VERSION_CODE ?? 'unknown'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>Channel: {BUILD_CONFIG.APP_CHANNEL}</Text>
+        </View>
+
+        <View style={[styles.card, { backgroundColor: colors.surface }]}>
+          <Text style={[styles.title, { color: colors.text }]}>Vault</Text>
+          {vaultDiag ? (
+            <>
+              <Text style={[styles.row, { color: colors.textMuted }]}>
+                Cipher v4: {vaultDiag.cipherCounts.v4} / v3: {vaultDiag.cipherCounts.v3} / other: {vaultDiag.cipherCounts.other}
+              </Text>
+              <Text style={[styles.row, { color: colors.textMuted }]}>
+                Loopback: {vaultDiag.loopbackRunning ? `running:${vaultDiag.loopbackPort ?? '?'}` : 'stopped'}
+              </Text>
+              <Text style={[styles.row, { color: colors.textMuted }]}>
+                Active video sessions: {vaultDiag.activeVideoSessions}
+              </Text>
+              <Text style={[styles.row, { color: colors.textMuted }]}>
+                Evicted sessions: {vaultDiag.evictedVideoSessions}
+              </Text>
+              <Text style={[styles.row, { color: colors.textMuted }]}>
+                Migration running: {vaultDiag.migration.running ? 'yes' : 'no'}
+              </Text>
+              <Text style={[styles.row, { color: colors.textMuted }]}>
+                Last migration: {vaultDiag.migration.lastProcessed ?? '-'} / {vaultDiag.migration.lastTotal ?? '-'} (last error: {vaultDiag.migration.lastErrorCode ?? 'none'})
+              </Text>
+            </>
+          ) : (
+            <Text style={[styles.row, { color: colors.textMuted }]}>Unavailable</Text>
+          )}
+        </View>
+
+        <View style={[styles.card, { backgroundColor: colors.surface }]}>
           <Text style={[styles.title, { color: colors.text }]}>Runtime</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>Python ready: {state.pythonReady ? 'yes' : 'no'}</Text>
           <Text style={[styles.row, { color: colors.textMuted }]}>yt-dlp: {state.ytDlpVersion}</Text>

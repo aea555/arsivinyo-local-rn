@@ -1,4 +1,10 @@
-export { default, addBackgroundStateListener, addDownloadProgressListener, addYtDlpUpdateProgressListener } from '../../modules/local-downloader/src';
+export {
+  default,
+  addBackgroundStateListener,
+  addDownloadProgressListener,
+  addPrivateVaultMigrationProgressListener,
+  addYtDlpUpdateProgressListener,
+} from '../../modules/local-downloader/src';
 export type {
   LocalBackgroundPermissionResult,
   LocalBackgroundDownloadsState,
@@ -19,7 +25,14 @@ export type {
   LocalPrivateAuthResult,
   LocalPrivateCopyToPublicResult,
   LocalPrivateImportResult,
+  LocalPrivateMigrationCancelResult,
+  LocalPrivateMigrationOutcome,
+  LocalPrivateMigrationProgress,
+  LocalPrivateMigrationStartResult,
+  LocalPrivateMigrationStatus,
   LocalPrivateModeState,
+  LocalPrivateRenameResult,
+  LocalPrivateThumbnailUriResult,
   LocalPrivateVideoItem,
   LocalSaveToMediaStoreInput,
   LocalSaveToMediaStoreResult,
@@ -28,6 +41,11 @@ export type {
   LocalQuickDownloadResult,
   LocalTaskStatus,
   LocalTaskStatusResult,
+  LocalVaultDiagnostics,
+  PrivateVaultFolder,
+  PrivateVaultFolderDeleteResult,
+  PrivateVaultTag,
+  PrivateVaultTagDeleteResult,
   LocalYtDlpUpdateCheckResult,
   LocalYtDlpUpdateProgressEvent,
   LocalYtDlpUpdateResult,

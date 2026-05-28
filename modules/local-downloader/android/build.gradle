@@ -31,5 +31,10 @@ dependencies {
   implementation "androidx.activity:activity-ktx:1.9.2"
   implementation "androidx.biometric:biometric:1.1.0"
   implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+  implementation "com.google.crypto.tink:tink-android:1.13.0"
+  implementation "org.nanohttpd:nanohttpd:2.3.1"
   compileOnly "com.chaquo.python.runtime:chaquopy_java:15.0.1"
+
+  testImplementation "junit:junit:4.13.2"
+  testImplementation "com.google.crypto.tink:tink:1.13.0"
 }

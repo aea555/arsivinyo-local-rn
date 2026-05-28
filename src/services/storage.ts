@@ -5,7 +5,36 @@ const KEYS = {
     DOWNLOAD_LOCATION: '@arsivinyo_download_location',
     DOWNLOAD_COUNT: '@arsivinyo_download_count',
     LAST_AD_SHOWN: '@arsivinyo_last_ad_shown',
+    PRIVATE_VAULT_SORT: '@arsivinyo_private_vault_sort_v1',
+    PRIVATE_VAULT_SHOW_TAGS: '@arsivinyo_private_vault_show_tags_v1',
 } as const;
+
+export type PrivateVaultSortMode = 'alpha' | 'time' | 'size' | 'duration';
+export type PrivateVaultSortDirection = 'asc' | 'desc';
+export interface PrivateVaultSortPreference {
+    mode: PrivateVaultSortMode;
+    direction: PrivateVaultSortDirection;
+}
+
+const DEFAULT_PRIVATE_VAULT_SORT: PrivateVaultSortPreference = {
+    mode: 'alpha',
+    direction: 'asc',
+};
+
+const PRIVATE_VAULT_SORT_MODES: readonly PrivateVaultSortMode[] = ['alpha', 'time', 'size', 'duration'];
+const PRIVATE_VAULT_SORT_DIRECTIONS: readonly PrivateVaultSortDirection[] = ['asc', 'desc'];
+
+function sanitizePrivateVaultSort(value: unknown): PrivateVaultSortPreference {
+    if (!value || typeof value !== 'object') return DEFAULT_PRIVATE_VAULT_SORT;
+    const v = value as Partial<PrivateVaultSortPreference>;
+    const mode = PRIVATE_VAULT_SORT_MODES.includes(v.mode as PrivateVaultSortMode)
+        ? (v.mode as PrivateVaultSortMode)
+        : DEFAULT_PRIVATE_VAULT_SORT.mode;
+    const direction = PRIVATE_VAULT_SORT_DIRECTIONS.includes(v.direction as PrivateVaultSortDirection)
+        ? (v.direction as PrivateVaultSortDirection)
+        : DEFAULT_PRIVATE_VAULT_SORT.direction;
+    return { mode, direction };
+}
 
 /**
  * Generic get function with type safety
@@ -95,6 +124,28 @@ export async function shouldShowInterstitialAd(): Promise<boolean> {
 // ============================================
 // Utility
 // ============================================
+
+// ============================================
+// Private Vault Sort Preference
+// ============================================
+
+export async function getPrivateVaultSort(): Promise<PrivateVaultSortPreference> {
+    const raw = await getItem<unknown>(KEYS.PRIVATE_VAULT_SORT, null);
+    return sanitizePrivateVaultSort(raw);
+}
+
+export async function setPrivateVaultSort(value: PrivateVaultSortPreference): Promise<boolean> {
+    return setItem(KEYS.PRIVATE_VAULT_SORT, sanitizePrivateVaultSort(value));
+}
+
+export async function getPrivateVaultShowTags(): Promise<boolean> {
+    const raw = await getItem<unknown>(KEYS.PRIVATE_VAULT_SHOW_TAGS, true);
+    return typeof raw === 'boolean' ? raw : true;
+}
+
+export async function setPrivateVaultShowTags(value: boolean): Promise<boolean> {
+    return setItem(KEYS.PRIVATE_VAULT_SHOW_TAGS, value);
+}
 
 /**
  * Clear all app storage (for debugging/reset)
