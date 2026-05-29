@@ -4,6 +4,36 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+## [2.3.0-beta.1] — Audio downloads + in-app music player
+
+Audio downloads and a full music player with playlists and background playback. `versionCode` → `20300`.
+
+### Added
+- **Download as audio.** A new "Audio mode" toggle on the home screen routes downloads through yt-dlp's best-audio path (`bestaudio/best` + `FFmpegExtractAudio`), writes title/artist metadata tags, and saves a cover-art thumbnail. Files are saved as **M4A/AAC** and land in the public **`Music/Arsivinyo`** folder (survives uninstall, visible to other apps). Audio mode disables the vault toggle — audio is never vaulted in this release. (M4A rather than MP3 because the bundled FFmpeg ships without an MP3 encoder; AAC sources are remuxed losslessly, others re-encoded at 256k. Cover art is stored as a sidecar thumbnail rather than embedded into the file, because that same FFmpeg has no image encoder to transcode the source `.webp` cover.)
+- **Human-readable audio filenames.** A dedicated audio sanitizer (`_sanitize_audio_title`) preserves spaces and Unicode (only stripping filesystem-illegal characters), so "This song is amazing" stays `This song is amazing.m4a` instead of being underscore-slugged. Same timestamp-to-now behavior as video saves.
+- **In-app music player** (`react-native-track-player`) with background playback, lock-screen / notification transport controls, headset-button support, and audio-focus handling. Symmetric transport row (previous · −10s · play/pause · +10s · next), a **drag-or-tap seek bar** (Animated-value driven so scrubbing stays smooth), and repeat (off/all/one). Large artwork + title clearly shown.
+- **Favorites.** A special, non-deletable **Favorites** playlist (reserved id `favorites`, pinned to the top of the Playlists tab). Bulk favorite/unfavorite from the Songs tab and any playlist via a smart heart toggle (favorites unless every selected song already is, in which case it unfavorites — so inside Favorites it only ever unfavorites), plus a heart toggle on the player screen for the current track. Fully local (an entry in `sounds/index.json`).
+- **Music library screen** (`app/sounds.tsx`): a **Songs / Playlists** segmented layout — "Songs" is the full library (search, sort by newest/oldest/title/duration), "Playlists" is a vertical list of playlists you tap to open (with a back arrow). Multi-select with confirmation-gated batch delete and add-to-playlist, a persistent mini-player bar, the currently-playing track shown with an accent outline, and bulk import of existing audio files via a multi-select SAF picker.
+- **Playlists** (many-to-many): create / rename / delete (via a per-playlist overflow menu), add songs by per-row **＋** button or multi-select batch, and remove from a playlist. Destructive/important actions confirm via modal.
+- **Thumbnails** for every track, extracted from embedded cover art (`MediaMetadataRetriever`) and cached as sidecar JPEGs for fast display.
+- Native music API on `LocalDownloaderModule` (`listSounds`, `importSounds`, `deleteSounds`, `renameSound`, playlist CRUD) backed by a new `sounds/index.json` (song cache + playlists), reconciled against MediaStore on each load so externally-deleted tracks drop out cleanly.
+- New `SoundsImportActivity` (multi-select `audio/*` SAF picker), injected into the manifest by the local-downloader plugin.
+- All new UI fully localized in EN + TR (other 8 locales fall back to English).
+
+### Changed
+- The music library requires **Android 10+ (API 29)** — it uses the MediaStore scoped-storage owner model to read/write `Music/Arsivinyo` with **no new permissions** (the app still blocks all `READ_MEDIA_*` / external-storage permissions). On older devices the feature degrades with a clear message.
+- App entry is now `index.js` (registers the track-player playback service before expo-router boots).
+- **`react-native-track-player` upgraded to the 5.x New-Architecture nightly.** The 4.1.2 stable can start playback but its commands and remote events don't reach the player under the New Architecture's bridgeless mode (controls were inert); the 5.x TurboModule build fixes this. The old `patches/react-native-track-player+4.1.2.patch` is removed.
+- **Player UX:** tapping a song row now just starts playback (open the full player via the mini-player or the notification); the play button restarts a track that has finished (when not looping); **previous** restarts the current track on a single press and skips to the previous track on a double press (in-app button and notification alike).
+- The notification-tap deep link (`notification.click`) is routed to the player via `app/+native-intent.ts` instead of hitting expo-router's "Unmatched Route" 404.
+
+### Fixed
+- **Audio import was immediately cancelled.** The SAF import activities had `android:noHistory="true"`, so Android finished them the moment the full-screen document picker appeared — firing their cancel path and dropping the real selection. Removed `noHistory` from both import activities (kept on the share-capture activity) and made the plugin's manifest writer replace attributes so the removal actually applies on prebuild.
+
+### Deferred
+- Encrypted vault export/import bundle (`.avbundle`) — still deferred to a later release; unchanged by this work.
+- Shuffle, sleep timer, playback speed, duplicate detection, "re-adopt library after reinstall" (SAF), and in-playlist drag-reorder were scoped out of v1 as optional QoL.
+
 ## [2.2.0-beta.3]
 
 ### Added

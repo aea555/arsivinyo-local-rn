@@ -28,6 +28,7 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.localdownloader.sounds.SoundsStore
 import expo.modules.localdownloader.vault.ThumbnailGenerator
 import expo.modules.localdownloader.vault.VaultCipherV4
 import expo.modules.localdownloader.vault.VaultLoopbackProvider
@@ -159,6 +160,7 @@ data class DownloadPythonInput(
   val cookieFilePath: String?,
   val forceNoCookie: Boolean = false,
   val mergeCapable: Boolean = true,
+  val audioOnly: Boolean = false,
   val userAgent: String,
   val debugLogging: Boolean = false
 )
@@ -236,6 +238,9 @@ class LocalDownloaderModule : Module() {
   private val queueLock = Any()
   private val privateVaultLock = Any()
   private val privateVaultIoLock = Any()
+  private val soundsStore: SoundsStore by lazy {
+    SoundsStore(requireNotNull(appContext.reactContext).applicationContext)
+  }
   private val vaultLoopbackLock = Any()
   @Volatile private var vaultLoopbackServer: VaultLoopbackServer? = null
   @Volatile private var cachedVaultDekV4: ByteArray? = null
@@ -275,6 +280,9 @@ class LocalDownloaderModule : Module() {
   private var privateModeEnabled: Boolean = false
 
   @Volatile
+  private var audioModeEnabled: Boolean = false
+
+  @Volatile
   private var backgroundDownloadsEnabled: Boolean = false
 
   @Volatile
@@ -304,6 +312,7 @@ class LocalDownloaderModule : Module() {
       lastQuickReason = lastQuickReasonFallback
       val context = requireNotNull(appContext.reactContext)
       privateModeEnabled = isPrivateModeEnabledPersisted(context)
+      audioModeEnabled = isAudioModeEnabledPersisted(context)
       backgroundDownloadsEnabled = isBackgroundDownloadsEnabledPersisted(context)
       stickyNotificationEnabled = isStickyNotificationEnabledPersisted(context)
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
@@ -352,7 +361,9 @@ class LocalDownloaderModule : Module() {
       val cookiePlatform = (input["cookiePlatform"] as? String)?.trim()?.lowercase()?.takeIf { SUPPORTED_PLATFORMS.contains(it) }
       val cookieProfile = (input["cookieProfile"] as? String)?.trim().orEmpty().ifEmpty { null }
       val maxFileSizeMb = (input["maxFileSizeMb"] as? Number)?.toInt()?.coerceAtLeast(0) ?: DEFAULT_MAX_FILE_SIZE_MB
-      val visibility = normalizeVisibility((input["visibility"] as? String), defaultPrivate = privateModeEnabled)
+      val audioOnly = (input["mediaKind"] as? String)?.lowercase() == "audio"
+      // Audio downloads always go to the public music library — no vault.
+      val visibility = if (audioOnly) "public" else normalizeVisibility((input["visibility"] as? String), defaultPrivate = privateModeEnabled)
       startDownloadInternal(
         url = url,
         cookiePlatform = cookiePlatform,
@@ -360,6 +371,7 @@ class LocalDownloaderModule : Module() {
         maxFileSizeMb = maxFileSizeMb,
         visibility = visibility,
         source = "manual",
+        audioOnly = audioOnly,
       )
     }
 
@@ -448,6 +460,16 @@ class LocalDownloaderModule : Module() {
       mapOf("enabled" to resolved)
     }
 
+    AsyncFunction("getAudioModeState") {
+      mapOf("enabled" to audioModeEnabled)
+    }
+
+    AsyncFunction("setAudioModeEnabled") { input: Map<String, Any?> ->
+      val requested = (input["enabled"] as? Boolean) ?: false
+      val resolved = setAudioModeEnabledInternal(requested)
+      mapOf("enabled" to resolved)
+    }
+
     AsyncFunction("authenticatePrivateAccess") { input: Map<String, Any?> ->
       val purpose = (input["purpose"] as? String)?.trim().orEmpty().ifBlank { "view" }
       val auth = authenticatePrivateAccessInternal(purpose)
@@ -483,6 +505,80 @@ class LocalDownloaderModule : Module() {
 
     AsyncFunction("pickAndImportVideoToPrivateVault") {
       pickAndImportVideoToPrivateVaultInternal()
+    }
+
+    // ---- Music library (in-app audio player) ----
+
+    Function("isSoundsSupported") {
+      soundsStore.isSupported()
+    }
+
+    AsyncFunction("listSounds") {
+      soundsStore.listLibrary()
+    }
+
+    AsyncFunction("importSounds") {
+      pickAndImportSoundsInternal()
+    }
+
+    AsyncFunction("deleteSounds") { input: Map<String, Any?> ->
+      val ids = (input["ids"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+      soundsStore.deleteSounds(ids)
+    }
+
+    AsyncFunction("renameSound") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      val title = (input["title"] as? String)?.trim().orEmpty()
+      soundsStore.renameSound(id, title)
+    }
+
+    AsyncFunction("getSoundThumbnail") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      mapOf("path" to soundsStore.getThumbnailPath(id))
+    }
+
+    AsyncFunction("listSoundPlaylists") {
+      soundsStore.listPlaylists()
+    }
+
+    AsyncFunction("createSoundPlaylist") { input: Map<String, Any?> ->
+      val name = (input["name"] as? String)?.trim().orEmpty()
+      soundsStore.createPlaylist(name)
+    }
+
+    AsyncFunction("renameSoundPlaylist") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      val name = (input["name"] as? String)?.trim().orEmpty()
+      soundsStore.renamePlaylist(id, name)
+    }
+
+    AsyncFunction("deleteSoundPlaylist") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      soundsStore.deletePlaylist(id)
+    }
+
+    AsyncFunction("setSoundPlaylistSongs") { input: Map<String, Any?> ->
+      val id = (input["id"] as? String)?.trim().orEmpty()
+      val songIds = (input["songIds"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+      soundsStore.setPlaylistSongs(id, songIds)
+    }
+
+    AsyncFunction("addSoundsToPlaylists") { input: Map<String, Any?> ->
+      val songIds = (input["songIds"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+      val playlistIds = (input["playlistIds"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+      soundsStore.addSongsToPlaylists(songIds, playlistIds)
+    }
+
+    AsyncFunction("removeSoundsFromPlaylist") { input: Map<String, Any?> ->
+      val playlistId = (input["playlistId"] as? String)?.trim().orEmpty()
+      val songIds = (input["songIds"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+      soundsStore.removeSongsFromPlaylist(playlistId, songIds)
+    }
+
+    AsyncFunction("setSoundsFavorite") { input: Map<String, Any?> ->
+      val songIds = (input["songIds"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+      val favorite = (input["favorite"] as? Boolean) ?: true
+      soundsStore.setSoundsFavorite(songIds, favorite)
     }
 
     AsyncFunction("makeVideoPublic") { input: Map<String, Any?> ->
@@ -1282,6 +1378,7 @@ class LocalDownloaderModule : Module() {
     maxFileSizeMb: Int,
     visibility: String,
     source: String,
+    audioOnly: Boolean = false,
   ): Map<String, Any?> {
     if (url.isBlank()) {
       throw IllegalArgumentException("INVALID_URL")
@@ -1446,6 +1543,7 @@ class LocalDownloaderModule : Module() {
             cookieFilePath = effectiveCookiePath,
             forceNoCookie = false,
             mergeCapable = ffmpegInfo.mergeCapable,
+            audioOnly = audioOnly,
             userAgent = DEFAULT_HTTP_USER_AGENT,
             debugLogging = debugLoggingEnabled,
           )
@@ -1472,6 +1570,7 @@ class LocalDownloaderModule : Module() {
               cookieFilePath = null,
               forceNoCookie = true,
               mergeCapable = ffmpegInfo.mergeCapable,
+              audioOnly = audioOnly,
               userAgent = DEFAULT_HTTP_USER_AGENT,
               debugLogging = debugLoggingEnabled,
             )
@@ -1507,7 +1606,28 @@ class LocalDownloaderModule : Module() {
           var finalFilePath = filePath
           var privateVideoId: String? = null
           var finalIsPrivate = false
-          if (filename != null && filePath != null && visibility == "private") {
+          if (filename != null && filePath != null && audioOnly) {
+            emitProgress(taskId, "PROGRESS", "saving", "Saving to music library", 99.0)
+            val thumbnailPath = result.optString("thumbnail_path").ifBlank { null }
+            runCatching {
+              val sound = soundsStore.registerDownloadedSound(
+                sourceFilePath = filePath,
+                displayName = filename,
+                sourceUrl = url,
+                thumbnailPath = thumbnailPath,
+              )
+              finalFilePath = null
+              runCatching { File(filePath).delete() }
+              thumbnailPath?.let { runCatching { File(it).delete() } }
+              debug("Task[$taskId] audio saved to music library id=${sound["id"]}")
+            }.onFailure { saveError ->
+              val saveMessage = saveError.message ?: "SOUNDS_SAVE_FAILED"
+              updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "SOUNDS_SAVE_FAILED", saveMessage)
+              emitProgress(taskId, "FAILURE", "error", saveMessage)
+              addError("SOUNDS_SAVE_FAILED: task=$taskId message=$saveMessage")
+              return@runCatching
+            }
+          } else if (filename != null && filePath != null && visibility == "private") {
             emitProgress(taskId, "PROGRESS", "saving", "Saving to private vault", 99.0)
             runCatching {
               val privateEntry = importFileToPrivateVault(
@@ -1647,14 +1767,17 @@ class LocalDownloaderModule : Module() {
     } ?: return false
 
     emitBackgroundStateChanged()
+    // Re-read Audio mode at drain time (it may have been toggled since enqueue).
+    val queuedAudioOnly = audioModeEnabled
     return runCatching {
       startDownloadInternal(
         url = next.url,
         cookiePlatform = detectCookiePlatform(next.url),
         cookieProfile = null,
         maxFileSizeMb = DEFAULT_MAX_FILE_SIZE_MB,
-        visibility = next.visibility,
+        visibility = if (queuedAudioOnly) "public" else next.visibility,
         source = "queued",
+        audioOnly = queuedAudioOnly,
       )
       true
     }.getOrElse {
@@ -1690,7 +1813,9 @@ class LocalDownloaderModule : Module() {
         reportQuickActionReason("INVALID_QUICK_URL")
         return mapOf("accepted" to false, "reason" to "INVALID_QUICK_URL")
       }
-    val selectedVisibility = normalizeVisibility(visibilityOverride, defaultPrivate = privateModeEnabled)
+    // Audio mode (persisted, toggleable from the notification) forces audio-only + public.
+    val audioOnly = audioModeEnabled
+    val selectedVisibility = if (audioOnly) "public" else normalizeVisibility(visibilityOverride, defaultPrivate = privateModeEnabled)
 
     if (activeJob?.isActive == true) {
       val queueResult = enqueueQuickUrl(normalizedUrl, selectedVisibility)
@@ -1718,6 +1843,7 @@ class LocalDownloaderModule : Module() {
         maxFileSizeMb = DEFAULT_MAX_FILE_SIZE_MB,
         visibility = selectedVisibility,
         source = "quick",
+        audioOnly = audioOnly,
       )
       reportQuickActionReason(null)
       mapOf(
@@ -1847,6 +1973,7 @@ class LocalDownloaderModule : Module() {
       "backgroundDownloadsEnabled" to backgroundDownloadsEnabled,
       "stickyNotificationEnabled" to stickyNotificationEnabled,
       "privateModeEnabled" to privateModeEnabled,
+      "audioModeEnabled" to audioModeEnabled,
       "notificationPermissionRequired" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU),
       "notificationPermissionGranted" to granted
     )
@@ -1894,9 +2021,28 @@ class LocalDownloaderModule : Module() {
     val resolved = if (PRIVATE_VAULT_FEATURE_FLAG) enabled else false
     privateModeEnabled = resolved
     persistPrivateModeEnabled(context, resolved)
+    // Private and Audio modes are mutually exclusive (audio is always public).
+    if (resolved && audioModeEnabled) {
+      audioModeEnabled = false
+      persistAudioModeEnabled(context, false)
+    }
     syncForegroundNotification(notificationPhase, if (resolved) "Private mode enabled" else "Private mode disabled")
     emitBackgroundStateChanged()
     return resolved
+  }
+
+  private fun setAudioModeEnabledInternal(enabled: Boolean): Boolean {
+    val context = requireNotNull(appContext.reactContext)
+    audioModeEnabled = enabled
+    persistAudioModeEnabled(context, enabled)
+    // Audio mode forces public output, so turning it on clears private mode.
+    if (enabled && privateModeEnabled) {
+      privateModeEnabled = false
+      persistPrivateModeEnabled(context, false)
+    }
+    syncForegroundNotification(notificationPhase, null)
+    emitBackgroundStateChanged()
+    return enabled
   }
 
   private fun reportQuickActionReason(reason: String?) {
@@ -1924,6 +2070,7 @@ class LocalDownloaderModule : Module() {
       progressPercent = progress,
       queueSize = queueSize(),
       privateModeEnabled = privateModeEnabled,
+      audioModeEnabled = audioModeEnabled,
       pinned = stickyNotificationEnabled,
     )
     if (state.shouldRunForeground) {
@@ -2099,6 +2246,7 @@ class LocalDownloaderModule : Module() {
       input.cookieFilePath,
       input.forceNoCookie,
       input.mergeCapable,
+      input.audioOnly,
       input.userAgent,
       input.debugLogging
     )
@@ -2791,6 +2939,8 @@ class LocalDownloaderModule : Module() {
     debug("[PRIVATE] MediaStore write start filename=$filename mimeType=$resolvedMimeType")
 
     val isVideo = resolvedMimeType.startsWith("video/")
+    val isAudio = resolvedMimeType.startsWith("audio/")
+    // MediaStore.Audio has no DATE_TAKEN column; only video/image do.
     val dateTakenColumn = if (isVideo) {
       MediaStore.Video.VideoColumns.DATE_TAKEN
     } else {
@@ -2803,10 +2953,16 @@ class LocalDownloaderModule : Module() {
       put(MediaStore.MediaColumns.MIME_TYPE, resolvedMimeType)
       put(MediaStore.MediaColumns.DATE_ADDED, nowSeconds)
       put(MediaStore.MediaColumns.DATE_MODIFIED, nowSeconds)
-      put(dateTakenColumn, dateTakenMs)
+      if (!isAudio) {
+        put(dateTakenColumn, dateTakenMs)
+      }
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         val targetRelativePath = relativePath?.trim().takeUnless { it.isNullOrBlank() }
-          ?: if (isVideo) Environment.DIRECTORY_DCIM else Environment.DIRECTORY_PICTURES
+          ?: when {
+            isVideo -> Environment.DIRECTORY_DCIM
+            isAudio -> Environment.DIRECTORY_MUSIC
+            else -> Environment.DIRECTORY_PICTURES
+          }
         put(
           MediaStore.MediaColumns.RELATIVE_PATH,
           targetRelativePath
@@ -2816,10 +2972,10 @@ class LocalDownloaderModule : Module() {
     }
 
     val resolver = requireNotNull(appContext.reactContext).contentResolver
-    val collection = if (isVideo) {
-      MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-    } else {
-      MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    val collection = when {
+      isVideo -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+      isAudio -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+      else -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
     }
     val uri = resolver.insert(collection, contentValues) ?: throw IOException("MEDIASTORE_INSERT_FAILED")
     debug("[PRIVATE] MediaStore insert success uri=$uri")
@@ -2842,7 +2998,9 @@ class LocalDownloaderModule : Module() {
       val finalizeValues = ContentValues().apply {
         put(MediaStore.MediaColumns.IS_PENDING, 0)
         put(MediaStore.MediaColumns.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
-        put(dateTakenColumn, dateTakenMs)
+        if (!isAudio) {
+          put(dateTakenColumn, dateTakenMs)
+        }
       }
       resolver.update(uri, finalizeValues, null, null)
     }
@@ -3729,6 +3887,56 @@ class LocalDownloaderModule : Module() {
       "code" to code,
       "message" to (pickerResult.message ?: code)
     )
+  }
+
+  private fun pickAndImportSoundsInternal(): Map<String, Any?> {
+    if (!soundsStore.isSupported()) {
+      return mapOf("success" to false, "code" to SoundsStore.ERR_UNSUPPORTED_OS, "message" to SoundsStore.ERR_UNSUPPORTED_OS)
+    }
+    val context = appContext.reactContext
+      ?: return mapOf("success" to false, "code" to SoundsImportActivity.CODE_IMPORT_FAILED, "message" to SoundsImportActivity.CODE_IMPORT_FAILED)
+
+    val resultRef = AtomicReference<SoundsImportActivity.Result?>()
+    val latch = CountDownLatch(1)
+    val launched = SoundsImportActivity.launch(context) { result ->
+      resultRef.set(result)
+      latch.countDown()
+    }
+    if (!launched) {
+      return mapOf("success" to false, "code" to SoundsImportActivity.CODE_IMPORT_FAILED, "message" to SoundsImportActivity.CODE_IMPORT_FAILED)
+    }
+
+    val completed = runCatching { latch.await(PRIVATE_IMPORT_PICK_TIMEOUT_SECONDS, TimeUnit.SECONDS) }.getOrDefault(false)
+    if (!completed) {
+      SoundsImportActivity.cancelPendingWith(SoundsImportActivity.CODE_PICK_CANCELLED)
+      return mapOf("success" to false, "code" to SoundsImportActivity.CODE_PICK_CANCELLED, "message" to SoundsImportActivity.CODE_PICK_CANCELLED)
+    }
+
+    val pickerResult = resultRef.get()
+      ?: return mapOf("success" to false, "code" to SoundsImportActivity.CODE_IMPORT_FAILED, "message" to SoundsImportActivity.CODE_IMPORT_FAILED)
+
+    if (pickerResult.uris.isEmpty()) {
+      val code = pickerResult.code?.ifBlank { SoundsImportActivity.CODE_PICK_CANCELLED } ?: SoundsImportActivity.CODE_PICK_CANCELLED
+      return mapOf("success" to false, "code" to code, "message" to (pickerResult.message ?: code))
+    }
+
+    return runCatching {
+      val uris = pickerResult.uris.map { Uri.parse(it) }
+      val importResult = soundsStore.importFromUris(uris)
+      val failedCount = (importResult["failedCount"] as? Int) ?: 0
+      val importedCount = (importResult["importedCount"] as? Int) ?: 0
+      if (failedCount > 0) {
+        addError("SOUNDS_IMPORT_PARTIAL: imported=$importedCount failed=$failedCount (see SoundsStore log for per-file cause)")
+      }
+      mapOf("success" to true) + importResult
+    }.getOrElse { error ->
+      val message = error.message ?: SoundsImportActivity.CODE_IMPORT_FAILED
+      // Always surface this — without it, a whole-batch import failure is swallowed
+      // into the JS result and never reaches logcat or the in-app failure log.
+      Log.e(tag, "Sound import failed: ${error.javaClass.simpleName}: $message", error)
+      addError("SOUNDS_IMPORT_FAILED: ${error.javaClass.simpleName}: $message")
+      mapOf("success" to false, "code" to SoundsImportActivity.CODE_IMPORT_FAILED, "message" to message)
+    }
   }
 
   private fun importVideoFromContentUriToPrivateVault(sourceUri: Uri): PrivateVideoEntry {
@@ -6836,6 +7044,7 @@ class LocalDownloaderModule : Module() {
     private const val SECURE_COOKIES_DIRNAME = "cookies_secure"
     private const val PREFS_NAME = "local_downloader_prefs"
     private const val PREF_PRIVATE_MODE_ENABLED = "private_mode_enabled"
+    private const val PREF_AUDIO_MODE_ENABLED = "audio_mode_enabled"
     private const val PREF_BACKGROUND_DOWNLOADS_ENABLED = "background_downloads_enabled"
     private const val PREF_STICKY_NOTIFICATION_ENABLED = "sticky_notification_enabled"
     private const val PRIVATE_VAULT_DIRNAME = "private_vault"
@@ -6945,15 +7154,44 @@ class LocalDownloaderModule : Module() {
         return
       }
       persistPrivateModeEnabled(context, next)
+      // Private and audio modes are mutually exclusive.
+      if (next) persistAudioModeEnabled(context, false)
       DownloadNotificationController.startOrUpdate(
         context,
         BackgroundNotificationState(
           activeTaskId = null,
           phase = "idle",
-          message = if (next) "Private mode enabled" else "Private mode disabled",
+          message = context.getString(if (next) R.string.ldl_msg_private_enabled else R.string.ldl_msg_private_disabled),
           progressPercent = null,
           queueSize = pendingQuickRequestsSnapshot().size,
           privateModeEnabled = next,
+          audioModeEnabled = if (next) false else isAudioModeEnabledPersisted(context),
+          pinned = isStickyNotificationEnabledPersisted(context)
+        )
+      )
+    }
+
+    fun onNotificationToggleAudioMode(context: Context) {
+      val module = activeModule
+      if (module != null) {
+        runCatching { module.setAudioModeEnabledInternal(!module.audioModeEnabled) }
+        return
+      }
+
+      val next = !isAudioModeEnabledPersisted(context)
+      persistAudioModeEnabled(context, next)
+      // Audio mode forces public output, so it clears private mode.
+      if (next) persistPrivateModeEnabled(context, false)
+      DownloadNotificationController.startOrUpdate(
+        context,
+        BackgroundNotificationState(
+          activeTaskId = null,
+          phase = "idle",
+          message = context.getString(if (next) R.string.ldl_msg_audio_enabled else R.string.ldl_msg_audio_disabled),
+          progressPercent = null,
+          queueSize = pendingQuickRequestsSnapshot().size,
+          privateModeEnabled = if (next) false else isPrivateModeEnabledPersisted(context),
+          audioModeEnabled = next,
           pinned = isStickyNotificationEnabledPersisted(context)
         )
       )
@@ -6977,7 +7215,12 @@ class LocalDownloaderModule : Module() {
         return mapOf("accepted" to false, "reason" to "PERMISSION_REQUIRED", "captureMode" to captureMode)
       }
 
-      val selectedVisibility = if (isPrivateModeEnabledPersisted(context)) "private" else "public"
+      val audioModePersisted = isAudioModeEnabledPersisted(context)
+      val selectedVisibility = when {
+        audioModePersisted -> "public"
+        isPrivateModeEnabledPersisted(context) -> "private"
+        else -> "public"
+      }
       val module = activeModule
       if (module != null) {
         return runCatching {
@@ -7029,6 +7272,7 @@ class LocalDownloaderModule : Module() {
           progressPercent = null,
           queueSize = queueSize,
           privateModeEnabled = selectedVisibility == "private",
+          audioModeEnabled = audioModePersisted,
           pinned = isStickyNotificationEnabledPersisted(context)
         )
       )
@@ -7151,6 +7395,11 @@ class LocalDownloaderModule : Module() {
         .getBoolean(PREF_PRIVATE_MODE_ENABLED, false)
     }
 
+    private fun isAudioModeEnabledPersisted(context: Context): Boolean {
+      return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_AUDIO_MODE_ENABLED, false)
+    }
+
     private fun isBackgroundDownloadsEnabledPersisted(context: Context): Boolean {
       return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .getBoolean(PREF_BACKGROUND_DOWNLOADS_ENABLED, false)
@@ -7165,6 +7414,13 @@ class LocalDownloaderModule : Module() {
       context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(PREF_PRIVATE_MODE_ENABLED, enabled && PRIVATE_VAULT_FEATURE_FLAG)
+        .apply()
+    }
+
+    private fun persistAudioModeEnabled(context: Context, enabled: Boolean) {
+      context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_AUDIO_MODE_ENABLED, enabled)
         .apply()
     }
 
@@ -7238,6 +7494,7 @@ class LocalDownloaderModule : Module() {
             progressPercent = null,
             queueSize = 0,
             privateModeEnabled = isPrivateModeEnabledPersisted(context),
+            audioModeEnabled = isAudioModeEnabledPersisted(context),
             pinned = isStickyNotificationEnabledPersisted(context)
           )
         )

@@ -119,6 +119,10 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] PrivateVaultImportActivity must exist exactly once in AndroidManifest.xml"
     exit 1
   fi
+  if [[ "$(grep -F 'expo.modules.localdownloader.SoundsImportActivity' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "[verify-local-downloader-prebuild] SoundsImportActivity must exist exactly once in AndroidManifest.xml"
+    exit 1
+  fi
   if grep -Fq 'expo.modules.localdownloader.PrivateVideoPlayerActivity' "$ANDROID_MANIFEST"; then
     echo "[verify-local-downloader-prebuild] PrivateVideoPlayerActivity must not exist in AndroidManifest.xml"
     exit 1

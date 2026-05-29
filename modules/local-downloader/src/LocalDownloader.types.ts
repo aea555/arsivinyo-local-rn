@@ -7,6 +7,49 @@ export interface LocalDownloadStartInput {
   // 0 or undefined means unlimited file size.
   maxFileSizeMb?: number;
   visibility?: 'public' | 'private';
+  // 'audio' downloads best-audio as M4A/AAC into the public music library (never the vault).
+  mediaKind?: 'video' | 'audio';
+}
+
+/** A track in the on-device music library (public Music/Arsivinyo folder). */
+export interface LocalSound {
+  id: string;
+  title: string;
+  artist?: string | null;
+  fileName: string;
+  contentUri: string;
+  durationSec: number;
+  sizeBytes: number;
+  thumbnailPath?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A user-defined playlist. Many-to-many: a song may appear in several playlists. */
+export interface LocalSoundPlaylist {
+  id: string;
+  name: string;
+  songIds: string[];
+  /** True for the special, non-deletable Favorites playlist (id "favorites"). */
+  system?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LocalSoundsLibrary {
+  songs: LocalSound[];
+  playlists: LocalSoundPlaylist[];
+}
+
+export interface LocalSoundsImportResult {
+  success: boolean;
+  importedCount?: number;
+  failedCount?: number;
+  songs?: LocalSound[];
+  code?: string;
+  message?: string;
+  /** Per-file failure reasons (debug aid), present when failedCount > 0. */
+  failures?: string[];
 }
 
 export interface LocalDownloadStartResult {
@@ -25,6 +68,7 @@ export interface LocalBackgroundState {
   lastQuickReason?: string | null;
   notificationPhase?: string;
   privateModeEnabled?: boolean;
+  audioModeEnabled?: boolean;
   notificationPermissionRequired: boolean;
   notificationPermissionGranted: boolean;
 }

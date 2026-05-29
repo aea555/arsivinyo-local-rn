@@ -111,10 +111,13 @@ function getPollingInterval(elapsedMs: number): number {
   return POLLING_INTERVALS.slow;
 }
 
+type DownloadMediaKind = 'video' | 'audio';
+
 export async function startDownload(
   url: string,
   maxFileSizeMb: number = DEFAULT_MAX_FILE_SIZE_MB,
-  visibility: DownloadVisibility = 'public'
+  visibility: DownloadVisibility = 'public',
+  mediaKind: DownloadMediaKind = 'video'
 ): Promise<DownloadStartResponse> {
   const platform = getPlatformFromUrl(url);
   const cookieProfile = platform ? await getDefaultCookieProfile(platform) : null;
@@ -124,7 +127,9 @@ export async function startDownload(
     cookiePlatform: platform ?? undefined,
     cookieProfile: cookieProfile ?? undefined,
     maxFileSizeMb,
-    visibility,
+    // Audio downloads always land in the public music library, never the vault.
+    visibility: mediaKind === 'audio' ? 'public' : visibility,
+    mediaKind,
   });
 
   return {
@@ -177,8 +182,9 @@ export async function pollTaskStatus(
 export async function downloadMedia(
   url: string,
   onProgressChange?: (progress: DownloadProgress) => void,
-  visibility: DownloadVisibility = 'public'
-): Promise<{ taskId: string; localPath?: string; filename: string; isPrivate: boolean; privateVideoId?: string }> {
+  visibility: DownloadVisibility = 'public',
+  mediaKind: DownloadMediaKind = 'video'
+): Promise<{ taskId: string; localPath?: string; filename: string; isPrivate: boolean; privateVideoId?: string; isAudio?: boolean }> {
   if (!isValidUrl(url)) {
     const errorCode = 'INVALID_URL' as ApiErrorCode;
     onProgressChange?.({
@@ -193,7 +199,7 @@ export async function downloadMedia(
 
   let startResult: DownloadStartResponse;
   try {
-    startResult = await startDownload(url, DEFAULT_MAX_FILE_SIZE_MB, visibility);
+    startResult = await startDownload(url, DEFAULT_MAX_FILE_SIZE_MB, visibility, mediaKind);
   } catch (error) {
     const errorCode = extractErrorCode(error);
     const errorMessage = getErrorMessage(errorCode);
@@ -265,6 +271,21 @@ export async function downloadMedia(
     const localPath = finalStatus.filePath;
     const isPrivate = Boolean(finalStatus.isPrivate);
     const privateVideoId = finalStatus.privateVideoId;
+
+    // Audio downloads are moved into the public music library natively, so there
+    // is no local cache path to hand back — a filename alone means success.
+    if (mediaKind === 'audio') {
+      if (!filename) {
+        throw new Error(getErrorMessage('FILE_NOT_FOUND'));
+      }
+      onProgressChange?.({ state: 'completed', taskId, filename });
+      return {
+        taskId,
+        filename,
+        isPrivate: false,
+        isAudio: true,
+      };
+    }
 
     if (isPrivate) {
       if (!filename || !privateVideoId) {

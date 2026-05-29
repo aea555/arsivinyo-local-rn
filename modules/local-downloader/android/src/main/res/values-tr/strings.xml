@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="ldl_channel_name">Arka plan indirmeleri</string>
+  <string name="ldl_channel_description">İndirme ilerlemesini ve kontrolleri gösterir</string>
+
+  <string name="ldl_title_downloading">Medya indiriliyor</string>
+  <string name="ldl_title_queued">Sıradaki indirmeler</string>
+  <string name="ldl_title_idle">Arsivinyo İndirici</string>
+
+  <string name="ldl_sub_starting">İndirme hazırlanıyor</string>
+  <string name="ldl_sub_downloading">İndirme sürüyor</string>
+  <string name="ldl_sub_processing">Medya işleniyor</string>
+  <string name="ldl_sub_saving">Medya kaydediliyor</string>
+  <string name="ldl_sub_completed">Tamamlandı</string>
+  <string name="ldl_sub_error">Panodan yeniden denemek için dokunun</string>
+  <string name="ldl_sub_queue_tap">Panodan sıraya almak için dokunun</string>
+  <string name="ldl_sub_download_tap">Panodan indirmek için dokunun</string>
+
+  <string name="ldl_queue_label">Sıra: %1$d/%2$d</string>
+  <string name="ldl_mode_private">Mod: Gizli</string>
+  <string name="ldl_mode_public">Mod: Genel</string>
+
+  <string name="ldl_private_on">Gizli AÇIK</string>
+  <string name="ldl_private_off">Gizli KAPALI</string>
+  <string name="ldl_audio_on">Ses AÇIK</string>
+  <string name="ldl_audio_off">Ses KAPALI</string>
+
+  <string name="ldl_action_cancel">İptal</string>
+  <string name="ldl_action_quick">Hızlı</string>
+  <string name="ldl_action_add_url">URL ekle</string>
+  <string name="ldl_action_paste_url">URL yapıştır</string>
+
+  <string name="ldl_msg_private_enabled">Gizli mod açıldı</string>
+  <string name="ldl_msg_private_disabled">Gizli mod kapatıldı</string>
+  <string name="ldl_msg_audio_enabled">Ses modu açıldı</string>
+  <string name="ldl_msg_audio_disabled">Ses modu kapatıldı</string>
+</resources>

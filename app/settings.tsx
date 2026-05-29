@@ -7,6 +7,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,9 +16,13 @@ import { getErrorMessage } from '@/src/api/errors';
 import {
   authenticateLocalPrivateAccess,
   cancelLocalPrivateVaultMigration,
+  ensureLocalBackgroundPermission,
+  getLocalBackgroundState,
   getLocalYtDlpUpdateStatus,
   listenLocalPrivateVaultMigration,
   listenYtDlpUpdateProgress,
+  setLocalBackgroundDownloadsEnabled,
+  setLocalStickyNotificationEnabled,
   startLocalPrivateVaultMigration,
   updateLocalYtDlp,
 } from '@/src/api';
@@ -90,6 +95,11 @@ export default function SettingsScreen() {
   const [vaultMigrationStarting, setVaultMigrationStarting] = useState(false);
   const [vaultMigrationFinished, setVaultMigrationFinished] = useState(false);
 
+  const [backgroundDownloadsEnabled, setBackgroundDownloadsEnabled] = useState(false);
+  const [stickyNotificationEnabled, setStickyNotificationEnabled] = useState(false);
+  const [backgroundToggleBusy, setBackgroundToggleBusy] = useState(false);
+  const [stickyToggleBusy, setStickyToggleBusy] = useState(false);
+
   const showError = useCallback((message: string) => {
     setFeedback({ title: t('common.error'), message, tone: 'error' });
   }, [t]);
@@ -101,6 +111,64 @@ export default function SettingsScreen() {
   const closeFeedback = useCallback(() => {
     setFeedback(null);
   }, []);
+
+  // Background-service toggles (relocated here from the home screen to keep that
+  // screen focused on downloading).
+  useEffect(() => {
+    let mounted = true;
+    void getLocalBackgroundState()
+      .then((state) => {
+        if (!mounted) return;
+        setBackgroundDownloadsEnabled(Boolean(state.backgroundDownloadsEnabled));
+        setStickyNotificationEnabled(Boolean(state.stickyNotificationEnabled));
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleToggleBackgroundDownloads = useCallback(async () => {
+    if (backgroundToggleBusy) return;
+    const nextEnabled = !backgroundDownloadsEnabled;
+    setBackgroundToggleBusy(true);
+    try {
+      if (nextEnabled) {
+        const permission = await ensureLocalBackgroundPermission();
+        if (!permission.granted) {
+          showError(t('errors.BACKGROUND_PERMISSION_REQUIRED'));
+          return;
+        }
+      }
+      const result = await setLocalBackgroundDownloadsEnabled(nextEnabled);
+      setBackgroundDownloadsEnabled(Boolean(result.enabled));
+    } catch (error) {
+      showError(error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR'));
+    } finally {
+      setBackgroundToggleBusy(false);
+    }
+  }, [backgroundDownloadsEnabled, backgroundToggleBusy, showError, t]);
+
+  const handleToggleStickyNotification = useCallback(async () => {
+    if (stickyToggleBusy) return;
+    const nextEnabled = !stickyNotificationEnabled;
+    setStickyToggleBusy(true);
+    try {
+      if (nextEnabled) {
+        const permission = await ensureLocalBackgroundPermission();
+        if (!permission.granted) {
+          showError(t('errors.BACKGROUND_PERMISSION_REQUIRED'));
+          return;
+        }
+      }
+      const result = await setLocalStickyNotificationEnabled(nextEnabled);
+      setStickyNotificationEnabled(Boolean(result.enabled));
+    } catch (error) {
+      showError(error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR'));
+    } finally {
+      setStickyToggleBusy(false);
+    }
+  }, [stickyNotificationEnabled, stickyToggleBusy, showError, t]);
 
   const refreshCookieData = useCallback(async () => {
     try {
@@ -537,6 +605,48 @@ export default function SettingsScreen() {
           </Text>
           <View style={[styles.sectionContent, { backgroundColor: colors.surface }]}>
             <ThemePicker />
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>
+            {t('settings.backgroundSection')}
+          </Text>
+          <View style={[styles.sectionContent, { backgroundColor: colors.surface }]}>
+            <SettingsItem
+              icon="cloud-download-outline"
+              title={t('settings.backgroundDownloads')}
+              subtitle={t('settings.backgroundDownloadsHint')}
+              showArrow={false}
+              onPress={handleToggleBackgroundDownloads}
+              rightElement={
+                <Switch
+                  value={backgroundDownloadsEnabled}
+                  onValueChange={handleToggleBackgroundDownloads}
+                  disabled={backgroundToggleBusy}
+                  trackColor={{ false: colors.borderSubtle, true: colors.accent }}
+                  thumbColor="#f4f4f5"
+                  ios_backgroundColor={colors.borderSubtle}
+                />
+              }
+            />
+            <SettingsItem
+              icon="notifications-outline"
+              title={t('settings.stickyNotification')}
+              subtitle={t('settings.stickyNotificationHint')}
+              showArrow={false}
+              onPress={handleToggleStickyNotification}
+              rightElement={
+                <Switch
+                  value={stickyNotificationEnabled}
+                  onValueChange={handleToggleStickyNotification}
+                  disabled={stickyToggleBusy}
+                  trackColor={{ false: colors.borderSubtle, true: colors.accent }}
+                  thumbColor="#f4f4f5"
+                  ios_backgroundColor={colors.borderSubtle}
+                />
+              }
+            />
           </View>
         </View>
 

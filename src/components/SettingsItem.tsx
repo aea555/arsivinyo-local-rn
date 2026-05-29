@@ -34,17 +34,8 @@ export const SettingsItem: React.FC<SettingsItemProps> = ({
 }) => {
     const { colors } = useTheme();
 
-    const Container = onPress ? Pressable : View;
-
-    return (
-        <Container
-            onPress={onPress}
-            style={({ pressed }: { pressed?: boolean }) => [
-                styles.container,
-                { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
-                style,
-            ]}
-        >
+    const content = (
+        <>
             <View style={[styles.iconContainer, { backgroundColor: colors.surfaceHover }]}>
                 <Ionicons name={icon} size={20} color={colors.text} />
             </View>
@@ -70,7 +61,29 @@ export const SettingsItem: React.FC<SettingsItemProps> = ({
                     />
                 )}
             </View>
-        </Container>
+        </>
+    );
+
+    // NOTE: a Pressable accepts a function style ({ pressed }) => ..., but a plain
+    // View does NOT — passing a function to View's style silently drops it, which
+    // breaks the row layout. So branch on whether the row is interactive.
+    if (onPress) {
+        return (
+            <Pressable
+                onPress={onPress}
+                style={({ pressed }) => [
+                    styles.container,
+                    { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
+                    style,
+                ]}
+            >
+                {content}
+            </Pressable>
+        );
+    }
+
+    return (
+        <View style={[styles.container, { backgroundColor: colors.surface }, style]}>{content}</View>
     );
 };
 

@@ -31,6 +31,13 @@ function resolveMondaFamily(style: unknown): string | null {
   return MONDA_REGULAR;
 }
 
+// Monda's vertical metrics, combined with Android's default `includeFontPadding`,
+// push glyphs low within their line box — which makes text look bottom-aligned and,
+// in tight containers (pills, chips), clips descenders/cedillas so Turkish letters
+// like ş/ç appear to lose their marks. Disabling font padding centers glyphs and
+// stops the clipping. It's a no-op on iOS.
+const FONT_PADDING_FIX = { includeFontPadding: false } as const;
+
 export const AppText = forwardRef<React.ComponentRef<typeof NativeText>, TextProps>(
   function AppText({ style, ...props }, ref) {
     const fontFamily = useMemo(() => resolveMondaFamily(style), [style]);
@@ -38,7 +45,7 @@ export const AppText = forwardRef<React.ComponentRef<typeof NativeText>, TextPro
       <NativeText
         ref={ref}
         {...props}
-        style={fontFamily ? [style, { fontFamily, fontWeight: undefined }] : style}
+        style={fontFamily ? [style, { fontFamily, fontWeight: undefined }, FONT_PADDING_FIX] : [style, FONT_PADDING_FIX]}
       />
     );
   }
@@ -51,7 +58,7 @@ export const AppTextInput = forwardRef<React.ComponentRef<typeof NativeTextInput
       <NativeTextInput
         ref={ref}
         {...props}
-        style={fontFamily ? [style, { fontFamily, fontWeight: undefined }] : style}
+        style={fontFamily ? [style, { fontFamily, fontWeight: undefined }, FONT_PADDING_FIX] : [style, FONT_PADDING_FIX]}
       />
     );
   }

@@ -89,8 +89,21 @@
       android:background="@drawable/local_downloader_notification_button"
       android:paddingHorizontal="12dp"
       android:paddingVertical="8dp"
-      android:text="Quick"
+      android:text="@string/ldl_action_quick"
       android:textColor="#CFF8EA"
+      android:textSize="12sp"
+      android:textStyle="bold" />
+
+    <TextView
+      android:id="@+id/notification_action_audio"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_marginStart="8dp"
+      android:background="@drawable/local_downloader_notification_button"
+      android:paddingHorizontal="12dp"
+      android:paddingVertical="8dp"
+      android:text="@string/ldl_audio_off"
+      android:textColor="#CFE3F8"
       android:textSize="12sp"
       android:textStyle="bold" />
 
@@ -102,7 +115,7 @@
       android:background="@drawable/local_downloader_notification_button"
       android:paddingHorizontal="12dp"
       android:paddingVertical="8dp"
-      android:text="Private OFF"
+      android:text="@string/ldl_private_off"
       android:textColor="#F8EACF"
       android:textSize="12sp"
       android:textStyle="bold" />

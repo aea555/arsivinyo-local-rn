@@ -9,6 +9,7 @@ const DOWNLOAD_SERVICE_NAME = 'expo.modules.localdownloader.DownloadForegroundSe
 const DOWNLOAD_RECEIVER_NAME = 'expo.modules.localdownloader.DownloadActionReceiver';
 const QUICK_CAPTURE_ACTIVITY_NAME = 'expo.modules.localdownloader.QuickDownloadCaptureActivity';
 const PRIVATE_IMPORT_ACTIVITY_NAME = 'expo.modules.localdownloader.PrivateVaultImportActivity';
+const SOUNDS_IMPORT_ACTIVITY_NAME = 'expo.modules.localdownloader.SoundsImportActivity';
 
 const TAGS = {
   buildscriptRepo: {
@@ -174,7 +175,10 @@ function ensureApplicationEntry(mainApplication, key, androidName, extra = {}) {
   const existing = mainApplication[key] || [];
   const found = existing.find((item) => item.$?.['android:name'] === androidName);
   if (found) {
-    found.$ = { ...(found.$ || {}), ...extra, 'android:name': androidName };
+    // Replace the attribute set rather than merge: these entries are entirely owned
+    // by this plugin, so a removed attribute (e.g. android:noHistory) must actually
+    // disappear on the next prebuild instead of lingering from a previous run.
+    found.$ = { 'android:name': androidName, ...extra };
   } else {
     existing.push({
       $: {
@@ -221,10 +225,22 @@ function addAndroidManifestChanges(config) {
       'android:theme': '@android:style/Theme.DeviceDefault.Dialog.NoActionBar',
     });
 
+    // NOTE: no `android:noHistory` here. These activities open a full-screen SAF
+    // picker on top of themselves; with noHistory the OS finishes them the instant
+    // the picker appears (they're "no longer visible"), firing their cancel path and
+    // dropping the real result. They finish themselves in their result callback, so
+    // noHistory is unnecessary as well as harmful.
     ensureApplicationEntry(mainApplication, 'activity', PRIVATE_IMPORT_ACTIVITY_NAME, {
       'android:exported': 'false',
       'android:excludeFromRecents': 'true',
-      'android:noHistory': 'true',
+      'android:launchMode': 'singleTask',
+      'android:taskAffinity': '',
+      'android:theme': '@android:style/Theme.Translucent.NoTitleBar',
+    });
+
+    ensureApplicationEntry(mainApplication, 'activity', SOUNDS_IMPORT_ACTIVITY_NAME, {
+      'android:exported': 'false',
+      'android:excludeFromRecents': 'true',
       'android:launchMode': 'singleTask',
       'android:taskAffinity': '',
       'android:theme': '@android:style/Theme.Translucent.NoTitleBar',

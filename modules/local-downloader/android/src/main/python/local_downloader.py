@@ -1926,6 +1926,7 @@ def _perform_attempts(
     max_file_size_mb: int,
     merge_capable: bool,
     impersonation_available: bool,
+    audio_only: bool = False,
     output_dir: Optional[str] = None,
     progress_hooks: Optional[List[Any]] = None,
     debug_logging: bool = False,
@@ -1998,6 +1999,8 @@ def _perform_attempts(
             opts["progress_hooks"] = progress_hooks
         if force_generic_extractor:
             opts["force_generic_extractor"] = True
+        if audio_only and download:
+            _apply_audio_postprocessing(opts)
 
         _append_diag_target(impersonate)
 
@@ -2111,6 +2114,8 @@ def _perform_attempts(
                     retry_opts["progress_hooks"] = progress_hooks
                 if force_generic_extractor:
                     retry_opts["force_generic_extractor"] = True
+                if audio_only and download:
+                    _apply_audio_postprocessing(retry_opts)
 
                 _push_attempt_trace(
                     {
@@ -2208,6 +2213,7 @@ def _perform_attempts(
                 max_file_size_mb=max_file_size_mb,
                 merge_capable=merge_capable,
                 impersonation_available=impersonation_available,
+                audio_only=audio_only,
                 output_dir=output_dir,
                 progress_hooks=progress_hooks,
                 debug_logging=debug_logging,
@@ -2229,6 +2235,65 @@ def _perform_attempts(
 def _sanitize_filename(name: str) -> str:
     name = re.sub(r"[^a-zA-Z0-9._-]", "_", name).strip("._")
     return name[:200] if name else "download"
+
+
+# Characters that are illegal in filenames on Android / FAT / exFAT / SMB, plus
+# ASCII control characters. Everything else (spaces, Unicode letters, most
+# punctuation) is preserved.
+_AUDIO_TITLE_ILLEGAL = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
+
+
+def _sanitize_audio_title(name: str) -> str:
+    """Sanitize an audio track title into a human-readable filename stem.
+
+    Unlike ``_sanitize_filename`` (which slugs everything down to
+    ``[A-Za-z0-9._-]`` and turns spaces into underscores), this keeps spaces and
+    Unicode so a song titled "This song is amazing" stays "This song is amazing"
+    rather than "This_song_is_amazing". Only filesystem-illegal characters and
+    control characters are stripped. Collision de-duplication is intentionally
+    NOT done here — that needs a target directory and is handled by the Kotlin
+    MediaStore layer when the file lands in Music/Arsivinyo.
+    """
+    name = (name or "").strip()
+    name = _AUDIO_TITLE_ILLEGAL.sub("", name)
+    name = re.sub(r"\s+", " ", name)
+    # Trailing dots/spaces are hostile on Windows/SMB; a leading dot hides the file.
+    name = name.strip(". ")
+    if not name:
+        return "audio"
+    return name[:150]
+
+
+def _apply_audio_postprocessing(opts: Dict[str, Any]) -> None:
+    """Mutate yt-dlp opts in place for an audio-only download.
+
+    Takes the best available audio stream and produces an **M4A (AAC)** file, then
+    embeds cover art + metadata into it.
+
+    Why M4A and not MP3: the bundled FFmpeg (ffmpeg-kit 6.0) is built without an MP3
+    encoder (no ``libmp3lame``/``libshine``), so it physically cannot transcode to
+    MP3 — attempting it fails with ``Unknown encoder 'libmp3lame'``. AAC uses
+    FFmpeg's always-available native ``aac`` encoder. When the source is already AAC
+    (the common YouTube case) yt-dlp losslessly remuxes it into M4A; only a non-AAC
+    source (e.g. Opus) gets re-encoded, at a high 256k bitrate.
+
+    Thumbnail: we ``writethumbnail`` (downloads the cover art as a sidecar file) but
+    deliberately do NOT use ``EmbedThumbnail``. The bundled FFmpeg is also built
+    without image encoders (no mjpeg/png), so embedding — which transcodes the
+    YouTube ``.webp`` thumbnail through FFmpeg — fails with
+    ``Error selecting an encoder`` on the video (image) stream. Instead the downloaded
+    thumbnail file is handed to Kotlin (see ``_resolve_thumbnail_file``), which stores
+    it verbatim as a sidecar JPEG/WebP that ``expo-image`` renders directly. Track
+    title/artist are still written into the file via ``FFmpegMetadata`` (stream copy,
+    no encoder needed).
+    """
+    opts["format"] = "bestaudio/best"
+    opts.pop("merge_output_format", None)
+    opts["writethumbnail"] = True
+    opts["postprocessors"] = [
+        {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "256"},
+        {"key": "FFmpegMetadata", "add_metadata": True},
+    ]
 
 
 def _resolve_downloaded_file(info: Dict[str, Any], output_dir: Optional[str]) -> Optional[str]:
@@ -2253,6 +2318,24 @@ def _resolve_downloaded_file(info: Dict[str, Any], output_dir: Optional[str]) ->
 
     if downloaded_file and os.path.exists(downloaded_file):
         return downloaded_file
+    return None
+
+
+def _resolve_thumbnail_file(info: Dict[str, Any]) -> Optional[str]:
+    """Find the cover-art image yt-dlp wrote to disk via ``writethumbnail``.
+
+    Returns the highest-quality written thumbnail's path (yt-dlp orders thumbnails
+    worst→best, so we scan from the end). The file is left as-is (webp/jpg/png) for
+    Kotlin to copy into the music library's sidecar thumbnail store — we never
+    transcode it, since the bundled FFmpeg has no image encoder.
+    """
+    thumbnails = info.get("thumbnails") or []
+    for thumb in reversed(thumbnails):
+        if not isinstance(thumb, dict):
+            continue
+        fp = thumb.get("filepath")
+        if fp and os.path.exists(fp):
+            return fp
     return None
 
 
@@ -2649,6 +2732,7 @@ def run_download(
     cookie_file: Optional[str] = None,
     force_no_cookie: bool = False,
     merge_capable: bool = True,
+    audio_only: bool = False,
     user_agent: str = DEFAULT_HTTP_USER_AGENT,
     debug_logging: bool = False,
 ) -> str:
@@ -2902,6 +2986,7 @@ def run_download(
             max_file_size_mb=max_file_size_mb,
             merge_capable=effective_merge_capable,
             impersonation_available=impersonation_available,
+            audio_only=audio_only,
             output_dir=output_dir,
             progress_hooks=[_progress_hook],
             debug_logging=debug_logging,
@@ -2927,7 +3012,13 @@ def run_download(
         if not downloaded_file:
             return _result(False, "FILE_NOT_FOUND", "Download finished but output file could not be found")
 
-        basename = _sanitize_filename(os.path.basename(downloaded_file))
+        source_basename = os.path.basename(downloaded_file)
+        thumbnail_path = _resolve_thumbnail_file(info) if audio_only else None
+        if audio_only:
+            stem, ext = os.path.splitext(source_basename)
+            basename = _sanitize_audio_title(stem) + (ext.lower() or ".m4a")
+        else:
+            basename = _sanitize_filename(source_basename)
         final_path = os.path.join(output_dir, basename)
 
         if downloaded_file != final_path:
@@ -2964,6 +3055,8 @@ def run_download(
             size_mb=round(size_mb, 2),
             timestamp_normalized=timestamp_normalized,
             warning_code=warning_code,
+            thumbnail_path=thumbnail_path,
+            media_kind="audio" if audio_only else "video",
             format_mode="merged" if effective_merge_capable else "progressive",
             normalized_url=normalized_url,
             preflight_warning=preflight_warning,

@@ -12,6 +12,7 @@ export {
     deleteLocalVaultFolder,
     deleteLocalVaultTag,
     ensureLocalBackgroundPermission,
+    getLocalAudioModeState,
     getLocalPrivateModeState,
     getLocalBackgroundState,
     getLocalDiagnostics,
@@ -35,6 +36,7 @@ export {
     renameLocalVaultTag,
     runLocalImpersonationSelfTest,
     saveLocalFileToMediaStore,
+    setLocalAudioModeEnabled,
     setLocalBackgroundDownloadsEnabled,
     setLocalSecureScreen,
     setLocalStickyNotificationEnabled,
@@ -47,6 +49,29 @@ export {
     startQuickLocalDownloadWithUrl,
     updateLocalYtDlp
 } from './localDownloader';
+export {
+    addLocalSoundsToPlaylists,
+    createLocalSoundPlaylist,
+    deleteLocalSoundPlaylist,
+    deleteLocalSounds,
+    FAVORITES_PLAYLIST_ID,
+    getLocalSoundThumbnail,
+    importLocalSounds,
+    isLocalSoundsSupported,
+    listLocalSoundPlaylists,
+    listLocalSounds,
+    removeLocalSoundsFromPlaylist,
+    renameLocalSound,
+    renameLocalSoundPlaylist,
+    setLocalSoundPlaylistSongs,
+    setLocalSoundsFavorite,
+} from './sounds';
 export type {
     ApiErrorCode, ApiResponse, DownloadProgress, DownloadStartResponse, DownloadState, TaskStatus, TaskStatusResponse
 } from './types';
+export type {
+    LocalSound,
+    LocalSoundPlaylist,
+    LocalSoundsImportResult,
+    LocalSoundsLibrary,
+} from '../native/localDownloader';

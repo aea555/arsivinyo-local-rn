@@ -1,11 +1,12 @@
 import { Sixtyfour_400Regular, useFonts } from '@expo-google-fonts/sixtyfour';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
+  BackHandler,
   Modal,
   Pressable,
   StyleSheet,
@@ -18,12 +19,10 @@ import {
   cancelTask,
   downloadMedia,
   DownloadProgress,
-  ensureLocalBackgroundPermission,
   getLocalBackgroundState,
   listenBackgroundState,
-  setLocalBackgroundDownloadsEnabled,
+  setLocalAudioModeEnabled,
   setLocalPrivateModeEnabled,
-  setLocalStickyNotificationEnabled,
 } from '@/src/api';
 import type { DownloadState } from '@/src/api/types';
 import { AppText as Text, DownloadButton } from '@/src/components';
@@ -48,15 +47,13 @@ export default function HomeScreen() {
   const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
   const [downloadSpeedBytesPerSec, setDownloadSpeedBytesPerSec] = useState<number | null>(null);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [backgroundServiceRunning, setBackgroundServiceRunning] = useState(false);
-  const [backgroundDownloadsEnabled, setBackgroundDownloadsEnabled] = useState(false);
-  const [stickyNotificationEnabled, setStickyNotificationEnabled] = useState(false);
   const [backgroundQueueSize, setBackgroundQueueSize] = useState(0);
-  const [isBackgroundToggleBusy, setIsBackgroundToggleBusy] = useState(false);
-  const [isStickyNotificationToggleBusy, setIsStickyNotificationToggleBusy] = useState(false);
   const [privateModeEnabled, setPrivateModeEnabled] = useState(false);
   const [isPrivateToggleBusy, setIsPrivateToggleBusy] = useState(false);
+  const [audioModeEnabled, setAudioModeEnabled] = useState(false);
   const speedEmaBytesPerSecRef = useRef<number | null>(null);
   const speedLogCounterRef = useRef(0);
 
@@ -92,10 +89,9 @@ export default function HomeScreen() {
       .then((state) => {
         if (!mounted) return;
         setBackgroundServiceRunning(state.serviceRunning);
-        setBackgroundDownloadsEnabled(Boolean(state.backgroundDownloadsEnabled));
-        setStickyNotificationEnabled(Boolean(state.stickyNotificationEnabled));
         setBackgroundQueueSize(state.queueSize);
         setPrivateModeEnabled(Boolean(state.privateModeEnabled));
+        setAudioModeEnabled(Boolean(state.audioModeEnabled));
       })
       .catch(() => undefined);
 
@@ -110,11 +106,12 @@ export default function HomeScreen() {
       try {
         return listenBackgroundState((state) => {
           setBackgroundServiceRunning(Boolean(state.serviceRunning));
-          setBackgroundDownloadsEnabled(Boolean(state.backgroundDownloadsEnabled));
-          setStickyNotificationEnabled(Boolean(state.stickyNotificationEnabled));
           setBackgroundQueueSize(state.queueSize || 0);
           if (typeof state.privateModeEnabled === 'boolean') {
             setPrivateModeEnabled(state.privateModeEnabled);
+          }
+          if (typeof state.audioModeEnabled === 'boolean') {
+            setAudioModeEnabled(state.audioModeEnabled);
           }
         });
       } catch {
@@ -201,11 +198,13 @@ export default function HomeScreen() {
         if (progress.errorMessage) {
           setStatusMessage(progress.errorMessage);
         }
-      }, privateModeEnabled ? 'private' : 'public');
+      }, audioModeEnabled ? 'public' : (privateModeEnabled ? 'private' : 'public'), audioModeEnabled ? 'audio' : 'video');
 
       console.info('Download response:', result);
 
-      if (!result.isPrivate) {
+      // Audio downloads are moved into the public music library natively, so there
+      // is nothing to save to the gallery here.
+      if (!result.isPrivate && !result.isAudio) {
         // Save local file to device gallery
         setDownloadState('saving');
         if (!result.localPath) {
@@ -219,7 +218,7 @@ export default function HomeScreen() {
 
       // Success!
       setDownloadState('completed');
-      setStatusMessage(result.isPrivate ? t('home.privateSaved') : result.filename);
+      setStatusMessage(result.isAudio ? t('home.savedToMusic') : result.isPrivate ? t('home.privateSaved') : result.filename);
       setDownloadPercent(100);
       setDownloadSpeedBytesPerSec(null);
       speedEmaBytesPerSecRef.current = null;
@@ -256,7 +255,7 @@ export default function HomeScreen() {
       speedEmaBytesPerSecRef.current = null;
       setTimeout(() => setDownloadState('idle'), 3000);
     }
-  }, [privateModeEnabled, t]);
+  }, [privateModeEnabled, audioModeEnabled, t]);
 
   const openCancelConfirm = useCallback(() => {
     if (!activeTaskId || !isOngoingDownload) return;
@@ -295,6 +294,40 @@ export default function HomeScreen() {
     router.push('/private-videos');
   }, [router]);
 
+  const openSounds = useCallback(() => {
+    // Cast: expo-router typed routes regenerate to include this screen at build time.
+    router.push('/sounds' as Href);
+  }, [router]);
+
+  const handleToggleAudioMode = useCallback(async () => {
+    const next = !audioModeEnabled;
+    setAudioModeEnabled(next); // optimistic
+    try {
+      const result = await setLocalAudioModeEnabled(next);
+      const resolved = Boolean(result.enabled);
+      setAudioModeEnabled(resolved);
+      // Audio mode forces public output, so enabling it clears private mode natively.
+      if (resolved) setPrivateModeEnabled(false);
+    } catch {
+      setAudioModeEnabled(!next); // revert on failure
+    }
+  }, [audioModeEnabled]);
+
+  // Intercept Android hardware / gesture back on the home screen: instead of letting
+  // the app exit silently, ask for confirmation via our own modal. When the modal is
+  // open it owns the back press (via onRequestClose), so this only fires from the bare
+  // home screen.
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        setShowExitConfirm(true);
+        return true;
+      };
+      const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => sub.remove();
+    }, [])
+  );
+
   const handleTogglePrivateMode = useCallback(async () => {
     if (isPrivateToggleBusy) return;
     setIsPrivateToggleBusy(true);
@@ -313,61 +346,6 @@ export default function HomeScreen() {
     }
   }, [isPrivateToggleBusy, privateModeEnabled, t]);
 
-  const handleToggleBackgroundDownloads = useCallback(async () => {
-    if (isBackgroundToggleBusy) return;
-    const nextEnabled = !backgroundDownloadsEnabled;
-    setIsBackgroundToggleBusy(true);
-    try {
-      if (nextEnabled) {
-        const permission = await ensureLocalBackgroundPermission();
-        if (!permission.granted) {
-          setStatusMessage(t('errors.BACKGROUND_PERMISSION_REQUIRED'));
-          return;
-        }
-      }
-
-      const result = await setLocalBackgroundDownloadsEnabled(nextEnabled);
-      setBackgroundDownloadsEnabled(Boolean(result.enabled));
-      const bg = await getLocalBackgroundState();
-      setBackgroundServiceRunning(bg.serviceRunning);
-      setBackgroundDownloadsEnabled(Boolean(bg.backgroundDownloadsEnabled));
-      setBackgroundQueueSize(bg.queueSize);
-      setStatusMessage(result.enabled ? t('home.backgroundDownloadsEnabled') : t('home.backgroundDownloadsDisabled'));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR');
-      setStatusMessage(message);
-    } finally {
-      setIsBackgroundToggleBusy(false);
-    }
-  }, [backgroundDownloadsEnabled, isBackgroundToggleBusy, t]);
-
-  const handleToggleStickyNotification = useCallback(async () => {
-    if (isStickyNotificationToggleBusy) return;
-    const nextEnabled = !stickyNotificationEnabled;
-    setIsStickyNotificationToggleBusy(true);
-    try {
-      if (nextEnabled) {
-        const permission = await ensureLocalBackgroundPermission();
-        if (!permission.granted) {
-          setStatusMessage(t('errors.BACKGROUND_PERMISSION_REQUIRED'));
-          return;
-        }
-      }
-
-      const result = await setLocalStickyNotificationEnabled(nextEnabled);
-      setStickyNotificationEnabled(Boolean(result.enabled));
-      const bg = await getLocalBackgroundState();
-      setBackgroundServiceRunning(bg.serviceRunning);
-      setStickyNotificationEnabled(Boolean(bg.stickyNotificationEnabled));
-      setBackgroundQueueSize(bg.queueSize);
-      setStatusMessage(result.enabled ? t('home.stickyNotificationEnabled') : t('home.stickyNotificationDisabled'));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR');
-      setStatusMessage(message);
-    } finally {
-      setIsStickyNotificationToggleBusy(false);
-    }
-  }, [isStickyNotificationToggleBusy, stickyNotificationEnabled, t]);
 
   return (
     <LinearGradient
@@ -408,6 +386,19 @@ export default function HomeScreen() {
               hitSlop={8}
             >
               <Ionicons name="shield-checkmark-outline" size={21} color={colors.text} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('home.musicLibrary')}
+              accessibilityHint={t('home.musicLibraryHint')}
+              onPress={openSounds}
+              style={({ pressed }) => [
+                styles.headerIconButton,
+                { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
+              ]}
+              hitSlop={8}
+            >
+              <Ionicons name="musical-notes-outline" size={21} color={colors.text} />
             </Pressable>
             <Pressable
               onPress={openSettings}
@@ -455,120 +446,10 @@ export default function HomeScreen() {
           <View style={styles.primaryActionsColumn}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={backgroundDownloadsEnabled ? t('home.backgroundDownloadsOn') : t('home.backgroundDownloadsOff')}
-              accessibilityHint={backgroundDownloadsEnabled ? t('home.backgroundDownloadsHintOn') : t('home.backgroundDownloadsHintOff')}
-              onPress={handleToggleBackgroundDownloads}
-              disabled={isBackgroundToggleBusy}
-              style={({ pressed }) => [
-                styles.actionRow,
-                {
-                  backgroundColor: backgroundDownloadsEnabled
-                    ? colors.accent + '16'
-                    : (pressed ? colors.surfaceHover : colors.surface),
-                  borderColor: backgroundDownloadsEnabled ? colors.accent : colors.border,
-                  opacity: isBackgroundToggleBusy ? 0.7 : 1,
-                },
-              ]}
-            >
-              <View style={styles.actionLeading}>
-                {isBackgroundToggleBusy ? (
-                  <ActivityIndicator size="small" color={colors.text} />
-                ) : (
-                  <Ionicons name={backgroundDownloadsEnabled ? 'cloud-download-outline' : 'cloud-offline-outline'} size={18} color={colors.text} />
-                )}
-              </View>
-              <View style={styles.actionTextBlock}>
-                <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
-                  {backgroundDownloadsEnabled ? t('home.backgroundDownloadsOn') : t('home.backgroundDownloadsOff')}
-                </Text>
-                <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
-                  {backgroundDownloadsEnabled ? t('home.backgroundDownloadsHintOn') : t('home.backgroundDownloadsHintOff')}
-                </Text>
-              </View>
-              <View style={styles.actionTrailing}>
-                <View
-                  style={[
-                    styles.modeBadge,
-                    {
-                      backgroundColor: backgroundDownloadsEnabled ? colors.accent + '28' : colors.surface,
-                      borderColor: backgroundDownloadsEnabled ? colors.accent : colors.borderSubtle,
-                    },
-                  ]}
-                >
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.modeBadgeText,
-                      { color: backgroundDownloadsEnabled ? colors.accent : colors.textMuted },
-                    ]}
-                  >
-                    {backgroundDownloadsEnabled ? t('home.privateModeBadgeOn') : t('home.privateModeBadgeOff')}
-                  </Text>
-                </View>
-              </View>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={stickyNotificationEnabled ? t('home.stickyNotificationOn') : t('home.stickyNotificationOff')}
-              accessibilityHint={stickyNotificationEnabled ? t('home.stickyNotificationHintOn') : t('home.stickyNotificationHintOff')}
-              onPress={handleToggleStickyNotification}
-              disabled={isStickyNotificationToggleBusy}
-              style={({ pressed }) => [
-                styles.actionRow,
-                {
-                  backgroundColor: stickyNotificationEnabled
-                    ? colors.accent + '16'
-                    : (pressed ? colors.surfaceHover : colors.surface),
-                  borderColor: stickyNotificationEnabled ? colors.accent : colors.border,
-                  opacity: isStickyNotificationToggleBusy ? 0.7 : 1,
-                },
-              ]}
-            >
-              <View style={styles.actionLeading}>
-                {isStickyNotificationToggleBusy ? (
-                  <ActivityIndicator size="small" color={colors.text} />
-                ) : (
-                  <Ionicons name={stickyNotificationEnabled ? 'notifications-outline' : 'notifications-off-outline'} size={18} color={colors.text} />
-                )}
-              </View>
-              <View style={styles.actionTextBlock}>
-                <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
-                  {stickyNotificationEnabled ? t('home.stickyNotificationOn') : t('home.stickyNotificationOff')}
-                </Text>
-                <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
-                  {stickyNotificationEnabled ? t('home.stickyNotificationHintOn') : t('home.stickyNotificationHintOff')}
-                </Text>
-              </View>
-              <View style={styles.actionTrailing}>
-                <View
-                  style={[
-                    styles.modeBadge,
-                    {
-                      backgroundColor: stickyNotificationEnabled ? colors.accent + '28' : colors.surface,
-                      borderColor: stickyNotificationEnabled ? colors.accent : colors.borderSubtle,
-                    },
-                  ]}
-                >
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.modeBadgeText,
-                      { color: stickyNotificationEnabled ? colors.accent : colors.textMuted },
-                    ]}
-                  >
-                    {stickyNotificationEnabled ? t('home.privateModeBadgeOn') : t('home.privateModeBadgeOff')}
-                  </Text>
-                </View>
-              </View>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
               accessibilityLabel={privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
               accessibilityHint={privateModeEnabled ? t('home.privateModeHintOn') : t('home.privateModeHintOff')}
               onPress={handleTogglePrivateMode}
-              disabled={isPrivateToggleBusy}
+              disabled={isPrivateToggleBusy || audioModeEnabled}
               style={({ pressed }) => [
                 styles.actionRow,
                 {
@@ -576,7 +457,7 @@ export default function HomeScreen() {
                     ? colors.accent + '16'
                     : (pressed ? colors.surfaceHover : colors.surface),
                   borderColor: privateModeEnabled ? colors.accent : colors.border,
-                  opacity: isPrivateToggleBusy ? 0.7 : 1,
+                  opacity: (isPrivateToggleBusy || audioModeEnabled) ? 0.5 : 1,
                 },
               ]}
             >
@@ -594,9 +475,6 @@ export default function HomeScreen() {
               <View style={styles.actionTextBlock}>
                 <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
                   {privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
-                </Text>
-                <Text numberOfLines={1} style={[styles.actionSubtitle, { color: colors.textMuted }]}>
-                  {privateModeEnabled ? t('home.privateModeHintOn') : t('home.privateModeHintOff')}
                 </Text>
               </View>
               <View style={styles.actionTrailing}>
@@ -621,6 +499,54 @@ export default function HomeScreen() {
                 </View>
               </View>
             </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={audioModeEnabled ? t('home.audioModeOn') : t('home.audioModeOff')}
+              accessibilityHint={audioModeEnabled ? t('home.audioModeHintOn') : t('home.audioModeHintOff')}
+              onPress={handleToggleAudioMode}
+              style={({ pressed }) => [
+                styles.actionRow,
+                {
+                  backgroundColor: audioModeEnabled
+                    ? colors.accent + '16'
+                    : (pressed ? colors.surfaceHover : colors.surface),
+                  borderColor: audioModeEnabled ? colors.accent : colors.border,
+                },
+              ]}
+            >
+              <View style={styles.actionLeading}>
+                <Ionicons
+                  name={audioModeEnabled ? 'musical-notes' : 'musical-notes-outline'}
+                  size={18}
+                  color={colors.text}
+                />
+              </View>
+              <View style={styles.actionTextBlock}>
+                <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
+                  {audioModeEnabled ? t('home.audioModeOn') : t('home.audioModeOff')}
+                </Text>
+              </View>
+              <View style={styles.actionTrailing}>
+                <View
+                  style={[
+                    styles.modeBadge,
+                    {
+                      backgroundColor: audioModeEnabled ? colors.accent + '28' : colors.surface,
+                      borderColor: audioModeEnabled ? colors.accent : colors.borderSubtle,
+                    },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={[styles.modeBadgeText, { color: audioModeEnabled ? colors.accent : colors.textMuted }]}
+                  >
+                    {audioModeEnabled ? t('home.audioModeBadgeOn') : t('home.audioModeBadgeOff')}
+                  </Text>
+                </View>
+              </View>
+            </Pressable>
+
           </View>
 
         </View>
@@ -750,6 +676,45 @@ export default function HomeScreen() {
                       {t('home.confirmCancelDownload')}
                     </Text>
                   )}
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={showExitConfirm}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowExitConfirm(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>{t('home.exitTitle')}</Text>
+              <Text style={[styles.modalMessage, { color: colors.textMuted }]}>{t('home.exitMessage')}</Text>
+
+              <View style={styles.modalActions}>
+                <Pressable
+                  onPress={() => setShowExitConfirm(false)}
+                  style={({ pressed }) => [
+                    styles.modalButton,
+                    { backgroundColor: pressed ? colors.surfaceHover : colors.surface, borderColor: colors.border },
+                  ]}
+                >
+                  <Text style={[styles.modalButtonText, { color: colors.text }]}>{t('common.cancel')}</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => {
+                    setShowExitConfirm(false);
+                    BackHandler.exitApp();
+                  }}
+                  style={({ pressed }) => [
+                    styles.modalButton,
+                    { backgroundColor: pressed ? colors.error + '22' : colors.error + '16', borderColor: colors.error + '66' },
+                  ]}
+                >
+                  <Text style={[styles.modalButtonText, { color: colors.error }]}>{t('home.exitConfirm')}</Text>
                 </Pressable>
               </View>
             </View>

@@ -59,6 +59,14 @@ Current runtime focus:
 - **Opt-in re-encryption migration** (legacy v2/v3 → v4) with pause/resume, disk-space and battery pre-flight.
 - **Rename**, copy-to-gallery, and a diagnostics surface reporting cipher counts, loopback server state, and migration status.
 
+**Music library (in-app audio player)**
+- **Download as audio.** A home-screen toggle switches downloads to best-audio, saved as **M4A/AAC** (`bestaudio/best` + yt-dlp's `FFmpegExtractAudio`), with cover-art thumbnail + metadata tags and a **human-readable filename** (spaces/Unicode preserved — `This song is amazing.m4a`, not `This_song_is_amazing.m4a`). M4A rather than MP3 because the bundled FFmpeg ships without an MP3 encoder; when the source is already AAC it is remuxed losslessly, otherwise re-encoded to 256k AAC. (Cover art is stored as a sidecar thumbnail rather than embedded, since that FFmpeg also has no image encoder.)
+- **Public, portable storage.** Audio files are saved to `Music/Arsivinyo` via the MediaStore **owner model** — no `READ_MEDIA_*` / `WRITE_EXTERNAL_STORAGE` permission (the privacy posture is preserved), files survive uninstall and are visible to other apps. Requires Android 10+ (scoped storage); degrades gracefully below.
+- **Built-in player** (`react-native-track-player`, 5.x New-Architecture build): background playback, lock-screen / notification controls, headset buttons, audio focus. Symmetric transport row (previous · −10s · play/pause · +10s · next), a **drag-or-tap seek bar** (Animated-value driven for smooth scrubbing), and repeat (off/all/one). The play button restarts a finished track; **previous** restarts the current track on a single press and goes to the previous track on a double press (in-app and from the notification). Large artwork + title; a persistent mini-player bar.
+- **Favorites** — a special, non-deletable playlist pinned to the top of the Playlists tab. Bulk favorite/unfavorite from the Songs tab or any playlist via a smart heart toggle, plus a heart on the player screen for the current track. Fully local.
+- **Songs / Playlists** segmented layout: "Songs" is the full searchable/sortable library (the currently-playing track is shown with an accent outline; tapping a row just plays it — the full player opens from the mini-player or notification); "Playlists" is a vertical list you tap to open a playlist's tracks. **Playlists** (many-to-many): create/rename/delete, add by per-row button or multi-select batch, remove from playlist, and **bulk import** of existing audio via a multi-select SAF picker. Destructive/important actions confirm via modal.
+- Thumbnails: downloaded tracks store the source cover as a sidecar image; imported tracks extract embedded cover art (`MediaMetadataRetriever`). Metadata + playlists tracked in `sounds/index.json` and reconciled against MediaStore on load.
+
 **Cross-cutting**
 - Diagnostics screen for runtime health (app version/channel, yt-dlp, FFmpeg, impersonation, cookies, vault).
 - 10-language i18n scaffold (`i18next`); English and Turkish are fully translated and newer vault strings fall back to English in the other locales. NativeWind styling, typed Expo Router.
@@ -142,6 +150,7 @@ Stored in `index.json` (`tagDefinitions[]`, `folders[]`; per-entry `tags: string
 - React Native: `0.81.5`
 - Expo Router: `~6.0.23`
 - Video playback: `expo-video ~3.0.16`
+- Audio playback: `react-native-track-player` `5.0.0-alpha…nightly` (the New-Architecture/TurboModule build; 4.1.2 stable is incompatible with bridgeless mode)
 - Vault crypto: Google Tink `tink-android 1.13.0` (AES-GCM-HKDF streaming AEAD)
 - Vault playback server: `org.nanohttpd:nanohttpd 2.3.1`
 - Chaquopy Gradle plugin: `15.0.1`

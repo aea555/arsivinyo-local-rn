@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **NEVER run Android builds yourself** — do not invoke `expo run:android`, `npm run android`, `gradlew assemble*`/`install*`, or any background Gradle build. The maintainer runs all builds locally on the device. Make the code changes, run non-build checks (`npm run lint`, `npm run test:python`, `tsc --noEmit`, `npm run verify:prebuild`), then hand the build command to the maintainer. Only build if the maintainer explicitly says to. (`expo prebuild` is fine — it does not start a Gradle daemon.)
+>
+> **adb gets stuck (the real cause of the "stalling").** On this Windows machine the `adb.exe` server wedges — especially right after a build — and that hang (not Gradle/Expo) is what stalls `expo run:android`/Metro. When adb is unresponsive or a command hangs, revive it before doing anything else with the device:
+> ```powershell
+> taskkill /f /im adb.exe        # PowerShell-tool equivalent: Get-Process adb -ErrorAction SilentlyContinue | Stop-Process -Force
+> & "C:/Android/Sdk/platform-tools/adb.exe" start-server
+> & "C:/Android/Sdk/platform-tools/adb.exe" devices   # confirm the device is back
+> ```
+> Avoid leaving long-running `adb logcat` captures running; stop them when done, since they contribute to the wedging.
+
 ## Commands
 
 ```bash
@@ -37,14 +47,16 @@ app/ (Expo Router screens)
                  ├─> DownloadForegroundService.kt          background service + sticky notification
                  ├─> DownloadActionReceiver.kt             notification action intents
                  ├─> QuickDownloadCaptureActivity.kt       share-sheet / clipboard entry
-                 ├─> PrivateVaultImportActivity.kt         gated private-vault import
+                 ├─> PrivateVaultImportActivity.kt         gated private-vault import (SAF)
+                 ├─> SoundsImportActivity.kt               multi-select audio import (SAF)
+                 ├─> sounds/SoundsStore.kt                 music library (MediaStore owner model)
                  └─> Chaquopy → python/local_downloader.py yt-dlp strategies + normalization
                       └─> FFmpeg/FFprobe (jniLibs .so, optional assets/ffmpeg fallback)
 ```
 
 Cross-cutting things to know before editing:
 
-- **`modules/local-downloader/app.plugin.js` is the source of truth for native wiring.** It injects Chaquopy gradle config, pip targets (`yt-dlp`, `curl-cffi==0.14.0`), ABI filters, the foreground service, the action receiver, and the two activities into the generated `android/` project via tagged `// @generated begin/end ...` blocks. Never hand-edit files under `android/` — they are produced by prebuild and the plugin. After changing the plugin, run `npx expo prebuild --clean --platform android --no-install && npm run verify:prebuild`.
+- **`modules/local-downloader/app.plugin.js` is the source of truth for native wiring.** It injects Chaquopy gradle config, pip targets (`yt-dlp`, `curl-cffi==0.14.0`), ABI filters, the foreground service, the action receiver, and the three activities (quick-capture + the two SAF importers) into the generated `android/` project via tagged `// @generated begin/end ...` blocks. Never hand-edit files under `android/` — they are produced by prebuild and the plugin. After changing the plugin, run `npx expo prebuild --clean --platform android --no-install && npm run verify:prebuild`. Two gotchas: (1) `ensureApplicationEntry` **replaces** an entry's attribute set (not merge) so a removed attribute actually disappears on the next prebuild; (2) the SAF importer activities must **not** carry `android:noHistory` — a noHistory activity is finished the instant the full-screen document picker covers it, which cancels the pick before the user selects anything.
 
 - **ABI coverage is an invariant that spans four locations.** Default ABI is `arm64-v8a`. If you add `x86_64` (or any other), you must update all of: `app.plugin.js` (`DEFAULT_REACT_NATIVE_ARCHITECTURES`), `modules/local-downloader/android/chaquopy-wheels/VERSIONS.json`, the verifier scripts under `scripts/`, and provide matching wheels + FFmpeg `.so` pairs. The verifiers will catch drift.
 
@@ -59,6 +71,8 @@ Cross-cutting things to know before editing:
 - **i18n** is `i18next` + `react-i18next`, initialized in `src/i18n` and provided at root. Translation keys are used throughout screen titles and UI.
 
 - **Private vault flow** is auth-gated inside Kotlin (`LocalDownloaderModule.authenticateLocalPrivateAccess`) before TS can list, decrypt, or stream content via `expo-video`. The vault path is app-private storage.
+
+- **Music library (in-app audio player)** is a separate subsystem from the vault. Audio downloads (`mediaKind: 'audio'`) go through yt-dlp's `bestaudio` + `FFmpegExtractAudio` path (Python) and are saved by `sounds/SoundsStore.kt` into the **public `Music/Arsivinyo`** folder via the MediaStore **owner model** — readable/writable with **no `READ_MEDIA_*` / `WRITE_EXTERNAL_STORAGE` permission** (those stay blocked), but this requires **API 29+** (`SoundsStore.isSupported()` gates it). **Output format is M4A/AAC, not MP3:** the bundled FFmpeg (ffmpeg-kit 6.0) has no MP3 encoder (`libmp3lame`), so `_apply_audio_postprocessing` targets `preferredcodec="m4a"` (lossless remux when the source is already AAC; 256k AAC otherwise). **Cover art is NOT embedded** — that same FFmpeg also has no image encoder, so `EmbedThumbnail` (which transcodes the YouTube `.webp` cover) fails with `Error selecting an encoder`. Instead `writethumbnail` downloads the cover file, Python returns its path (`_resolve_thumbnail_file` → `thumbnail_path`), and `SoundsStore.storeThumbFromFile` copies it verbatim into the sidecar thumbnail store (`expo-image` renders WebP/JPEG/PNG from a path directly). Track title/artist tags are written into the file via `FFmpegMetadata` (stream copy, no encoder). Imports still pull art from the file's embedded cover via `MediaMetadataRetriever`. Tracks are plaintext (no vault/encryption). `sounds/index.json` caches metadata and owns playlists; it is reconciled against MediaStore on every list. **Favorites** is a reserved system playlist (id `favorites`, `system: true`) — `ensureFavoritesLocked` lazily creates it so it always exists, `deletePlaylist`/`renamePlaylist` reject it, and `setSoundsFavorite(ids, favorite)` adds/removes membership; the UI pins it to the top and exposes a smart heart toggle (Songs tab + player). Playback uses **`react-native-track-player` 5.x (the New-Architecture/TurboModule nightly)** — the 4.1.2 stable starts audio but its commands/remote events don't reach the player under bridgeless mode, so it's effectively uncontrollable; the old `patches/react-native-track-player+4.1.2.patch` is gone. The service is registered in the custom `index.js` entry before expo-router. RNTP's Android notification opens the app with a `notification.click` deep link; `app/+native-intent.ts` rewrites that to `/sound-player` so it doesn't 404. UI: `app/sounds.tsx` (library) + `app/sound-player.tsx` (the currently-playing row gets an accent outline; tapping a row just plays — the full player opens via the mini-player or notification). Public API via `src/api/sounds.ts` → re-exported from `src/api/index.ts`. Do not auth-gate music — it is intentionally non-private. Heads-up: a JS-only reload (Fast Refresh) leaves RNTP's notification controls inert until a fresh app launch (`registerPlaybackService` only runs at startup) — a dev-only quirk, fine in release.
 
 ## Versioning
 

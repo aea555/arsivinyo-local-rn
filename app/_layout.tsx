@@ -81,6 +81,20 @@ function AppContent() {
             headerShown: false,
           }}
         />
+        <Stack.Screen
+          name="sounds"
+          options={{
+            presentation: 'card',
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="sound-player"
+          options={{
+            presentation: 'modal',
+            headerShown: false,
+          }}
+        />
       </Stack>
       <StatusBar style={isDark ? 'light' : 'dark'} />
     </>

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Background download foreground-service notification. Localized per device language
+       (values-tr/ provides Turkish). -->
+  <string name="ldl_channel_name">Background Downloads</string>
+  <string name="ldl_channel_description">Shows download progress and controls</string>
+
+  <string name="ldl_title_downloading">Downloading media</string>
+  <string name="ldl_title_queued">Queued downloads</string>
+  <string name="ldl_title_idle">Arsivinyo Downloader</string>
+
+  <string name="ldl_sub_starting">Preparing download</string>
+  <string name="ldl_sub_downloading">Download in progress</string>
+  <string name="ldl_sub_processing">Processing media</string>
+  <string name="ldl_sub_saving">Saving media</string>
+  <string name="ldl_sub_completed">Completed</string>
+  <string name="ldl_sub_error">Tap to retry from clipboard</string>
+  <string name="ldl_sub_queue_tap">Tap to queue from clipboard</string>
+  <string name="ldl_sub_download_tap">Tap to download from clipboard</string>
+
+  <string name="ldl_queue_label">Queue: %1$d/%2$d</string>
+  <string name="ldl_mode_private">Mode: Private</string>
+  <string name="ldl_mode_public">Mode: Public</string>
+
+  <string name="ldl_private_on">Private ON</string>
+  <string name="ldl_private_off">Private OFF</string>
+  <string name="ldl_audio_on">Audio ON</string>
+  <string name="ldl_audio_off">Audio OFF</string>
+
+  <string name="ldl_action_cancel">Cancel</string>
+  <string name="ldl_action_quick">Quick</string>
+  <string name="ldl_action_add_url">Add URL</string>
+  <string name="ldl_action_paste_url">Paste URL</string>
+
+  <string name="ldl_msg_private_enabled">Private mode enabled</string>
+  <string name="ldl_msg_private_disabled">Private mode disabled</string>
+  <string name="ldl_msg_audio_enabled">Audio mode enabled</string>
+  <string name="ldl_msg_audio_disabled">Audio mode disabled</string>
+</resources>

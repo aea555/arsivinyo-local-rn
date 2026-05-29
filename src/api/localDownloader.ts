@@ -129,6 +129,16 @@ export async function setLocalPrivateModeEnabled(enabled: boolean): Promise<Loca
   return LocalDownloaderModule.setPrivateModeEnabled({ enabled });
 }
 
+export async function getLocalAudioModeState(): Promise<{ enabled: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.getAudioModeState();
+}
+
+export async function setLocalAudioModeEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.setAudioModeEnabled({ enabled });
+}
+
 export async function authenticateLocalPrivateAccess(purpose: LocalPrivateAuthPurpose): Promise<LocalPrivateAuthResult> {
   ensureAndroid();
   return LocalDownloaderModule.authenticatePrivateAccess({ purpose });

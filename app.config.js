@@ -3,7 +3,7 @@ export default ({ config }) => {
     ...config,
     name: "Arsivinyo Local",
     slug: "arsivinyo-local-rn",
-    version: "2.2.0-beta.3",
+    version: "2.3.0-beta.1",
     orientation: "portrait",
     icon: "./assets/images/play_store_512.png",
     scheme: "arsivinyo-local-rn",
@@ -12,9 +12,14 @@ export default ({ config }) => {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.arsivinyo.local",
+      infoPlist: {
+        // react-native-track-player background audio (iOS is not a supported runtime
+        // for the downloader, but this keeps the audio player correct if ever built).
+        UIBackgroundModes: ["audio"],
+      },
     },
     android: {
-      versionCode: 20202,
+      versionCode: 20300,
       adaptiveIcon: {
         backgroundColor: "#000000",
         foregroundImage: "./assets/images/ic_launcher_foreground.png",

@@ -189,6 +189,63 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         self.assertEqual(merged_selector, "bestvideo+bestaudio/best")
         self.assertEqual(progressive_selector, "best[acodec!=none][vcodec!=none]/best")
 
+    def test_sanitize_audio_title_preserves_spaces_and_unicode(self):
+        # Spaces must survive (this is the whole point — no underscore slugging).
+        self.assertEqual(ld._sanitize_audio_title("This song is amazing"), "This song is amazing")
+        # Unicode letters preserved (matters for the app's non-English locales).
+        self.assertEqual(ld._sanitize_audio_title("Şarkı çok güzel"), "Şarkı çok güzel")
+        self.assertEqual(ld._sanitize_audio_title("日本語の歌"), "日本語の歌")
+
+    def test_sanitize_audio_title_strips_only_illegal_chars(self):
+        # Filesystem-illegal characters removed; the rest (incl. apostrophes,
+        # parens, ampersands) kept.
+        self.assertEqual(
+            ld._sanitize_audio_title('AC/DC: Back in Black? (Live) <2024>'),
+            "ACDC Back in Black (Live) 2024",
+        )
+        # Collapsed whitespace, no leading/trailing dots or spaces.
+        self.assertEqual(ld._sanitize_audio_title("  spaced   out  "), "spaced out")
+        self.assertEqual(ld._sanitize_audio_title("..hidden.."), "hidden")
+
+    def test_sanitize_audio_title_empty_falls_back(self):
+        self.assertEqual(ld._sanitize_audio_title(""), "audio")
+        self.assertEqual(ld._sanitize_audio_title('/\\:*?"<>|'), "audio")
+        # Length is capped.
+        self.assertLessEqual(len(ld._sanitize_audio_title("x" * 500)), 150)
+
+    def test_apply_audio_postprocessing_sets_m4a_chain(self):
+        opts = {"format": "bestvideo+bestaudio/best", "merge_output_format": "mp4"}
+        ld._apply_audio_postprocessing(opts)
+        self.assertEqual(opts["format"], "bestaudio/best")
+        self.assertNotIn("merge_output_format", opts)
+        self.assertTrue(opts["writethumbnail"])
+        pp_keys = [pp["key"] for pp in opts["postprocessors"]]
+        # No EmbedThumbnail: the bundled FFmpeg has no image encoder, so embedding the
+        # webp cover fails. We download the cover (writethumbnail) and store it as a
+        # sidecar in Kotlin instead.
+        self.assertEqual(pp_keys, ["FFmpegExtractAudio", "FFmpegMetadata"])
+        # The bundled FFmpeg has no MP3 encoder, so we target M4A/AAC instead.
+        self.assertEqual(opts["postprocessors"][0]["preferredcodec"], "m4a")
+        self.assertEqual(opts["postprocessors"][0]["preferredquality"], "256")
+
+    def test_resolve_thumbnail_file_prefers_last_existing(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            good = os.path.join(d, "cover.webp")
+            with open(good, "wb") as fh:
+                fh.write(b"\x00")
+            info = {
+                "thumbnails": [
+                    {"filepath": os.path.join(d, "missing.jpg")},
+                    {"filepath": good},
+                ]
+            }
+            self.assertEqual(ld._resolve_thumbnail_file(info), good)
+            self.assertIsNone(ld._resolve_thumbnail_file({"thumbnails": []}))
+            self.assertIsNone(ld._resolve_thumbnail_file({}))
+
     def test_build_platform_attempts_youtube_chunk_profiles(self):
         attempts = ld._build_platform_attempts(
             "youtube",

@@ -37,6 +37,10 @@ import type {
   PrivateVaultTag,
   PrivateVaultTagDeleteResult,
   LocalQuickDownloadResult,
+  LocalSound,
+  LocalSoundPlaylist,
+  LocalSoundsImportResult,
+  LocalSoundsLibrary,
   LocalTaskStatusResult,
   LocalVaultDiagnostics,
   LocalYtDlpUpdateCheckResult,
@@ -57,6 +61,8 @@ type LocalDownloaderNativeModule = {
   startQuickDownloadWithUrl(input: { url: string }): Promise<LocalQuickDownloadResult>;
   getPrivateModeState(): Promise<LocalPrivateModeState>;
   setPrivateModeEnabled(input: { enabled: boolean }): Promise<LocalPrivateModeState>;
+  getAudioModeState(): Promise<{ enabled: boolean }>;
+  setAudioModeEnabled(input: { enabled: boolean }): Promise<{ enabled: boolean }>;
   authenticatePrivateAccess(input: { purpose: LocalPrivateAuthPurpose }): Promise<LocalPrivateAuthResult>;
   listPrivateVideos(): Promise<LocalPrivateVideoItem[]>;
   deletePrivateVideo(input: { id: string }): Promise<{ success: boolean }>;
@@ -83,6 +89,20 @@ type LocalDownloaderNativeModule = {
   cancelPrivateVaultMigration(): Promise<LocalPrivateMigrationCancelResult>;
   getPrivateVaultMigrationStatus(): Promise<LocalPrivateMigrationStatus>;
   getVaultDiagnostics(): Promise<LocalVaultDiagnostics>;
+  isSoundsSupported(): boolean;
+  listSounds(): Promise<LocalSoundsLibrary>;
+  importSounds(): Promise<LocalSoundsImportResult>;
+  deleteSounds(input: { ids: string[] }): Promise<{ deletedCount: number }>;
+  renameSound(input: { id: string; title: string }): Promise<LocalSound>;
+  getSoundThumbnail(input: { id: string }): Promise<{ path: string | null }>;
+  listSoundPlaylists(): Promise<LocalSoundPlaylist[]>;
+  createSoundPlaylist(input: { name: string }): Promise<LocalSoundPlaylist>;
+  renameSoundPlaylist(input: { id: string; name: string }): Promise<LocalSoundPlaylist>;
+  deleteSoundPlaylist(input: { id: string }): Promise<{ success: boolean }>;
+  setSoundPlaylistSongs(input: { id: string; songIds: string[] }): Promise<LocalSoundPlaylist>;
+  addSoundsToPlaylists(input: { songIds: string[]; playlistIds: string[] }): Promise<{ success: boolean }>;
+  removeSoundsFromPlaylist(input: { playlistId: string; songIds: string[] }): Promise<LocalSoundPlaylist>;
+  setSoundsFavorite(input: { songIds: string[]; favorite: boolean }): Promise<LocalSoundPlaylist>;
   importCookie(input: { platform: LocalPlatform; uri: string; profileName: string }): Promise<{ profileName: string; path: string }>;
   listCookieProfiles(platform: LocalPlatform): Promise<LocalCookieProfile[]>;
   setCookieDefault(input: { platform: LocalPlatform; profileName: string }): Promise<{ success: boolean }>;
@@ -121,6 +141,8 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       startQuickDownloadWithUrl: async () => unsupported(),
       getPrivateModeState: async () => unsupported(),
       setPrivateModeEnabled: async () => unsupported(),
+      getAudioModeState: async () => unsupported(),
+      setAudioModeEnabled: async () => unsupported(),
       authenticatePrivateAccess: async () => unsupported(),
       listPrivateVideos: async () => unsupported(),
       deletePrivateVideo: async () => unsupported(),
@@ -147,6 +169,20 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       cancelPrivateVaultMigration: async () => unsupported(),
       getPrivateVaultMigrationStatus: async () => unsupported(),
       getVaultDiagnostics: async () => unsupported(),
+      isSoundsSupported: () => false,
+      listSounds: async () => unsupported(),
+      importSounds: async () => unsupported(),
+      deleteSounds: async () => unsupported(),
+      renameSound: async () => unsupported(),
+      getSoundThumbnail: async () => unsupported(),
+      listSoundPlaylists: async () => unsupported(),
+      createSoundPlaylist: async () => unsupported(),
+      renameSoundPlaylist: async () => unsupported(),
+      deleteSoundPlaylist: async () => unsupported(),
+      setSoundPlaylistSongs: async () => unsupported(),
+      addSoundsToPlaylists: async () => unsupported(),
+      removeSoundsFromPlaylist: async () => unsupported(),
+      setSoundsFavorite: async () => unsupported(),
       importCookie: async () => unsupported(),
       listCookieProfiles: async () => unsupported(),
       setCookieDefault: async () => unsupported(),
