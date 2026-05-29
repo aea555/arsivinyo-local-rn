@@ -16,7 +16,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import TrackPlayer, { State, useActiveTrack, usePlaybackState } from 'react-native-track-player';
 
 import {
@@ -65,6 +65,9 @@ export default function SoundsScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  // Lift the floating bottom bars clear of the Android nav bar / gesture pill.
+  const bottomBarOffset = insets.bottom + 12;
 
   const supported = useMemo(() => isLocalSoundsSupported(), []);
 
@@ -655,7 +658,7 @@ export default function SoundsScreen() {
             data={visibleSongs}
             renderItem={renderSong}
             keyExtractor={keyExtractor}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={[styles.listContent, { paddingBottom: 160 + insets.bottom }]}
           />
         )
       ) : (
@@ -664,7 +667,7 @@ export default function SoundsScreen() {
           data={sortedPlaylists}
           renderItem={renderPlaylist}
           keyExtractor={keyExtractorPlaylist}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: 160 + insets.bottom }]}
           ListEmptyComponent={
             <View style={styles.centered}>
               <Ionicons name="list-outline" size={48} color={colors.textMuted} />
@@ -684,11 +687,13 @@ export default function SoundsScreen() {
       )}
 
       {/* Mini player (hidden while the selection bar occupies the bottom) */}
-      {!selectionMode ? <MiniPlayer colors={colors} onOpen={() => router.push('/sound-player' as Href)} /> : null}
+      {!selectionMode ? (
+        <MiniPlayer colors={colors} bottomOffset={bottomBarOffset} onOpen={() => router.push('/sound-player' as Href)} />
+      ) : null}
 
       {/* Selection action bar */}
       {selectionMode ? (
-        <View style={[styles.selectionBar, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.selectionBar, { backgroundColor: colors.surface, borderColor: colors.border, bottom: bottomBarOffset }]}>
           <Pressable hitSlop={8} onPress={exitSelection} style={styles.selectionBtn}>
             <Ionicons name="close" size={22} color={colors.text} />
           </Pressable>
@@ -743,7 +748,7 @@ export default function SoundsScreen() {
       ) : null}
 
       {toast ? (
-        <View style={[styles.toast, { backgroundColor: colors.surfaceHover, borderColor: colors.border }]}>
+        <View style={[styles.toast, { backgroundColor: colors.surfaceHover, borderColor: colors.border, bottom: insets.bottom + 84 }]}>
           <Text style={[styles.toastText, { color: colors.text }]}>{toast}</Text>
         </View>
       ) : null}
@@ -871,13 +876,13 @@ function Header({
   );
 }
 
-function MiniPlayer({ colors, onOpen }: { colors: any; onOpen: () => void }) {
+function MiniPlayer({ colors, bottomOffset, onOpen }: { colors: any; bottomOffset: number; onOpen: () => void }) {
   const track = useActiveTrack();
   const playback = usePlaybackState();
   const playing = playback.state === State.Playing;
   if (!track) return null;
   return (
-    <Pressable onPress={onOpen} style={[styles.miniPlayer, { backgroundColor: colors.surfaceHover, borderColor: colors.border }]}>
+    <Pressable onPress={onOpen} style={[styles.miniPlayer, { backgroundColor: colors.surfaceHover, borderColor: colors.border, bottom: bottomOffset }]}>
       <View style={[styles.miniThumb, { backgroundColor: colors.surface }]}>
         {track.artwork ? (
           <Image source={{ uri: String(track.artwork) }} style={styles.miniThumbImg} contentFit="cover" />
