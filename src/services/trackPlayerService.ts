@@ -5,9 +5,12 @@ import TrackPlayer, {
   RepeatMode,
   type Track,
 } from 'react-native-track-player';
-import type { LocalSound } from '../api';
+import type { LocalSound, LocalSoundPlaylist } from '../api';
 
 let setupPromise: Promise<void> | null = null;
+// What the current RNTP queue was built from: 'all' (the Songs view) or a playlist id.
+// Used to decide whether a newly-added library song belongs in the live queue.
+let queueContextId: string | null = null;
 
 /**
  * Idempotent player setup. Safe to call from multiple screens — the work runs
@@ -59,8 +62,12 @@ export function soundToTrack(song: LocalSound): Track {
   };
 }
 
-/** Replace the queue with `songs` and start playing from `startIndex`. */
-export async function playSongs(songs: LocalSound[], startIndex: number): Promise<void> {
+/**
+ * Replace the queue with `songs` and start playing from `startIndex`. `contextId`
+ * records where the queue came from ('all' for the Songs view, or a playlist id) so
+ * later imports/downloads can be appended to the right queue.
+ */
+export async function playSongs(songs: LocalSound[], startIndex: number, contextId = 'all'): Promise<void> {
   if (songs.length === 0) return;
   await setupTrackPlayer();
   await TrackPlayer.reset();
@@ -69,7 +76,46 @@ export async function playSongs(songs: LocalSound[], startIndex: number): Promis
   if (safeIndex > 0) {
     await TrackPlayer.skip(safeIndex);
   }
+  queueContextId = contextId;
   await TrackPlayer.play();
+}
+
+// Library song ids seen on the previous reconcile. Module-level so it survives the
+// library screen unmounting/remounting (so a song downloaded while the screen was
+// away is still recognized as new on return).
+let knownSongIds: Set<string> | null = null;
+
+/**
+ * Called after the library reloads. Appends songs added since the last reconcile (an
+ * import or download) to the active RNTP queue, so the player's prev/next can reach
+ * them without an app restart — the queue is otherwise a snapshot from when playback
+ * started. Only songs belonging to the queue's context are added: in 'all' any new
+ * song qualifies; in a playlist only ones now in that playlist. The first call just
+ * records the baseline (nothing is "new" yet).
+ */
+export async function reconcileQueueAfterReload(
+  allSongs: LocalSound[],
+  allPlaylists: LocalSoundPlaylist[]
+): Promise<void> {
+  const firstRun = knownSongIds == null;
+  const newSongs = firstRun ? [] : allSongs.filter((s) => !knownSongIds!.has(s.id));
+  knownSongIds = new Set(allSongs.map((s) => s.id));
+  if (newSongs.length === 0 || queueContextId == null) return;
+  try {
+    const queue = await TrackPlayer.getQueue();
+    if (queue.length === 0) return; // nothing playing; the next playSongs builds fresh
+    const have = new Set(queue.map((t) => String(t.id)));
+    let candidates = newSongs.filter((s) => !have.has(s.id));
+    if (queueContextId !== 'all') {
+      const pl = allPlaylists.find((p) => p.id === queueContextId);
+      if (!pl) return;
+      const inPlaylist = new Set(pl.songIds);
+      candidates = candidates.filter((s) => inPlaylist.has(s.id));
+    }
+    if (candidates.length > 0) await TrackPlayer.add(candidates.map(soundToTrack));
+  } catch {
+    // best-effort; the next full playSongs rebuilds the queue anyway
+  }
 }
 
 export async function seekBy(deltaSeconds: number): Promise<void> {

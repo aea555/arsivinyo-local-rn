@@ -36,7 +36,7 @@ import {
   type LocalSoundPlaylist,
 } from '@/src/api';
 import { AppText as Text } from '@/src/components';
-import { playSongs, setupTrackPlayer } from '@/src/services/trackPlayerService';
+import { playSongs, reconcileQueueAfterReload, setupTrackPlayer } from '@/src/services/trackPlayerService';
 import { useTheme } from '@/src/theme';
 
 type SortMode = 'newest' | 'oldest' | 'titleAsc' | 'titleDesc' | 'durationDesc' | 'durationAsc';
@@ -112,7 +112,11 @@ export default function SoundsScreen() {
     try {
       const [library, pls] = await Promise.all([listLocalSounds(), listLocalSoundPlaylists()]);
       setSongs(library.songs);
-      setPlaylists(library.playlists.length ? library.playlists : pls);
+      const allPlaylists = library.playlists.length ? library.playlists : pls;
+      setPlaylists(allPlaylists);
+      // Keep the active queue current: append songs added since the last reconcile
+      // (import/download) so the player's prev/next can reach them without a restart.
+      await reconcileQueueAfterReload(library.songs, allPlaylists);
     } catch {
       showToast(t('sounds.loadFailed'));
     } finally {
@@ -268,13 +272,14 @@ export default function SoundsScreen() {
     async (index: number) => {
       try {
         // Just start playback. The full player opens via the mini-player or the
-        // notification, not by tapping a song row.
-        await playSongs(visibleSongs, index);
+        // notification, not by tapping a song row. The context (playlist id or 'all')
+        // lets later imports/downloads be appended to this queue.
+        await playSongs(visibleSongs, index, activePlaylist ? activePlaylist.id : 'all');
       } catch {
         showToast(t('sounds.loadFailed'));
       }
     },
-    [visibleSongs, showToast, t]
+    [visibleSongs, activePlaylist, showToast, t]
   );
 
   // ---- import ----
