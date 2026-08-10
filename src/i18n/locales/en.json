@@ -399,6 +399,11 @@
         "repeatAll": "Repeat all",
         "repeatOne": "Repeat one",
         "unknownArtist": "Unknown artist",
+        "presets": {
+            "slowedReverb": "Slowed + Reverb",
+            "nightcore": "Nightcore",
+            "bassBoost": "Bass Boost"
+        },
         "nowPlaying": "Now playing",
         "rename": "Rename",
         "renameTitle": "Rename song",

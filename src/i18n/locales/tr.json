@@ -399,6 +399,11 @@
         "repeatAll": "Tümünü tekrarla",
         "repeatOne": "Birini tekrarla",
         "unknownArtist": "Bilinmeyen sanatçı",
+        "presets": {
+            "slowedReverb": "Yavaşlatılmış + Yankı",
+            "nightcore": "Nightcore",
+            "bassBoost": "Bas Yükseltme"
+        },
         "nowPlaying": "Çalınıyor",
         "rename": "Yeniden adlandır",
         "renameTitle": "Şarkıyı yeniden adlandır",
