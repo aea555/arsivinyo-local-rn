@@ -32,6 +32,9 @@ import {
 } from '@/src/services';
 import { useTheme } from '@/src/theme';
 
+/** How long a transient status line stays before clearing itself. */
+const STATUS_MESSAGE_TTL_MS = 5000;
+
 export default function HomeScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -328,6 +331,16 @@ export default function HomeScreen() {
     }, [])
   );
 
+  // Transient feedback, so give it a lifetime. It was only ever cleared when a new
+  // download started, which let a message outlive the thing it described: toggling
+  // private mode on, then enabling audio mode (which clears private mode natively),
+  // left "Private mode enabled" sitting under a chip that read OFF.
+  useEffect(() => {
+    if (!statusMessage) return;
+    const timer = setTimeout(() => setStatusMessage(''), STATUS_MESSAGE_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [statusMessage]);
+
   const handleTogglePrivateMode = useCallback(async () => {
     if (isPrivateToggleBusy) return;
     setIsPrivateToggleBusy(true);
@@ -357,8 +370,18 @@ export default function HomeScreen() {
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            {/* Neon Title with Sixtyfour Font */}
+            {/* Neon Title with Sixtyfour Font.
+                A wordmark, not body text: it must never wrap or track the system font
+                size. Sixtyfour is an unusually wide face, so at a 1.3x system font
+                scale — common on Samsung — it overflowed and broke onto a second line.
+                allowFontScaling stops the scale from applying, and the single line plus
+                auto-shrink guarantees it fits whatever width is left after the header
+                actions take theirs. */}
             <Text
+              allowFontScaling={false}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
               style={[
                 styles.title,
                 {
@@ -374,18 +397,23 @@ export default function HomeScreen() {
             </Text>
           </View>
           <View style={styles.headerActions}>
+            {/* Labelled, not icon-only. These three go to entirely different screens,
+                and an icon alone gives no way to know which before tapping it. */}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('home.privateVault')}
               accessibilityHint={t('home.privateVaultHint')}
               onPress={openPrivateVideos}
               style={({ pressed }) => [
-                styles.headerIconButton,
+                styles.headerNavButton,
                 { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
               ]}
-              hitSlop={8}
+              hitSlop={6}
             >
-              <Ionicons name="shield-checkmark-outline" size={21} color={colors.text} />
+              <Ionicons name="shield-checkmark-outline" size={19} color={colors.text} />
+              <Text allowFontScaling={false} numberOfLines={1} style={[styles.headerNavLabel, { color: colors.textMuted }]}>
+                {t('home.navVault')}
+              </Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -393,162 +421,32 @@ export default function HomeScreen() {
               accessibilityHint={t('home.musicLibraryHint')}
               onPress={openSounds}
               style={({ pressed }) => [
-                styles.headerIconButton,
+                styles.headerNavButton,
                 { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
               ]}
-              hitSlop={8}
+              hitSlop={6}
             >
-              <Ionicons name="musical-notes-outline" size={21} color={colors.text} />
+              <Ionicons name="musical-notes-outline" size={19} color={colors.text} />
+              <Text allowFontScaling={false} numberOfLines={1} style={[styles.headerNavLabel, { color: colors.textMuted }]}>
+                {t('home.navMusic')}
+              </Text>
             </Pressable>
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('home.navSettings')}
               onPress={openSettings}
               style={({ pressed }) => [
-                styles.headerIconButton,
+                styles.headerNavButton,
                 { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
               ]}
-              hitSlop={8}
+              hitSlop={6}
             >
-              <Ionicons name="settings-outline" size={22} color={colors.text} />
+              <Ionicons name="settings-outline" size={19} color={colors.text} />
+              <Text allowFontScaling={false} numberOfLines={1} style={[styles.headerNavLabel, { color: colors.textMuted }]}>
+                {t('home.navSettings')}
+              </Text>
             </Pressable>
           </View>
-        </View>
-
-        <View style={styles.controlsPanel}>
-          <View
-            style={[
-              styles.statusStrip,
-              {
-                backgroundColor: backgroundServiceRunning ? colors.surface : colors.surface + 'AA',
-                borderColor: backgroundServiceRunning ? colors.accent + '55' : colors.borderSubtle,
-              },
-            ]}
-          >
-            <View style={styles.statusIconWrap}>
-              <Ionicons
-                name={backgroundServiceRunning ? 'cloud-download-outline' : 'cloud-offline-outline'}
-                size={15}
-                color={backgroundServiceRunning ? colors.accent : colors.textMuted}
-              />
-            </View>
-            <Text
-              numberOfLines={1}
-              style={[
-                styles.statusStripText,
-                { color: backgroundServiceRunning ? colors.text : colors.textMuted },
-              ]}
-            >
-              {backgroundServiceRunning
-                ? t('home.backgroundActive', { count: backgroundQueueSize })
-                : t('home.backgroundInactive')}
-            </Text>
-          </View>
-
-          <View style={styles.primaryActionsColumn}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
-              accessibilityHint={privateModeEnabled ? t('home.privateModeHintOn') : t('home.privateModeHintOff')}
-              onPress={handleTogglePrivateMode}
-              disabled={isPrivateToggleBusy || audioModeEnabled}
-              style={({ pressed }) => [
-                styles.actionRow,
-                {
-                  backgroundColor: privateModeEnabled
-                    ? colors.accent + '16'
-                    : (pressed ? colors.surfaceHover : colors.surface),
-                  borderColor: privateModeEnabled ? colors.accent : colors.border,
-                  opacity: (isPrivateToggleBusy || audioModeEnabled) ? 0.5 : 1,
-                },
-              ]}
-            >
-              <View style={styles.actionLeading}>
-                {isPrivateToggleBusy ? (
-                  <ActivityIndicator size="small" color={colors.text} />
-                ) : (
-                  <Ionicons
-                    name={privateModeEnabled ? 'lock-closed' : 'lock-open-outline'}
-                    size={18}
-                    color={colors.text}
-                  />
-                )}
-              </View>
-              <View style={styles.actionTextBlock}>
-                <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
-                  {privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
-                </Text>
-              </View>
-              <View style={styles.actionTrailing}>
-                <View
-                  style={[
-                    styles.modeBadge,
-                    {
-                      backgroundColor: privateModeEnabled ? colors.accent + '28' : colors.surface,
-                      borderColor: privateModeEnabled ? colors.accent : colors.borderSubtle,
-                    },
-                  ]}
-                >
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.modeBadgeText,
-                      { color: privateModeEnabled ? colors.accent : colors.textMuted },
-                    ]}
-                  >
-                    {privateModeEnabled ? t('home.privateModeBadgeOn') : t('home.privateModeBadgeOff')}
-                  </Text>
-                </View>
-              </View>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={audioModeEnabled ? t('home.audioModeOn') : t('home.audioModeOff')}
-              accessibilityHint={audioModeEnabled ? t('home.audioModeHintOn') : t('home.audioModeHintOff')}
-              onPress={handleToggleAudioMode}
-              style={({ pressed }) => [
-                styles.actionRow,
-                {
-                  backgroundColor: audioModeEnabled
-                    ? colors.accent + '16'
-                    : (pressed ? colors.surfaceHover : colors.surface),
-                  borderColor: audioModeEnabled ? colors.accent : colors.border,
-                },
-              ]}
-            >
-              <View style={styles.actionLeading}>
-                <Ionicons
-                  name={audioModeEnabled ? 'musical-notes' : 'musical-notes-outline'}
-                  size={18}
-                  color={colors.text}
-                />
-              </View>
-              <View style={styles.actionTextBlock}>
-                <Text numberOfLines={1} style={[styles.actionTitle, { color: colors.text }]}>
-                  {audioModeEnabled ? t('home.audioModeOn') : t('home.audioModeOff')}
-                </Text>
-              </View>
-              <View style={styles.actionTrailing}>
-                <View
-                  style={[
-                    styles.modeBadge,
-                    {
-                      backgroundColor: audioModeEnabled ? colors.accent + '28' : colors.surface,
-                      borderColor: audioModeEnabled ? colors.accent : colors.borderSubtle,
-                    },
-                  ]}
-                >
-                  <Text
-                    numberOfLines={1}
-                    style={[styles.modeBadgeText, { color: audioModeEnabled ? colors.accent : colors.textMuted }]}
-                  >
-                    {audioModeEnabled ? t('home.audioModeBadgeOn') : t('home.audioModeBadgeOff')}
-                  </Text>
-                </View>
-              </View>
-            </Pressable>
-
-          </View>
-
         </View>
 
         {/* Main Content */}
@@ -558,6 +456,84 @@ export default function HomeScreen() {
             state={downloadState}
             disabled={downloadState !== 'idle' && downloadState !== 'error'}
           />
+
+          {/* Modes sit WITH the download button because they modify what it does, not
+              with navigation. They stay inline rather than behind a modal: the cost of
+              not noticing private mode is a file saved somewhere you did not intend,
+              so the state has to be readable without opening anything. State is carried
+              by the label as well as the colour, so it does not depend on seeing hue. */}
+          <View style={styles.modeRow}>
+            <Pressable
+              accessibilityRole="switch"
+              accessibilityState={{ checked: privateModeEnabled, disabled: audioModeEnabled }}
+              accessibilityLabel={privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
+              accessibilityHint={privateModeEnabled ? t('home.privateModeHintOn') : t('home.privateModeHintOff')}
+              onPress={handleTogglePrivateMode}
+              disabled={isPrivateToggleBusy || audioModeEnabled}
+              style={({ pressed }) => [
+                styles.modeChip,
+                {
+                  backgroundColor: privateModeEnabled ? colors.accent + '1F' : (pressed ? colors.surfaceHover : colors.surface),
+                  borderColor: privateModeEnabled ? colors.accent : colors.border,
+                  opacity: (isPrivateToggleBusy || audioModeEnabled) ? 0.45 : 1,
+                },
+              ]}
+            >
+              {isPrivateToggleBusy ? (
+                <ActivityIndicator size="small" color={colors.text} />
+              ) : (
+                <Ionicons
+                  name={privateModeEnabled ? 'lock-closed' : 'lock-open-outline'}
+                  size={17}
+                  color={privateModeEnabled ? colors.accent : colors.textMuted}
+                />
+              )}
+              <Text numberOfLines={1} style={[styles.modeChipLabel, { color: privateModeEnabled ? colors.text : colors.textMuted }]}>
+                {t('home.modePrivate')}
+              </Text>
+              <Text numberOfLines={1} style={[styles.modeChipState, { color: privateModeEnabled ? colors.accent : colors.textMuted }]}>
+                {privateModeEnabled ? t('home.modeOn') : t('home.modeOff')}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="switch"
+              accessibilityState={{ checked: audioModeEnabled }}
+              accessibilityLabel={audioModeEnabled ? t('home.audioModeOn') : t('home.audioModeOff')}
+              accessibilityHint={audioModeEnabled ? t('home.audioModeHintOn') : t('home.audioModeHintOff')}
+              onPress={handleToggleAudioMode}
+              style={({ pressed }) => [
+                styles.modeChip,
+                {
+                  backgroundColor: audioModeEnabled ? colors.accent + '1F' : (pressed ? colors.surfaceHover : colors.surface),
+                  borderColor: audioModeEnabled ? colors.accent : colors.border,
+                },
+              ]}
+            >
+              <Ionicons
+                name={audioModeEnabled ? 'musical-notes' : 'videocam-outline'}
+                size={17}
+                color={audioModeEnabled ? colors.accent : colors.textMuted}
+              />
+              <Text numberOfLines={1} style={[styles.modeChipLabel, { color: audioModeEnabled ? colors.text : colors.textMuted }]}>
+                {t('home.modeAudio')}
+              </Text>
+              <Text numberOfLines={1} style={[styles.modeChipState, { color: audioModeEnabled ? colors.accent : colors.textMuted }]}>
+                {audioModeEnabled ? t('home.modeOn') : t('home.modeOff')}
+              </Text>
+            </Pressable>
+          </View>
+
+          {/* Shown only while there is actually work. A permanent "Idle" line reports
+              nothing and turns the modes into the middle of three stacked blocks. */}
+          {backgroundServiceRunning ? (
+            <View style={styles.statusLine}>
+              <Ionicons name="cloud-download-outline" size={13} color={colors.accent} />
+              <Text numberOfLines={1} style={[styles.statusLineText, { color: colors.textMuted }]}>
+                {t('home.backgroundActive', { count: backgroundQueueSize })}
+              </Text>
+            </View>
+          ) : null}
 
           {isOngoingDownload ? (
             <View style={styles.progressSection}>
@@ -759,63 +735,49 @@ const styles = StyleSheet.create({
     gap: 8,
     flexShrink: 0,
   },
-  headerIconButton: {
-    width: 40,
-    height: 40,
+  headerNavButton: {
+    minWidth: 52,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
     borderRadius: 12,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
   },
+  // Fixed size: these labels must not grow with the system font setting or they push
+  // the wordmark out of the header.
+  headerNavLabel: { fontSize: 9, fontWeight: '600', letterSpacing: 0.2 },
   content: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingBottom: 60,
   },
-  controlsPanel: {
-    paddingHorizontal: 20,
-    marginTop: 4,
-    marginBottom: 6,
-    gap: 10,
-  },
-  statusStrip: {
-    minHeight: 42,
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 12,
+  // Content-width and centred rather than a grid of flex:1 cells. A two-across grid
+  // only looks right at an even count — a third toggle would strand one on its own row
+  // — and full-width cells fight a screen composed around a single centred focal point.
+  modeRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statusIconWrap: {
-    width: 22,
-    alignItems: 'center',
+    flexWrap: 'wrap',
     justifyContent: 'center',
-    marginRight: 8,
-  },
-  statusStripText: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  primaryActionsColumn: {
     gap: 8,
+    marginTop: 18,
+    paddingHorizontal: 20,
   },
-  actionRow: {
-    minHeight: 56,
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+  modeChip: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    minHeight: 40,
   },
-  actionLeading: {
-    width: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
+  modeChipLabel: { fontSize: 13, fontWeight: '600' },
+  modeChipState: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4 },
+  statusLine: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12 },
+  statusLineText: { fontSize: 11 },
   actionTextBlock: {
     flex: 1,
     minWidth: 0,
@@ -840,11 +802,6 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  modeBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.25,
   },
   statusMessage: {
     marginTop: 24,
