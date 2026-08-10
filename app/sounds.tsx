@@ -1383,18 +1383,30 @@ function SimpleSheet({
   colors: any;
   children: React.ReactNode;
 }) {
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      {/* The dim layer is its OWN full-screen view and never resizes. It used to be the
+          KeyboardAvoidingView's own background, but that view physically shrinks to
+          make room for the keyboard, so the dimming shrank with it and the real screen
+          showed through along the bottom.
+
+          It also carries the tap-to-close, as a SIBLING behind the sheet rather than a
+          wrapper around it: a Pressable ancestor competes for the touch responder,
+          which stopped an inner ScrollView from panning and stole drags from the
+          sliders. */}
+      <Pressable style={styles.modalDim} onPress={onClose} />
+
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.modalOverlay}
+        pointerEvents="box-none"
+        style={[
+          styles.modalOverlay,
+          // Keep the sheet clear of the status bar and gesture area. Without this a
+          // tall sheet slides under the clock once the keyboard shrinks the container.
+          { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 },
+        ]}
       >
-        {/* The backdrop is a SIBLING behind the sheet, not a wrapper around it. A
-            Pressable ancestor competes for the touch responder, which stopped an inner
-            ScrollView from panning at all and stole drags from the sliders. As a
-            sibling it still catches taps outside the sheet, because the sheet is
-            painted on top and consumes its own touches. */}
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={[styles.sheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           {children}
         </View>
@@ -1705,7 +1717,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   presetSaveRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
-  presetInput: { flex: 1, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  // No flex here. It previously shared a row with a Save button; standing alone in a
+  // column it would shrink to nothing when the keyboard squeezed the sheet, leaving a
+  // sliver with the typed text invisible inside it.
+  presetInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 44,
+  },
   presetSaveBtn: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 },
   presetApplyBtn: { borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 10 },
   presetApplyText: { color: '#0b0b0d', fontWeight: '700', fontSize: 15 },
@@ -1792,8 +1813,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   toastText: { fontSize: 13, fontWeight: '600' },
-  modalOverlay: { flex: 1, backgroundColor: '#000000CC', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  sheet: { width: '100%', maxWidth: 420, borderRadius: 16, borderWidth: 1, paddingVertical: 8 },
+  modalOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
+  modalDim: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000000CC' },
+  // maxHeight keeps a tall sheet inside the screen instead of overflowing past the
+  // status bar when the keyboard shrinks the available space.
+  sheet: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '100%',
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 8,
+  },
   sheetRow: {
     flexDirection: 'row',
     alignItems: 'center',
