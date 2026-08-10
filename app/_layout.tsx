@@ -8,7 +8,7 @@ import {
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { I18nextProvider } from 'react-i18next';
 import { useTranslation } from 'react-i18next';
 import { StyleSheet } from 'react-native';
@@ -101,8 +101,10 @@ function AppContent() {
   );
 }
 
+/** Upper bound on waiting for fonts before starting anyway with system fonts. */
+const FONT_LOAD_TIMEOUT_MS = 4000;
+
 export default function RootLayout() {
-  const [showSplash, setShowSplash] = useState(true);
   const [mondaLoaded] = useMondaFonts({
     Monda_400Regular,
     Monda_500Medium,
@@ -115,16 +117,27 @@ export default function RootLayout() {
     SplashScreen.hideAsync();
   }, []);
 
-  const handleSplashComplete = useCallback(() => {
-    setShowSplash(false);
-  }, []);
+  // Show the splash only while the app is genuinely not ready. It used to also wait
+  // out a fixed 2.5s animation, which was a floor rather than a ceiling: a warm start
+  // that was ready immediately still sat on the splash, and every process restart made
+  // that wait obvious.
+  //
+  // The timeout below is a CEILING, not a floor. If the fonts never resolve — a failed
+  // asset, an odd device — the app proceeds with system fonts instead of being stuck on
+  // the splash forever, which is what the old unconditional timer accidentally provided.
+  const [fontTimedOut, setFontTimedOut] = useState(false);
+  useEffect(() => {
+    if (mondaLoaded) return;
+    const timer = setTimeout(() => setFontTimedOut(true), FONT_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [mondaLoaded]);
 
-  const appReady = !showSplash && mondaLoaded;
+  const appReady = mondaLoaded || fontTimedOut;
 
   if (!appReady) {
     return (
       <GestureHandlerRootView style={styles.root}>
-        <AnimatedSplash onAnimationComplete={handleSplashComplete} />
+        <AnimatedSplash />
       </GestureHandlerRootView>
     );
   }

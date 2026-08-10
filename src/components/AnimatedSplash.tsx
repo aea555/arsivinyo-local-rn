@@ -13,12 +13,12 @@ import Animated, {
 } from 'react-native-reanimated';
 
 interface AnimatedSplashProps {
-    onAnimationComplete: () => void;
+    /** Unused. The splash is presentational; the caller decides when to stop it. */
+    onAnimationComplete?: () => void;
 }
 
-const ANIMATION_DURATION = 2500; // Total splash duration
 
-export const AnimatedSplash: React.FC<AnimatedSplashProps> = ({ onAnimationComplete }) => {
+export const AnimatedSplash: React.FC<AnimatedSplashProps> = () => {
     const [fontsLoaded] = useFonts({
         Sixtyfour_400Regular,
     });
@@ -69,13 +69,11 @@ export const AnimatedSplash: React.FC<AnimatedSplashProps> = ({ onAnimationCompl
             )
         );
 
-        // End splash after duration
-        const timer = setTimeout(() => {
-            onAnimationComplete();
-        }, ANIMATION_DURATION);
-
-        return () => clearTimeout(timer);
-    }, [letterScale, onAnimationComplete, ripple1Progress, ripple2Progress, ripple3Progress]);
+        // No completion timer. The splash used to end on a fixed 2.5s timeout, which
+        // made it a MINIMUM: even when everything was ready in 50ms the user waited.
+        // It is now purely presentational — whoever renders it decides when the app is
+        // actually ready and stops rendering it.
+    }, [letterScale, ripple1Progress, ripple2Progress, ripple3Progress]);
 
     const letterAnimatedStyle = useAnimatedStyle(() => ({
         transform: [{ scale: letterScale.value }],
