@@ -7,6 +7,10 @@ version = '1.0.0'
 
 android {
   namespace "expo.modules.localdownloader"
+  // Match the app module exactly. Without this AGP falls back to its own default NDK
+  // version, which is not necessarily one that is installed, and the CMake build then
+  // fails for a reason that has nothing to do with the code.
+  ndkVersion rootProject.ext.ndkVersion
   defaultConfig {
     minSdkVersion rootProject.ext.minSdkVersion
     targetSdkVersion rootProject.ext.targetSdkVersion
