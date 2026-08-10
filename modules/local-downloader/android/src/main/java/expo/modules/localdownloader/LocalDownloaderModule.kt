@@ -2059,6 +2059,18 @@ class LocalDownloaderModule : Module() {
     // again afterwards, so the UI latched "downloading" forever. This value is correct
     // at the instant it is read and needs no callback from the service.
     val hasBackgroundWork = activeTaskId != null || queueSize() > 0 || presetRenderActive != null
+    // Derived for the same reason as the flag above. `notificationPhase` is a side
+    // effect of whoever last touched the notification, so ordering decides its value:
+    // a render batch sets "rendering", then the finishing download's own cleanup sets
+    // "idle" and emits last. The UI then saw work in progress with a phase of "idle"
+    // and fell back to calling everything a download. This reports what is actually
+    // running, whatever order the calls happened in.
+    val workPhase = when {
+      presetRenderActive != null -> "rendering"
+      activeTaskId != null -> notificationPhase.takeIf { it != "idle" } ?: "downloading"
+      queueSize() > 0 -> "downloading"
+      else -> "idle"
+    }
     return mapOf(
       "serviceRunning" to hasBackgroundWork,
       "activeTaskId" to activeTaskId,
@@ -2066,7 +2078,7 @@ class LocalDownloaderModule : Module() {
       "maxQueueSize" to MAX_QUEUED_DOWNLOADS,
       "queuedUrls" to synchronized(queueLock) { queuedQuickDownloads.map { it.url } },
       "lastQuickReason" to lastQuickReason,
-      "notificationPhase" to notificationPhase,
+      "notificationPhase" to workPhase,
       "stickyNotificationEnabled" to stickyNotificationEnabled,
       "privateModeEnabled" to privateModeEnabled,
       "audioModeEnabled" to audioModeEnabled,
