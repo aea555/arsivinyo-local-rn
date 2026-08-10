@@ -104,6 +104,8 @@ type LocalDownloaderNativeModule = {
     titleSuffix: string;
   }): Promise<LocalSoundPresetStartResult>;
   cancelSoundPresetRender(input: { renderId: string }): Promise<{ success: boolean }>;
+  setAutoPresetConfig(input: { config: string }): Promise<{ success: boolean }>;
+  getAutoPresetConfig(): Promise<{ config: string | null }>;
   getAudioPresetDiagnostics(): Promise<LocalAudioPresetDiagnostics>;
   listSounds(): Promise<LocalSoundsLibrary>;
   importSounds(): Promise<LocalSoundsImportResult>;
@@ -189,6 +191,8 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       isSoundsSupported: () => false,
       applySoundPresets: async () => unsupported(),
       cancelSoundPresetRender: async () => unsupported(),
+      setAutoPresetConfig: async () => unsupported(),
+      getAutoPresetConfig: async () => unsupported(),
       getAudioPresetDiagnostics: async () => unsupported(),
       listSounds: async () => unsupported(),
       importSounds: async () => unsupported(),

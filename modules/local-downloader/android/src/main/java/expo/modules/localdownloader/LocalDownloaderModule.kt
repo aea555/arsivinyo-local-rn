@@ -633,6 +633,30 @@ class LocalDownloaderModule : Module() {
       startPresetRender(songIds, presetId, paramsSpec, titleSuffix)
     }
 
+    /**
+     * Store which presets are applied automatically to a new audio download.
+     *
+     * TypeScript serialises its preset definitions into this blob; native only replays
+     * them. Kept on this side because a download can complete with no JS running.
+     */
+    AsyncFunction("setAutoPresetConfig") { input: Map<String, Any?> ->
+      val context = requireNotNull(appContext.reactContext)
+      val json = (input["config"] as? String).orEmpty()
+      context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_AUTO_PRESETS, json.ifBlank { null })
+        .apply()
+      mapOf("success" to true)
+    }
+
+    AsyncFunction("getAutoPresetConfig") {
+      val context = requireNotNull(appContext.reactContext)
+      mapOf(
+        "config" to context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+          .getString(PREF_AUTO_PRESETS, null)
+      )
+    }
+
     AsyncFunction("cancelSoundPresetRender") { input: Map<String, Any?> ->
       val renderId = (input["renderId"] as? String)?.trim().orEmpty()
       mapOf("success" to cancelPresetRender(renderId))
@@ -1695,6 +1719,12 @@ class LocalDownloaderModule : Module() {
               runCatching { File(filePath).delete() }
               thumbnailPath?.let { runCatching { File(it).delete() } }
               debug("Task[$taskId] audio saved to music library id=${sound["id"]}")
+              // Auto-applied presets run only once the download itself is safely in the
+              // library, so a render failure can never cost the downloaded audio.
+              (sound["id"] as? String)?.let { newSongId ->
+                runCatching { applyAutoPresetsTo(newSongId) }
+                  .onFailure { addError("AUTO_PRESET_START_FAILED: ${it.message}") }
+              }
             }.onFailure { saveError ->
               val saveMessage = saveError.message ?: "SOUNDS_SAVE_FAILED"
               updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "SOUNDS_SAVE_FAILED", saveMessage)
@@ -2136,39 +2166,74 @@ class LocalDownloaderModule : Module() {
    * the app being killed; wiring it to DownloadForegroundService is the next step.
    */
   /**
-   * Queue a preset render batch and return its renderId.
+   * One unit of render work: apply one preset to one track.
    *
-   * The batch is persisted to disk before any work starts and rewritten after every
-   * track, so a process death mid-batch leaves an accurate record of what is left. The
-   * foreground service is held for the duration, which is what stops Android reclaiming
-   * the process when the task is swiped away (the service is declared stopWithTask
-   * false). Between the two, a batch survives both the common case and the hard case.
+   * A flat job list rather than "one preset over many tracks" because both shapes are
+   * needed — the library applies one preset to a selection, while an auto-applied
+   * download produces several presets from a single downloaded track.
    */
+  private data class PresetJob(
+    val songId: String,
+    val presetId: String,
+    val paramsSpec: String,
+    val titleSuffix: String,
+  )
+
+  private fun presetJobFromJson(obj: JSONObject): PresetJob = PresetJob(
+    songId = obj.optString("songId"),
+    presetId = obj.optString("presetId"),
+    paramsSpec = obj.optString("paramsSpec"),
+    titleSuffix = obj.optString("titleSuffix"),
+  )
+
+  private fun presetJobToJson(job: PresetJob): JSONObject = JSONObject().apply {
+    put("songId", job.songId)
+    put("presetId", job.presetId)
+    put("paramsSpec", job.paramsSpec)
+    put("titleSuffix", job.titleSuffix)
+  }
+
+  /** Apply one preset across a selection of tracks. */
   private fun startPresetRender(
     songIds: List<String>,
     presetId: String,
     paramsSpec: String,
     titleSuffix: String,
   ): Map<String, Any?> {
-    val renderId = "preset_${UUID.randomUUID()}"
-    persistPresetQueue(renderId, presetId, paramsSpec, titleSuffix, songIds, songIds.size, 0, 0)
-    runPresetBatch(renderId, presetId, paramsSpec, titleSuffix, songIds, songIds.size, 0, 0)
-    return mapOf("renderId" to renderId, "total" to songIds.size)
+    val jobs = songIds.map { PresetJob(it, presetId, paramsSpec, titleSuffix) }
+    return startPresetJobs(jobs, deleteSourceWhenDone = null)
   }
 
   /**
-   * Run (or continue) a batch over [pending]. `completedSoFar` / `failedSoFar` carry the
-   * totals from before an interruption so a resumed batch reports honest numbers.
+   * Queue an arbitrary job list and return its renderId.
+   *
+   * The list is persisted before any work starts and rewritten after every job, so a
+   * process death leaves an accurate record of what remains. The foreground service is
+   * held for the duration, which stops Android reclaiming the process when the task is
+   * swiped away (the service is declared stopWithTask false).
+   *
+   * [deleteSourceWhenDone] removes that track once every job succeeds. It exists for the
+   * auto-apply download flow, where the user may want only the preset versions and not
+   * the track they were derived from.
+   */
+  private fun startPresetJobs(jobs: List<PresetJob>, deleteSourceWhenDone: String?): Map<String, Any?> {
+    val renderId = "preset_${UUID.randomUUID()}"
+    persistPresetQueue(renderId, jobs, jobs.size, 0, 0, deleteSourceWhenDone)
+    runPresetBatch(renderId, jobs, jobs.size, 0, 0, deleteSourceWhenDone)
+    return mapOf("renderId" to renderId, "total" to jobs.size)
+  }
+
+  /**
+   * Run (or continue) [pending]. `completedSoFar` / `failedSoFar` carry the totals from
+   * before an interruption so a resumed batch reports honest numbers.
    */
   private fun runPresetBatch(
     renderId: String,
-    presetId: String,
-    paramsSpec: String,
-    titleSuffix: String,
-    pending: List<String>,
+    pending: List<PresetJob>,
     total: Int,
     completedSoFar: Int,
     failedSoFar: Int,
+    deleteSourceWhenDone: String?,
   ) {
     val context = requireNotNull(appContext.reactContext)
 
@@ -2190,7 +2255,7 @@ class LocalDownloaderModule : Module() {
       try {
         while (remaining.isNotEmpty()) {
           if (cancelFlag.exists()) break
-          val songId = remaining.removeFirst()
+          val job = remaining.removeFirst()
           val index = total - remaining.size - 1
 
           val progressFile = File(progressDir, "$renderId-$index.json")
@@ -2198,16 +2263,16 @@ class LocalDownloaderModule : Module() {
 
           // Watch the file the native side rewrites so a long track reports movement
           // rather than sitting at 0% until it finishes.
-          val watcher = launch { watchPresetProgress(renderId, songId, index, total, progressFile) }
+          val watcher = launch { watchPresetProgress(renderId, job.songId, index, total, progressFile) }
 
           val ffmpegInfo = getOrResolveFfmpegInfo()
           val outcome = runCatching {
             renderer.render(
               AudioPresetRenderer.Request(
-                songId = songId,
-                presetId = presetId,
-                paramsSpec = paramsSpec,
-                titleSuffix = titleSuffix,
+                songId = job.songId,
+                presetId = job.presetId,
+                paramsSpec = job.paramsSpec,
+                titleSuffix = job.titleSuffix,
                 ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location.orEmpty(),
                 ffprobePath = ffmpegInfo.ffprobePath.orEmpty(),
                 progressFilePath = progressFile.absolutePath,
@@ -2220,22 +2285,29 @@ class LocalDownloaderModule : Module() {
 
           outcome.onSuccess { song ->
             completed += 1
-            emitPresetProgress(renderId, "TRACK_DONE", songId, index, total, 100.0, song = song)
+            emitPresetProgress(renderId, "TRACK_DONE", job.songId, index, total, 100.0, song = song)
           }.onFailure { error ->
             if (cancelFlag.exists()) return@onFailure
             failed += 1
             val message = error.message ?: "PRESET_RENDER_FAILED"
-            addError("PRESET_RENDER_FAILED: song=$songId message=$message")
-            emitPresetProgress(renderId, "TRACK_FAILED", songId, index, total, null, message)
+            addError("PRESET_RENDER_FAILED: song=${job.songId} message=$message")
+            emitPresetProgress(renderId, "TRACK_FAILED", job.songId, index, total, null, message)
           }
 
-          // Rewrite AFTER each track: if the process dies now, the finished track is
-          // already in the library and must not be rendered a second time on resume.
-          persistPresetQueue(renderId, presetId, paramsSpec, titleSuffix, remaining.toList(), total, completed, failed)
+          // Rewrite AFTER each job: if the process dies now, the finished render is
+          // already in the library and must not be produced a second time on resume.
+          persistPresetQueue(renderId, remaining.toList(), total, completed, failed, deleteSourceWhenDone)
           syncForegroundNotification("rendering", null)
         }
 
         val cancelled = cancelFlag.exists()
+        // Only discard the source if every render actually succeeded. Dropping it after
+        // a partial failure would destroy the only copy of the audio.
+        if (!cancelled && failed == 0 && deleteSourceWhenDone != null) {
+          runCatching { soundsStore.deleteSounds(listOf(deleteSourceWhenDone)) }
+            .onFailure { addError("PRESET_SOURCE_CLEANUP_FAILED: ${it.message}") }
+        }
+
         emitPresetProgress(
           renderId,
           if (cancelled) "CANCELLED" else "FINISHED",
@@ -2260,28 +2332,26 @@ class LocalDownloaderModule : Module() {
   /**
    * Continue a batch that a process death interrupted. Called once at module start.
    *
-   * Only the tracks still listed as pending are rendered — the file is rewritten after
-   * every track precisely so a resume cannot duplicate work already in the library.
+   * Only jobs still listed as pending are run — the file is rewritten after every job
+   * precisely so a resume cannot duplicate work already in the library.
    */
   private fun resumePresetRenderIfAny() {
     val queue = readPersistedPresetQueue() ?: return
-    val pending = queue.optJSONArray("pending") ?: return
-    if (pending.length() == 0) {
+    val jobsArray = queue.optJSONArray("jobs")
+    if (jobsArray == null || jobsArray.length() == 0) {
       clearPersistedPresetQueue()
       return
     }
-    val songIds = ArrayList<String>(pending.length())
-    for (i in 0 until pending.length()) songIds.add(pending.getString(i))
-    debug("Resuming interrupted preset batch: ${songIds.size} track(s) left")
+    val jobs = ArrayList<PresetJob>(jobsArray.length())
+    for (i in 0 until jobsArray.length()) jobs.add(presetJobFromJson(jobsArray.getJSONObject(i)))
+    debug("Resuming interrupted preset batch: ${jobs.size} job(s) left")
     runPresetBatch(
       renderId = queue.optString("renderId").ifBlank { "preset_${UUID.randomUUID()}" },
-      presetId = queue.optString("presetId"),
-      paramsSpec = queue.optString("paramsSpec"),
-      titleSuffix = queue.optString("titleSuffix"),
-      pending = songIds,
-      total = queue.optInt("total", songIds.size),
+      pending = jobs,
+      total = queue.optInt("total", jobs.size),
       completedSoFar = queue.optInt("completed", 0),
       failedSoFar = queue.optInt("failed", 0),
+      deleteSourceWhenDone = queue.optString("deleteSourceWhenDone").ifBlank { null },
     )
   }
 
@@ -2292,25 +2362,21 @@ class LocalDownloaderModule : Module() {
 
   private fun persistPresetQueue(
     renderId: String,
-    presetId: String,
-    paramsSpec: String,
-    titleSuffix: String,
-    pending: List<String>,
+    jobs: List<PresetJob>,
     total: Int,
     completed: Int,
     failed: Int,
+    deleteSourceWhenDone: String?,
   ) {
     val file = presetQueueFile() ?: return
     runCatching {
       val payload = JSONObject().apply {
         put("renderId", renderId)
-        put("presetId", presetId)
-        put("paramsSpec", paramsSpec)
-        put("titleSuffix", titleSuffix)
-        put("pending", JSONArray(pending))
+        put("jobs", JSONArray(jobs.map { presetJobToJson(it) }))
         put("total", total)
         put("completed", completed)
         put("failed", failed)
+        put("deleteSourceWhenDone", deleteSourceWhenDone ?: JSONObject.NULL)
       }
       val tmp = File(file.parentFile, file.name + ".tmp")
       tmp.writeText(payload.toString(), Charsets.UTF_8)
@@ -2329,6 +2395,61 @@ class LocalDownloaderModule : Module() {
 
   private fun clearPersistedPresetQueue() {
     runCatching { presetQueueFile()?.delete() }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-applied presets for downloads
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Read the auto-apply configuration.
+   *
+   * Stored NATIVELY rather than in TypeScript because a download can finish with no JS
+   * running at all — the share-sheet capture path starts one without the UI. The preset
+   * definitions still live in TypeScript; it serialises them here, and this side only
+   * replays what it was given.
+   */
+  private fun readAutoPresetConfig(): JSONObject? {
+    val context = appContext.reactContext ?: return null
+    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+      .getString(PREF_AUTO_PRESETS, null) ?: return null
+    return runCatching { JSONObject(raw) }.getOrNull()
+  }
+
+  /**
+   * Queue the configured presets against a freshly downloaded track.
+   *
+   * Called after the download is already in the library, so a failure here costs the
+   * preset versions but never the download itself.
+   */
+  private fun applyAutoPresetsTo(songId: String) {
+    val config = readAutoPresetConfig() ?: return
+    val presets = config.optJSONArray("presets") ?: return
+    if (presets.length() == 0) return
+
+    val jobs = ArrayList<PresetJob>(presets.length())
+    for (i in 0 until presets.length()) {
+      val entry = presets.optJSONObject(i) ?: continue
+      // Plain `if` rather than `ifBlank { continue }`: jumping out of an inline lambda
+      // needs Kotlin 2.2 and this project builds with 2.1.
+      val presetId = entry.optString("id")
+      if (presetId.isBlank()) continue
+      jobs.add(
+        PresetJob(
+          songId = songId,
+          presetId = presetId,
+          paramsSpec = entry.optString("paramsSpec"),
+          titleSuffix = entry.optString("titleSuffix"),
+        )
+      )
+    }
+    if (jobs.isEmpty()) return
+
+    // When the original is not wanted it still has to exist first: it is the source
+    // every render reads from. It is removed only once they all succeed.
+    val keepOriginal = config.optBoolean("keepOriginal", true)
+    debug("Auto-applying ${jobs.size} preset(s) to $songId (keepOriginal=$keepOriginal)")
+    startPresetJobs(jobs, deleteSourceWhenDone = if (keepOriginal) null else songId)
   }
 
   /** Poll the native progress file and forward it as events until cancelled. */
@@ -7404,6 +7525,7 @@ class LocalDownloaderModule : Module() {
     private const val PREF_PRIVATE_MODE_ENABLED = "private_mode_enabled"
     private const val PREF_AUDIO_MODE_ENABLED = "audio_mode_enabled"
     private const val PREF_AUDIO_FORMAT = "audio_format"
+    private const val PREF_AUTO_PRESETS = "auto_presets"
     private const val PRESET_CANCEL_DIRNAME = "audio_preset_cancel_flags"
     private const val PRESET_QUEUE_FILENAME = "audio_preset_queue.json"
     private const val PRESET_PROGRESS_DIRNAME = "audio_preset_progress"

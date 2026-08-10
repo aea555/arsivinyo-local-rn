@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Ionicons } from '@expo/vector-icons';
+
 import { getErrorMessage } from '@/src/api/errors';
 import {
   authenticateLocalPrivateAccess,
@@ -29,6 +31,15 @@ import {
   updateLocalYtDlp,
 } from '@/src/api';
 import { AppText as Text, AppTextInput as TextInput, SettingsItem, ThemePicker } from '@/src/components';
+import {
+  DEFAULT_AUTO_PRESET_CONFIG,
+  getAutoPresetConfig,
+  isValidAutoPresetConfig,
+  outputsPerDownload,
+  saveAutoPresetConfig,
+  type AutoPresetConfig,
+} from '@/src/features/audioPresets/autoApply';
+import { listAllPresets, type AudioPreset } from '@/src/features/audioPresets/presets';
 import { BUILD_CONFIG } from '@/src/config';
 import type {
   LocalAudioFormat,
@@ -104,6 +115,9 @@ export default function SettingsScreen() {
   const [stickyToggleBusy, setStickyToggleBusy] = useState(false);
   const [audioFormat, setAudioFormat] = useState<LocalAudioFormat>('flac');
   const [audioFormatBusy, setAudioFormatBusy] = useState(false);
+  const [autoPresets, setAutoPresets] = useState<AutoPresetConfig>(DEFAULT_AUTO_PRESET_CONFIG);
+  const [autoPresetSheetOpen, setAutoPresetSheetOpen] = useState(false);
+  const [availablePresets, setAvailablePresets] = useState<AudioPreset[]>([]);
 
   const showError = useCallback((message: string) => {
     setFeedback({ title: t('common.error'), message, tone: 'error' });
@@ -132,6 +146,16 @@ export default function SettingsScreen() {
       .then((state) => {
         if (!mounted) return;
         setAudioFormat(state.format);
+      })
+      .catch(() => undefined);
+    void getAutoPresetConfig()
+      .then((config) => {
+        if (mounted) setAutoPresets(config);
+      })
+      .catch(() => undefined);
+    void listAllPresets()
+      .then((all) => {
+        if (mounted) setAvailablePresets(all);
       })
       .catch(() => undefined);
     return () => {
@@ -176,6 +200,37 @@ export default function SettingsScreen() {
       setAudioFormatBusy(false);
     }
   }, [audioFormat, audioFormatBusy, showError, t]);
+
+  /**
+   * Toggle one entry of the auto-apply set.
+   *
+   * A selection of nothing would throw the download away entirely, so the last
+   * remaining entry cannot be turned off.
+   */
+  const toggleAutoPreset = useCallback(
+    async (key: 'original' | string) => {
+      const next: AutoPresetConfig =
+        key === 'original'
+          ? { ...autoPresets, keepOriginal: !autoPresets.keepOriginal }
+          : {
+              ...autoPresets,
+              presetIds: autoPresets.presetIds.includes(key)
+                ? autoPresets.presetIds.filter((id) => id !== key)
+                : [...autoPresets.presetIds, key],
+            };
+      if (!isValidAutoPresetConfig(next)) {
+        showError(t('settings.autoPresetAtLeastOne'));
+        return;
+      }
+      setAutoPresets(next);
+      try {
+        setAutoPresets(await saveAutoPresetConfig(next));
+      } catch (error) {
+        showError(error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR'));
+      }
+    },
+    [autoPresets, showError, t]
+  );
 
   const handleToggleStickyNotification = useCallback(async () => {
     if (stickyToggleBusy) return;
@@ -676,6 +731,14 @@ export default function SettingsScreen() {
               }
             />
             <SettingsItem
+              icon="color-wand-outline"
+              title={t('settings.autoPresets')}
+              subtitle={t('settings.autoPresetsHint', {
+                count: outputsPerDownload(autoPresets),
+              })}
+              onPress={() => setAutoPresetSheetOpen(true)}
+            />
+            <SettingsItem
               icon="musical-notes-outline"
               title={t('settings.losslessAudio')}
               subtitle={
@@ -800,6 +863,69 @@ export default function SettingsScreen() {
           </View>
         </View>
       </ScrollView>
+
+      {/* Which entries one audio download produces. At least one must stay selected,
+          since selecting nothing would discard the download outright. */}
+      <Modal
+        visible={autoPresetSheetOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAutoPresetSheetOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{t('settings.autoPresets')}</Text>
+            <Text style={[styles.modalDescription, { color: colors.textMuted }]}>
+              {t('settings.autoPresetsDescription')}
+            </Text>
+
+            <Pressable
+              onPress={() => toggleAutoPreset('original')}
+              style={[styles.autoPresetRow, { borderColor: colors.border }]}
+            >
+              <Ionicons
+                name={autoPresets.keepOriginal ? 'checkbox' : 'square-outline'}
+                size={22}
+                color={autoPresets.keepOriginal ? colors.accent : colors.textMuted}
+              />
+              <Text style={[styles.autoPresetLabel, { color: colors.text }]}>
+                {t('settings.autoPresetOriginal')}
+              </Text>
+            </Pressable>
+
+            {availablePresets.map((preset) => {
+              const selected = autoPresets.presetIds.includes(preset.id);
+              return (
+                <Pressable
+                  key={preset.id}
+                  onPress={() => toggleAutoPreset(preset.id)}
+                  style={[styles.autoPresetRow, { borderColor: colors.border }]}
+                >
+                  <Ionicons
+                    name={selected ? 'checkbox' : 'square-outline'}
+                    size={22}
+                    color={selected ? colors.accent : colors.textMuted}
+                  />
+                  <Text style={[styles.autoPresetLabel, { color: colors.text }]}>
+                    {preset.nameKey ? t(preset.nameKey) : preset.name}
+                  </Text>
+                </Pressable>
+              );
+            })}
+
+            <Text style={[styles.modalDescription, { color: colors.textMuted, marginTop: 12 }]}>
+              {t('settings.autoPresetsSummary', { count: outputsPerDownload(autoPresets) })}
+            </Text>
+
+            <Pressable
+              onPress={() => setAutoPresetSheetOpen(false)}
+              style={[styles.modalCloseButton, { backgroundColor: colors.surfaceHover }]}
+            >
+              <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.close')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={selectorPlatform !== null && selectorMode !== null}
@@ -1301,6 +1427,17 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 8,
   },
+  autoPresetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginTop: 8,
+  },
+  autoPresetLabel: { fontSize: 15, flex: 1 },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',
