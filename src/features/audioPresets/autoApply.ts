@@ -81,6 +81,25 @@ export async function saveAutoPresetConfig(config: AutoPresetConfig): Promise<Au
   return { keepOriginal: safe.keepOriginal, presetIds: presets.map((p) => p.id) };
 }
 
+/**
+ * Drop a preset from the auto-apply set, for use when that preset is deleted.
+ *
+ * Without this the stored native config would keep replaying a preset that no longer
+ * exists: the spec was flattened at save time, so it would keep producing renders under
+ * a name the user cannot see or edit. If removing it would leave nothing selected, the
+ * original is kept — a configuration selecting nothing would discard the download.
+ */
+export async function removePresetFromAutoApply(presetId: string): Promise<AutoPresetConfig> {
+  const current = await getAutoPresetConfig();
+  if (!current.presetIds.includes(presetId)) return current;
+  const next: AutoPresetConfig = {
+    keepOriginal: current.keepOriginal,
+    presetIds: current.presetIds.filter((id) => id !== presetId),
+  };
+  if (!isValidAutoPresetConfig(next)) next.keepOriginal = true;
+  return saveAutoPresetConfig(next);
+}
+
 /** Number of library entries one download will produce under this configuration. */
 export function outputsPerDownload(config: AutoPresetConfig): number {
   return (config.keepOriginal ? 1 : 0) + config.presetIds.length;

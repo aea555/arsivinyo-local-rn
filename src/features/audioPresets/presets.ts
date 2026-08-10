@@ -10,6 +10,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  */
 
 const STORAGE_KEY = '@arsivinyo_audio_presets_custom_v1';
+/**
+ * Per-preset parameter overrides for the BUILT-IN presets.
+ *
+ * Kept separate from the presets themselves so the shipped defaults stay intact and a
+ * built-in can always be restored by deleting its override. Editing a built-in never
+ * destroys anything.
+ */
+const BUILTIN_OVERRIDES_KEY = '@arsivinyo_audio_presets_builtin_overrides_v1';
 
 /**
  * Parameters accepted by the native DSP chain.
@@ -49,6 +57,11 @@ export interface AudioPreset {
   /** Appended to the source title, e.g. " (Slowed + Reverb)". */
   titleSuffix: string;
   params: AudioPresetParams;
+  /**
+   * True when a built-in's parameters have been changed from the shipped defaults.
+   * Always false for user presets, which have no defaults to differ from.
+   */
+  modified?: boolean;
   createdAt?: number;
   updatedAt?: number;
 }
@@ -98,8 +111,9 @@ export const PARAM_RANGES: Record<
 /**
  * The presets that ship with the app.
  *
- * Frozen so a screen cannot mutate a shared object by accident — every edit path goes
- * through [duplicatePresetForEditing], which produces a user-owned copy.
+ * Frozen so a screen cannot mutate a shared object by accident. Editing a built-in
+ * writes an override to a separate store instead (see [saveBuiltInParams]), which is
+ * what makes [resetBuiltInPreset] able to restore these exact values at any point.
  */
 export const BUILT_IN_PRESETS: readonly AudioPreset[] = Object.freeze([
   Object.freeze({
@@ -224,10 +238,20 @@ export async function listCustomPresets(): Promise<AudioPreset[]> {
   }
 }
 
-/** Built-ins first, then user presets in creation order. */
+/**
+ * Built-ins first (with any user overrides applied), then user presets.
+ *
+ * A built-in whose parameters have been changed is flagged `modified`, which is what
+ * lets the UI offer to restore it.
+ */
 export async function listAllPresets(): Promise<AudioPreset[]> {
-  const custom = await listCustomPresets();
-  return [...BUILT_IN_PRESETS, ...custom];
+  const [custom, overrides] = await Promise.all([listCustomPresets(), readBuiltInOverrides()]);
+  const builtIns = BUILT_IN_PRESETS.map((preset) => {
+    const override = overrides[preset.id];
+    if (!override) return { ...preset, modified: false };
+    return { ...preset, params: override, modified: true };
+  });
+  return [...builtIns, ...custom];
 }
 
 /** Insert or replace a user preset. Built-in ids are rejected. */
@@ -254,21 +278,92 @@ export async function deleteCustomPreset(id: string): Promise<AudioPreset[]> {
   return next;
 }
 
-/**
- * Produce an editable user-owned copy of any preset.
- *
- * This is how a built-in gets "edited": the original stays untouched and the copy is
- * saved alongside it, so a tweak can never destroy a shipped preset.
- */
-export function duplicatePresetForEditing(preset: AudioPreset, name: string): AudioPreset {
-  const trimmed = name.trim() || `${preset.name} copy`;
-  return {
+export function isBuiltInPresetId(id: string): boolean {
+  return BUILT_IN_PRESETS.some((p) => p.id === id);
+}
+
+async function readBuiltInOverrides(): Promise<Record<string, AudioPresetParams>> {
+  try {
+    const raw = await AsyncStorage.getItem(BUILTIN_OVERRIDES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, AudioPresetParams> = {};
+    for (const [id, params] of Object.entries(parsed)) {
+      if (isBuiltInPresetId(id)) out[id] = sanitizeParams(params as Partial<AudioPresetParams>);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Override a built-in's parameters. The shipped defaults are left untouched. */
+export async function saveBuiltInParams(id: string, params: AudioPresetParams): Promise<void> {
+  if (!isBuiltInPresetId(id)) throw new Error('NOT_A_BUILT_IN_PRESET');
+  const overrides = await readBuiltInOverrides();
+  overrides[id] = sanitizeParams(params);
+  await AsyncStorage.setItem(BUILTIN_OVERRIDES_KEY, JSON.stringify(overrides));
+}
+
+/** Drop a built-in's override, returning it to the values it shipped with. */
+export async function resetBuiltInPreset(id: string): Promise<void> {
+  const overrides = await readBuiltInOverrides();
+  delete overrides[id];
+  await AsyncStorage.setItem(BUILTIN_OVERRIDES_KEY, JSON.stringify(overrides));
+}
+
+/** Create a user preset. The name also forms the suffix added to rendered titles. */
+export async function createCustomPreset(
+  name: string,
+  params: AudioPresetParams
+): Promise<AudioPreset> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('INVALID_PRESET_NAME');
+  const preset: AudioPreset = {
     id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name: trimmed,
     builtIn: false,
     titleSuffix: ` (${trimmed})`,
-    params: sanitizeParams(preset.params),
+    params: sanitizeParams(params),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
+  await saveCustomPreset(preset);
+  return preset;
+}
+
+/** Rename a user preset. The title suffix follows the name so renders stay consistent. */
+export async function renameCustomPreset(id: string, name: string): Promise<AudioPreset[]> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('INVALID_PRESET_NAME');
+  const existing = await listCustomPresets();
+  const target = existing.find((p) => p.id === id);
+  if (!target) throw new Error('PRESET_NOT_FOUND');
+  return saveCustomPreset({ ...target, name: trimmed, titleSuffix: ` (${trimmed})` });
+}
+
+/** Update a user preset's parameters, leaving its name alone. */
+export async function updateCustomPresetParams(
+  id: string,
+  params: AudioPresetParams
+): Promise<AudioPreset[]> {
+  const existing = await listCustomPresets();
+  const target = existing.find((p) => p.id === id);
+  if (!target) throw new Error('PRESET_NOT_FOUND');
+  return saveCustomPreset({ ...target, params: sanitizeParams(params) });
+}
+
+/**
+ * Persist a change to any preset, routing to the right store.
+ *
+ * Lets the editing UI treat built-ins and user presets identically: it edits params and
+ * saves, and this decides whether that means an override or a stored preset.
+ */
+export async function savePresetParams(preset: AudioPreset, params: AudioPresetParams): Promise<void> {
+  if (preset.builtIn) {
+    await saveBuiltInParams(preset.id, params);
+  } else {
+    await updateCustomPresetParams(preset.id, params);
+  }
 }

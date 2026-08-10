@@ -40,14 +40,19 @@ import {
   type LocalSoundPlaylist,
   type LocalSoundPresetProgressEvent,
 } from '@/src/api';
-import { AppText as Text, TrackMetadata, ValueSlider } from '@/src/components';
+import { AppText as Text, ConfirmModal, TrackMetadata, ValueSlider } from '@/src/components';
+import { removePresetFromAutoApply } from '@/src/features/audioPresets/autoApply';
 import {
   buildParamsSpec,
-  duplicatePresetForEditing,
+  createCustomPreset,
+  DEFAULT_PARAMS,
+  deleteCustomPreset,
   listAllPresets,
   PARAM_RANGES,
+  renameCustomPreset,
+  resetBuiltInPreset,
   sanitizeParams,
-  saveCustomPreset,
+  savePresetParams,
   type AudioPreset,
   type AudioPresetParams,
 } from '@/src/features/audioPresets/presets';
@@ -62,6 +67,11 @@ type PendingAction =
   | { type: 'deleteBatch'; ids: string[] }
   | { type: 'removeFromPlaylist'; playlist: LocalSoundPlaylist; ids: string[] }
   | { type: 'deletePlaylist'; playlist: LocalSoundPlaylist }
+  // Preset edits are destructive in their own way: restoring discards the user's
+  // adjustments, deleting removes a preset outright. Both go through the same
+  // confirmation path as track deletion rather than acting immediately.
+  | { type: 'restorePreset'; preset: AudioPreset }
+  | { type: 'deletePreset'; preset: AudioPreset }
   | null;
 
 function formatDuration(seconds: number): string {
@@ -146,9 +156,16 @@ export default function SoundsScreen() {
   // `customizing` means the sheet is showing the preset list rather than the sliders.
   const [presetTarget, setPresetTarget] = useState<{ ids: string[] } | null>(null);
   const [presets, setPresets] = useState<AudioPreset[]>([]);
-  const [customizing, setCustomizing] = useState<AudioPreset | null>(null);
-  const [customParams, setCustomParams] = useState<AudioPresetParams | null>(null);
-  const [savePresetName, setSavePresetName] = useState('');
+  /**
+   * The preset currently open in the editor. `isNew` distinguishes creating from
+   * editing, which is the only difference between the two flows.
+   */
+  const [presetEditor, setPresetEditor] = useState<{
+    preset: AudioPreset;
+    params: AudioPresetParams;
+    name: string;
+    isNew: boolean;
+  } | null>(null);
   const [renderProgress, setRenderProgress] = useState<LocalSoundPresetProgressEvent | null>(null);
   /** Single track whose metadata sheet is open. Deliberately never a batch. */
   const [infoTarget, setInfoTarget] = useState<LocalSound | null>(null);
@@ -213,6 +230,12 @@ export default function SoundsScreen() {
     return () => subscription.remove();
   }, [reload, showToast, t]);
 
+  /** Display name of a preset, localising the built-ins via their i18n key. */
+  const presetLabel = useCallback(
+    (preset: AudioPreset) => (preset.nameKey ? t(preset.nameKey) : preset.name),
+    [t]
+  );
+
   /** Resolve a recorded presetId to its display name, localising built-ins. */
   const presetDisplayName = useCallback(
     (presetId?: string | null) => {
@@ -226,9 +249,7 @@ export default function SoundsScreen() {
 
   const closePresetSheet = useCallback(() => {
     setPresetTarget(null);
-    setCustomizing(null);
-    setCustomParams(null);
-    setSavePresetName('');
+    setPresetEditor(null);
   }, []);
 
   const startPresetRender = useCallback(
@@ -252,21 +273,62 @@ export default function SoundsScreen() {
     [closePresetSheet, presetTarget, showToast, t]
   );
 
-  const handleSaveCustomPreset = useCallback(async () => {
-    if (!customizing || !customParams) return;
-    const name = savePresetName.trim();
-    if (!name) return;
+  /** Open the editor on an existing preset. */
+  const openPresetEditor = useCallback((preset: AudioPreset) => {
+    setPresetEditor({
+      preset,
+      params: sanitizeParams(preset.params),
+      name: preset.name,
+      isNew: false,
+    });
+  }, []);
+
+  /** Open the editor on a brand-new user preset. */
+  const openNewPresetEditor = useCallback(() => {
+    setPresetEditor({
+      preset: {
+        id: '',
+        name: '',
+        builtIn: false,
+        titleSuffix: '',
+        params: DEFAULT_PARAMS,
+      },
+      params: { ...DEFAULT_PARAMS },
+      name: '',
+      isNew: true,
+    });
+  }, []);
+
+  /**
+   * Persist the editor's contents.
+   *
+   * One path for three cases: creating a user preset, updating one, and overriding a
+   * built-in. A built-in's name is fixed, so only its parameters are written.
+   */
+  const handleSavePreset = useCallback(async () => {
+    if (!presetEditor) return;
+    const { preset, params, name, isNew } = presetEditor;
+    const trimmed = name.trim();
+    if (!preset.builtIn && !trimmed) {
+      showToast(t('sounds.presetNameRequired'));
+      return;
+    }
     try {
-      // Always a NEW user preset, never an overwrite of a built-in.
-      const created = duplicatePresetForEditing({ ...customizing, params: customParams }, name);
-      await saveCustomPreset(created);
+      if (isNew) {
+        await createCustomPreset(trimmed, params);
+      } else {
+        await savePresetParams(preset, params);
+        if (!preset.builtIn && trimmed !== preset.name) {
+          await renameCustomPreset(preset.id, trimmed);
+        }
+      }
       await reloadPresets();
-      setSavePresetName('');
-      showToast(t('sounds.presetSaved', { name }));
+      setPresetEditor(null);
+      showToast(t('sounds.presetSaved', { name: preset.builtIn ? presetLabel(preset) : trimmed }));
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR'));
     }
-  }, [customizing, customParams, reloadPresets, savePresetName, showToast, t]);
+  }, [presetEditor, presetLabel, reloadPresets, showToast, t]);
 
   const handleCancelRender = useCallback(async () => {
     const renderId = renderProgress?.renderId;
@@ -553,6 +615,19 @@ export default function SoundsScreen() {
       } else if (pendingAction.type === 'removeFromPlaylist') {
         await removeLocalSoundsFromPlaylist(pendingAction.playlist.id, pendingAction.ids);
         exitSelection();
+      } else if (pendingAction.type === 'restorePreset') {
+        await resetBuiltInPreset(pendingAction.preset.id);
+        await reloadPresets();
+        setPresetEditor(null);
+        showToast(t('sounds.presetRestored', { name: presetLabel(pendingAction.preset) }));
+      } else if (pendingAction.type === 'deletePreset') {
+        await deleteCustomPreset(pendingAction.preset.id);
+        // A deleted preset must also leave the auto-apply set, or downloads would keep
+        // rendering it from the flattened spec stored natively.
+        await removePresetFromAutoApply(pendingAction.preset.id);
+        await reloadPresets();
+        setPresetEditor(null);
+        showToast(t('sounds.presetDeleted', { name: pendingAction.preset.name }));
       } else if (pendingAction.type === 'deletePlaylist') {
         await deleteLocalSoundPlaylist(pendingAction.playlist.id);
         if (openPlaylistId === pendingAction.playlist.id) setOpenPlaylistId(null);
@@ -564,7 +639,7 @@ export default function SoundsScreen() {
       setActionBusy(false);
       setPendingAction(null);
     }
-  }, [pendingAction, reload, showToast, t, exitSelection, openPlaylistId]);
+  }, [pendingAction, reload, reloadPresets, presetLabel, showToast, t, exitSelection, openPlaylistId]);
 
   // ---- song row ----
   const renderSong = useCallback(
@@ -964,66 +1039,101 @@ export default function SoundsScreen() {
         ) : null}
       </SimpleSheet>
 
-      {/* Preset picker. Tapping a preset applies it; the pencil opens the sliders, so
-          the common two-tap path is not buried behind eleven controls. */}
+      {/* Preset picker. Tapping a preset applies it; the options icon opens the editor,
+          so the common two-tap path is not buried behind eleven sliders. */}
       <SimpleSheet visible={presetTarget !== null} onClose={closePresetSheet} colors={colors}>
-        {customizing && customParams ? (
+        {presetEditor ? (
           <>
             <View style={styles.presetHeader}>
-              <Pressable hitSlop={8} onPress={() => { setCustomizing(null); setCustomParams(null); }}>
+              <Pressable hitSlop={8} onPress={() => setPresetEditor(null)}>
                 <Ionicons name="chevron-back" size={22} color={colors.text} />
               </Pressable>
-              <Text style={[styles.sheetTitle, { color: colors.text }]}>
-                {customizing.nameKey ? t(customizing.nameKey) : customizing.name}
+              <Text numberOfLines={1} style={[styles.sheetTitle, { color: colors.text, marginBottom: 0 }]}>
+                {presetEditor.isNew
+                  ? t('sounds.presetCreate')
+                  : presetLabel(presetEditor.preset)}
               </Text>
             </View>
+
             <ScrollView
               style={styles.presetScroll}
               contentContainerStyle={styles.presetScrollContent}
               keyboardShouldPersistTaps="handled"
             >
+              {/* Built-in names are fixed and localised, so only user presets get a
+                  name field. Renaming one also renames the suffix on future renders. */}
+              {!presetEditor.preset.builtIn ? (
+                <TextInput
+                  value={presetEditor.name}
+                  onChangeText={(name) => setPresetEditor((cur) => (cur ? { ...cur, name } : cur))}
+                  placeholder={t('sounds.presetNamePlaceholder')}
+                  placeholderTextColor={colors.textMuted}
+                  style={[styles.presetInput, { color: colors.text, borderColor: colors.border, marginBottom: 8 }]}
+                />
+              ) : null}
+
               {PRESET_FIELDS.map((field) => (
                 <ValueSlider
                   key={field.key}
                   label={t(`sounds.presetParams.${field.key}`)}
-                  value={customParams[field.key]}
+                  value={presetEditor.params[field.key]}
                   min={PARAM_RANGES[field.key].min}
                   max={PARAM_RANGES[field.key].max}
                   step={PARAM_RANGES[field.key].step}
                   formatValue={field.format}
                   onChange={(next) =>
-                    setCustomParams((cur) => (cur ? { ...cur, [field.key]: next } : cur))
+                    setPresetEditor((cur) =>
+                      cur ? { ...cur, params: { ...cur.params, [field.key]: next } } : cur
+                    )
                   }
                 />
               ))}
-              <View style={styles.presetSaveRow}>
-                <TextInput
-                  value={savePresetName}
-                  onChangeText={setSavePresetName}
-                  placeholder={t('sounds.presetSavePlaceholder')}
-                  placeholderTextColor={colors.textMuted}
-                  style={[styles.presetInput, { color: colors.text, borderColor: colors.border }]}
-                />
+
+              <View style={styles.presetEditorActions}>
                 <Pressable
-                  onPress={handleSaveCustomPreset}
-                  disabled={!savePresetName.trim()}
-                  style={[
-                    styles.presetSaveBtn,
-                    { borderColor: colors.border, opacity: savePresetName.trim() ? 1 : 0.4 },
-                  ]}
+                  onPress={handleSavePreset}
+                  style={[styles.presetSecondaryBtn, { borderColor: colors.border }]}
                 >
-                  <Text style={{ color: colors.text }}>{t('sounds.presetSave')}</Text>
+                  <Ionicons name="save-outline" size={18} color={colors.text} />
+                  <Text style={{ color: colors.text }}>{t('common.save')}</Text>
                 </Pressable>
+
+                {/* Restoring discards the user's adjustments, so it confirms first. Only
+                    offered when a built-in actually differs from its shipped values. */}
+                {presetEditor.preset.builtIn && presetEditor.preset.modified ? (
+                  <Pressable
+                    onPress={() => setPendingAction({ type: 'restorePreset', preset: presetEditor.preset })}
+                    style={[styles.presetSecondaryBtn, { borderColor: colors.border }]}
+                  >
+                    <Ionicons name="refresh-outline" size={18} color={colors.text} />
+                    <Text style={{ color: colors.text }}>{t('sounds.presetRestore')}</Text>
+                  </Pressable>
+                ) : null}
+
+                {!presetEditor.preset.builtIn && !presetEditor.isNew ? (
+                  <Pressable
+                    onPress={() => setPendingAction({ type: 'deletePreset', preset: presetEditor.preset })}
+                    style={[styles.presetSecondaryBtn, { borderColor: colors.error }]}
+                  >
+                    <Ionicons name="trash-outline" size={18} color={colors.error} />
+                    <Text style={{ color: colors.error }}>{t('common.delete')}</Text>
+                  </Pressable>
+                ) : null}
               </View>
             </ScrollView>
-            <Pressable
-              onPress={() => startPresetRender(customizing, customParams)}
-              style={[styles.presetApplyBtn, { backgroundColor: colors.accent }]}
-            >
-              <Text style={styles.presetApplyText}>
-                {t('sounds.presetApplyCount', { count: presetTarget?.ids.length ?? 0 })}
-              </Text>
-            </Pressable>
+
+            {/* Applies the edited values whether or not they were saved, so the sliders
+                can be auditioned on a track without committing them to the preset. */}
+            {!presetEditor.isNew ? (
+              <Pressable
+                onPress={() => startPresetRender(presetEditor.preset, presetEditor.params)}
+                style={[styles.presetApplyBtn, { backgroundColor: colors.accent }]}
+              >
+                <Text style={styles.presetApplyText}>
+                  {t('sounds.presetApplyCount', { count: presetTarget?.ids.length ?? 0 })}
+                </Text>
+              </Pressable>
+            ) : null}
           </>
         ) : (
           <>
@@ -1036,23 +1146,38 @@ export default function SoundsScreen() {
                     onPress={() => startPresetRender(preset, preset.params)}
                   >
                     <Ionicons name="color-wand-outline" size={20} color={colors.accent} />
-                    <Text style={[styles.presetName, { color: colors.text }]}>
-                      {preset.nameKey ? t(preset.nameKey) : preset.name}
-                    </Text>
+                    <View style={styles.presetNameWrap}>
+                      <Text numberOfLines={1} style={[styles.presetName, { color: colors.text }]}>
+                        {presetLabel(preset)}
+                      </Text>
+                      {preset.modified ? (
+                        <Text style={[styles.presetSubLabel, { color: colors.textMuted }]}>
+                          {t('sounds.presetModified')}
+                        </Text>
+                      ) : null}
+                    </View>
                   </Pressable>
                   <Pressable
                     hitSlop={8}
-                    onPress={() => {
-                      setCustomizing(preset);
-                      setCustomParams(sanitizeParams(preset.params));
-                      setSavePresetName('');
-                    }}
+                    onPress={() => openPresetEditor(preset)}
                     accessibilityLabel={t('sounds.presetCustomize')}
                   >
                     <Ionicons name="options-outline" size={20} color={colors.textMuted} />
                   </Pressable>
                 </View>
               ))}
+
+              <Pressable
+                onPress={openNewPresetEditor}
+                style={[styles.presetRow, { borderColor: colors.border }]}
+              >
+                <View style={styles.presetRowMain}>
+                  <Ionicons name="add-circle-outline" size={20} color={colors.textMuted} />
+                  <Text style={[styles.presetName, { color: colors.textMuted }]}>
+                    {t('sounds.presetCreate')}
+                  </Text>
+                </View>
+              </Pressable>
             </ScrollView>
           </>
         )}
@@ -1175,7 +1300,6 @@ export default function SoundsScreen() {
       {/* Confirmation modal */}
       <ConfirmModal
         visible={pendingAction != null}
-        colors={colors}
         busy={actionBusy}
         config={confirmConfig(pendingAction, t)}
         onCancel={() => setPendingAction(null)}
@@ -1430,54 +1554,23 @@ function confirmConfig(
         confirm: t('sounds.playlistDeleteConfirm'),
         destructive: true,
       };
+    case 'restorePreset':
+      return {
+        title: t('sounds.presetRestoreTitle'),
+        message: t('sounds.presetRestoreMessage'),
+        confirm: t('sounds.presetRestoreConfirm'),
+        destructive: true,
+      };
+    case 'deletePreset':
+      return {
+        title: t('sounds.presetDeleteTitle'),
+        message: t('sounds.presetDeleteMessage', { name: action.preset.name }),
+        confirm: t('sounds.presetDeleteConfirm'),
+        destructive: true,
+      };
     default:
       return null;
   }
-}
-
-function ConfirmModal({
-  visible,
-  colors,
-  busy,
-  config,
-  onConfirm,
-  onCancel,
-}: {
-  visible: boolean;
-  colors: any;
-  busy: boolean;
-  config: { title: string; message: string; confirm: string; destructive: boolean } | null;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const { t } = useTranslation();
-  if (!config) return null;
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
-      <View style={styles.modalOverlay}>
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Text style={[styles.cardTitle, { color: colors.text }]}>{config.title}</Text>
-          <Text style={[styles.cardMessage, { color: colors.textMuted }]}>{config.message}</Text>
-          <View style={styles.cardButtons}>
-            <Pressable onPress={onCancel} style={[styles.cardButton, { backgroundColor: colors.surfaceHover }]}>
-              <Text style={[styles.cardButtonText, { color: colors.text }]}>{t('common.cancel')}</Text>
-            </Pressable>
-            <Pressable
-              onPress={onConfirm}
-              disabled={busy}
-              style={[styles.cardButton, { backgroundColor: config.destructive ? colors.error : colors.accent }]}
-            >
-              {busy ? (
-                <ActivityIndicator size="small" color={colors.background} />
-              ) : (
-                <Text style={[styles.cardButtonText, { color: colors.background }]}>{config.confirm}</Text>
-              )}
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
 }
 
 const styles = StyleSheet.create({
@@ -1576,6 +1669,18 @@ const styles = StyleSheet.create({
   },
   presetRowMain: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   presetName: { fontSize: 15 },
+  presetNameWrap: { flex: 1 },
+  presetSubLabel: { fontSize: 11, marginTop: 1 },
+  presetEditorActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  presetSecondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
   presetSaveRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
   presetInput: { flex: 1, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   presetSaveBtn: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 },
