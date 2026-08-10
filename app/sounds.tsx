@@ -34,6 +34,7 @@ import {
   setLocalSoundsFavorite,
   applyLocalSoundPresets,
   cancelLocalSoundPresetRender,
+  isRenderedSound,
   listenLocalSoundPresetProgress,
   type LocalSound,
   type LocalSoundPlaylist,
@@ -594,21 +595,34 @@ export default function SoundsScreen() {
               <Text numberOfLines={1} style={[styles.rowTitle, { color: colors.text }]}>
                 {item.title}
               </Text>
-              <Text numberOfLines={1} style={[styles.rowMeta, { color: colors.textMuted }]}>
-                {(item.artist || t('sounds.unknownArtist')) + ' · ' + formatDuration(item.durationSec)}
-                {item.format ? (
-                  <Text
-                    style={[
-                      styles.rowFormat,
-                      // Lossless is called out in the accent colour so the quality tier
-                      // is visible at a glance rather than inferred from the extension.
-                      { color: item.lossless ? colors.accent : colors.textMuted },
-                    ]}
-                  >
-                    {' · ' + item.format.toUpperCase()}
-                  </Text>
+              <View style={styles.rowMetaLine}>
+                <Text numberOfLines={1} style={[styles.rowMeta, { color: colors.textMuted }]}>
+                  {(item.artist || t('sounds.unknownArtist')) + ' · ' + formatDuration(item.durationSec)}
+                  {item.format ? (
+                    <Text
+                      style={[
+                        styles.rowFormat,
+                        // Lossless is called out in the accent colour so the quality tier
+                        // is visible at a glance rather than inferred from the extension.
+                        { color: item.lossless ? colors.accent : colors.textMuted },
+                      ]}
+                    >
+                      {' · ' + item.format.toUpperCase()}
+                    </Text>
+                  ) : null}
+                </Text>
+                {/* Marks a track this app produced by rendering a preset. The title
+                    suffix alone is only a naming convention a rename would erase; this
+                    reads the recorded presetId, so it survives any retitling. */}
+                {isRenderedSound(item) ? (
+                  <View style={[styles.presetBadge, { borderColor: colors.accent }]}>
+                    <Ionicons name="color-wand" size={9} color={colors.accent} />
+                    <Text style={[styles.presetBadgeText, { color: colors.accent }]}>
+                      {t('sounds.presetBadge')}
+                    </Text>
+                  </View>
                 ) : null}
-              </Text>
+              </View>
             </View>
           </Pressable>
           {!selectionMode ? (
@@ -1475,8 +1489,21 @@ const styles = StyleSheet.create({
   thumbImage: { width: '100%', height: '100%' },
   rowText: { flex: 1 },
   rowTitle: { fontSize: 15, fontWeight: '600' },
-  rowMeta: { fontSize: 12, marginTop: 2 },
+  rowMeta: { fontSize: 12, flexShrink: 1 },
   rowFormat: { fontSize: 12, fontWeight: '600' },
+  // The artist/duration text shrinks so a long title never pushes the badge off-screen.
+  rowMetaLine: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  presetBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginLeft: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  presetBadgeText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.4 },
   sheetTitle: { fontSize: 16, fontWeight: '600', marginBottom: 8, paddingHorizontal: SHEET_INSET },
   presetHeader: {
     flexDirection: 'row',

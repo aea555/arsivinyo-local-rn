@@ -400,6 +400,7 @@
         "repeatOne": "Repeat one",
         "unknownArtist": "Unknown artist",
         "applyPreset": "Apply preset",
+        "presetBadge": "PRESET",
         "presetCustomize": "Customize",
         "presetSave": "Save",
         "presetSavePlaceholder": "New preset name",
