@@ -1482,9 +1482,12 @@ class LocalDownloaderModule : Module() {
     }
 
     val reactContext = requireNotNull(appContext.reactContext)
-    if (!isNotificationPermissionGranted(reactContext)) {
-      throw IllegalStateException("BACKGROUND_PERMISSION_REQUIRED")
-    }
+
+    // Downloading does NOT require notification permission. Posting a notification does.
+    // These are separate on Android 13+: with POST_NOTIFICATIONS denied, startForeground()
+    // still succeeds and the service runs — the system simply suppresses the notification.
+    // Refusing the download here made the app's primary function depend on a permission it
+    // does not need, and left no way to decline notifications and still use the app.
 
     if (activeJob?.isActive == true) {
       throw IllegalStateException("DOWNLOAD_ALREADY_IN_PROGRESS")
@@ -1893,11 +1896,7 @@ class LocalDownloaderModule : Module() {
 
   private fun startQuickDownloadFromClipboard(): Map<String, Any?> {
     val context = requireNotNull(appContext.reactContext)
-    if (!isNotificationPermissionGranted(context)) {
-      reportQuickActionReason("PERMISSION_REQUIRED")
-      return mapOf("accepted" to false, "reason" to "PERMISSION_REQUIRED")
-    }
-
+    // No notification-permission gate: see startDownloadInternal.
     val url = readUrlFromClipboard(context)
       ?: run {
         reportQuickActionReason("NO_CLIPBOARD_URL")
@@ -1908,11 +1907,7 @@ class LocalDownloaderModule : Module() {
 
   private fun startQuickDownloadWithUrl(rawUrl: String, captureMode: String, visibilityOverride: String? = null): Map<String, Any?> {
     val context = requireNotNull(appContext.reactContext)
-    if (!isNotificationPermissionGranted(context)) {
-      reportQuickActionReason("PERMISSION_REQUIRED")
-      return mapOf("accepted" to false, "reason" to "PERMISSION_REQUIRED")
-    }
-
+    // No notification-permission gate: see startDownloadInternal.
     val normalizedUrl = normalizeClipboardUrl(rawUrl)
       ?: run {
         reportQuickActionReason("INVALID_QUICK_URL")
@@ -2086,9 +2081,10 @@ class LocalDownloaderModule : Module() {
 
   private fun setBackgroundDownloadsEnabledInternal(enabled: Boolean): Boolean {
     val context = requireNotNull(appContext.reactContext)
-    if (enabled && !isNotificationPermissionGranted(context)) {
-      throw IllegalStateException("BACKGROUND_PERMISSION_REQUIRED")
-    }
+    // Not gated on notification permission: this feature needs the foreground SERVICE,
+    // which runs either way. Without the permission the work still happens, the user
+    // just does not see progress. Only the sticky notification below genuinely requires
+    // it, because a visible notification is the whole point of that setting.
     backgroundDownloadsEnabled = enabled
     persistBackgroundDownloadsEnabled(context, enabled)
     if (stickyNotificationEnabled) {
@@ -2532,9 +2528,12 @@ class LocalDownloaderModule : Module() {
 
   private fun syncForegroundNotification(phase: String, message: String?, explicitProgress: Double? = null) {
     val context = appContext.reactContext ?: return
-    if (!isNotificationPermissionGranted(context)) {
-      return
-    }
+    // Deliberately does NOT return early when notification permission is missing.
+    // startForeground() still succeeds without POST_NOTIFICATIONS on Android 13+; the
+    // system suppresses the notification but keeps the service alive. Returning early
+    // meant the service never started, so a backgrounded download — and a preset render
+    // batch — could be reclaimed mid-work. The service already reports its own start
+    // failures, so an unexpected refusal surfaces rather than passing silently.
     notificationPhase = phase
     val currentTask = activeTaskId
     val progress = explicitProgress ?: currentTask?.let { tasks[it]?.progressPercent }
