@@ -53,6 +53,9 @@ export default function HomeScreen() {
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [backgroundServiceRunning, setBackgroundServiceRunning] = useState(false);
+  /** What the background work actually is. The module already reports this; the screen
+      used to ignore it and call every kind of work "downloading". */
+  const [backgroundPhase, setBackgroundPhase] = useState<string>('idle');
   const [backgroundQueueSize, setBackgroundQueueSize] = useState(0);
   const [privateModeEnabled, setPrivateModeEnabled] = useState(false);
   const [isPrivateToggleBusy, setIsPrivateToggleBusy] = useState(false);
@@ -84,6 +87,19 @@ export default function HomeScreen() {
     return downloadSpeedBytesPerSec / (1024 * 1024);
   })();
 
+  /**
+   * What the status line says. Applying a preset is not downloading, and a queue of
+   * zero is not worth reporting — the line used to claim both.
+   */
+  const backgroundStatusLabel = (() => {
+    if (!backgroundServiceRunning) return t('home.backgroundInactive');
+    if (backgroundPhase === 'rendering') return t('home.backgroundRendering');
+    if (backgroundQueueSize > 0) {
+      return t('home.backgroundActive', { count: backgroundQueueSize });
+    }
+    return t('home.backgroundDownloading');
+  })();
+
   const speedLabel = speedValue == null ? null : `${speedValue >= 10 ? speedValue.toFixed(1) : speedValue.toFixed(2)} MB/s`;
 
   useEffect(() => {
@@ -93,6 +109,7 @@ export default function HomeScreen() {
         if (!mounted) return;
         setBackgroundServiceRunning(state.serviceRunning);
         setBackgroundQueueSize(state.queueSize);
+        setBackgroundPhase(state.notificationPhase || 'idle');
         setPrivateModeEnabled(Boolean(state.privateModeEnabled));
         setAudioModeEnabled(Boolean(state.audioModeEnabled));
       })
@@ -110,6 +127,7 @@ export default function HomeScreen() {
         return listenBackgroundState((state) => {
           setBackgroundServiceRunning(Boolean(state.serviceRunning));
           setBackgroundQueueSize(state.queueSize || 0);
+          setBackgroundPhase(state.notificationPhase || 'idle');
           if (typeof state.privateModeEnabled === 'boolean') {
             setPrivateModeEnabled(state.privateModeEnabled);
           }
@@ -543,14 +561,18 @@ export default function HomeScreen() {
           {/* Always present, so the absence of activity is stated rather than implied. */}
           <View style={styles.statusLine}>
             <Ionicons
-              name={backgroundServiceRunning ? 'cloud-download-outline' : 'cloud-offline-outline'}
+              name={
+                !backgroundServiceRunning
+                  ? 'cloud-offline-outline'
+                  : backgroundPhase === 'rendering'
+                    ? 'color-wand-outline'
+                    : 'cloud-download-outline'
+              }
               size={13}
               color={backgroundServiceRunning ? colors.accent : colors.textMuted}
             />
             <Text numberOfLines={1} style={[styles.statusLineText, { color: colors.textMuted }]}>
-              {backgroundServiceRunning
-                ? t('home.backgroundActive', { count: backgroundQueueSize })
-                : t('home.backgroundInactive')}
+              {backgroundStatusLabel}
             </Text>
           </View>
 

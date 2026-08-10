@@ -44,6 +44,8 @@
         "stickyNotificationHintOn": "Idle quick controls stay visible in notifications.",
         "stickyNotificationHintOff": "Hides the idle notification; active downloads still show one.",
         "backgroundActive": "Downloading… • Queue: {{count}}",
+        "backgroundDownloading": "Downloading…",
+        "backgroundRendering": "Applying preset…",
         "modeOn": "ON",
         "modeOff": "OFF",
         "modeVideo": "Video",

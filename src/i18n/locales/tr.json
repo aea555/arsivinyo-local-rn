@@ -44,6 +44,8 @@
         "stickyNotificationHintOn": "Boştayken hızlı kontroller bildirimlerde görünür kalır.",
         "stickyNotificationHintOff": "Boşta bildirimi gizler; aktif indirmelerde bildirim yine gösterilir.",
         "backgroundActive": "İndiriliyor… • Sıra: {{count}}",
+        "backgroundDownloading": "İndiriliyor…",
+        "backgroundRendering": "Ön ayar uygulanıyor…",
         "modeOn": "AÇIK",
         "modeOff": "KAPALI",
         "modeVideo": "Video",
