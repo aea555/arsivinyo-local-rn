@@ -2332,6 +2332,10 @@ def _apply_audio_postprocessing(
         extract: Dict[str, Any] = {"key": "FFmpegExtractAudio", "preferredcodec": "flac"}
         # `preferredquality` is a bitrate/VBR knob and is meaningless for a lossless
         # codec, so it is omitted rather than set to a value yt-dlp would ignore.
+        # Verified on device: requesting s32 here produced a 24-bit FLAC, and s16 is
+        # what FFmpeg picks by itself for this codec — so these arguments demonstrably
+        # reach FFmpeg under the "extractaudio" key rather than being silently dropped.
+        # That is what makes the dither below real rather than assumed.
         opts["postprocessor_args"] = {
             "extractaudio": ["-sample_fmt", "s16", "-dither_method", "triangular"],
         }
