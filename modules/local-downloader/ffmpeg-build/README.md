@@ -19,12 +19,26 @@ only reliable route back to a working build.
 
 ## Rebuilding
 
+The patch is `local-modifications.patch`, in this directory. From the repository root:
+
 ```bash
-git clone --depth 1 --branch v6.0.LTS https://github.com/arthenica/ffmpeg-kit.git
-cd ffmpeg-kit
-git apply /path/to/local-modifications.patch
+# 1. Clone pristine upstream somewhere outside this repo
+git clone --depth 1 --branch v6.0.LTS https://github.com/arthenica/ffmpeg-kit.git ~/ffmpeg-kit-build
+cd ~/ffmpeg-kit-build
+
+# 2. Apply the saved changes (adjust the path to wherever this repo lives)
+git apply ~/arsivinyo-local-rn/modules/local-downloader/ffmpeg-build/local-modifications.patch
+
+# 3. Confirm it applied — all four files should show as modified/new
+git status --short
+
+# 4. Build
 ./android.sh --lts --enable-android-media-codec   # plus whatever ABIs you need
 ```
+
+`git apply --check <patch>` verifies it will apply before touching anything. The patch
+was tested against a clean `v6.0.LTS` clone and reproduces this machine's working tree
+exactly.
 
 Then copy the resulting `ffmpeg` / `ffprobe` into both locations the app expects:
 
