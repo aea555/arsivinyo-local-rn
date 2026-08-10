@@ -54,8 +54,13 @@ function AppContent() {
         <Stack.Screen
           name="diagnostics"
           options={{
-            presentation: 'card',
-            headerShown: false,
+            // Presented as a modal, matching Settings. As a card its header drew from
+            // the very top under edge-to-edge and collided with the status bar, while
+            // the modal presentation clears it. headerStatusBarHeight is not an option
+            // on this navigator, so the presentation is the lever.
+            presentation: 'modal',
+            headerShown: true,
+            title: t('settings.diagnostics'),
           }}
         />
         <Stack.Screen

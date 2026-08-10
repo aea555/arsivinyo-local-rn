@@ -156,6 +156,128 @@ export const darkEmerald: ThemeColors = {
     overlay: 'rgba(2, 44, 34, 0.7)',
 };
 
+
+// Editor-inspired dark palettes. Written for this app rather than copied from any
+// particular scheme: each takes a familiar editor mood — cool low-contrast, warm
+// terminal, high-contrast mono-ish, violet — and picks its own values so the app has
+// its own identity and no dependency on someone else's brand.
+
+/** Cool, low-contrast blue-grey. The long-session editor look. */
+export const darkMidnight: ThemeColors = {
+    background: '#0f1419',
+    surface: '#171d25',
+    surfaceHover: '#212936',
+    surfaceActive: '#2d3748',
+
+    text: '#e2e8f0',
+    textMuted: '#94a3b8',
+    textSubtle: '#64748b',
+
+    primary: '#e2e8f0',
+    primaryHover: '#cbd5e1',
+    primaryText: '#0f1419',
+
+    accent: '#7aa2f7',
+    accentHover: '#5d87e8',
+
+    border: '#212936',
+    borderSubtle: '#2d3748',
+
+    success: '#9ece6a',
+    error: '#f7768e',
+    warning: '#e0af68',
+    info: '#7dcfff',
+
+    overlay: 'rgba(0, 0, 0, 0.7)',
+};
+
+/** Warm browns with an amber accent. The old-terminal mood. */
+export const darkEmber: ThemeColors = {
+    background: '#1a1512',
+    surface: '#241d18',
+    surfaceHover: '#322820',
+    surfaceActive: '#43352a',
+
+    text: '#f5ebe0',
+    textMuted: '#b9a48f',
+    textSubtle: '#8a7663',
+
+    primary: '#f5ebe0',
+    primaryHover: '#e6d7c7',
+    primaryText: '#1a1512',
+
+    accent: '#f0a35e',
+    accentHover: '#dc8a41',
+
+    border: '#322820',
+    borderSubtle: '#43352a',
+
+    success: '#8fb573',
+    error: '#e26d5c',
+    warning: '#e6b450',
+    info: '#7aa6c2',
+
+    overlay: 'rgba(0, 0, 0, 0.72)',
+};
+
+/** True black with a green accent. Highest contrast, and kindest to OLED panels. */
+export const darkCarbon: ThemeColors = {
+    background: '#000000',
+    surface: '#0d0d0d',
+    surfaceHover: '#1a1a1a',
+    surfaceActive: '#262626',
+
+    text: '#ffffff',
+    textMuted: '#a3a3a3',
+    textSubtle: '#737373',
+
+    primary: '#ffffff',
+    primaryHover: '#e5e5e5',
+    primaryText: '#000000',
+
+    accent: '#a3e635',
+    accentHover: '#84cc16',
+
+    border: '#262626',
+    borderSubtle: '#404040',
+
+    success: '#4ade80',
+    error: '#f87171',
+    warning: '#fbbf24',
+    info: '#60a5fa',
+
+    overlay: 'rgba(0, 0, 0, 0.8)',
+};
+
+/** Violet-tinted dark with a bright accent. */
+export const darkOrchid: ThemeColors = {
+    background: '#14101a',
+    surface: '#1e1828',
+    surfaceHover: '#2a2136',
+    surfaceActive: '#382c47',
+
+    text: '#ede9f5',
+    textMuted: '#a99fc0',
+    textSubtle: '#7d7395',
+
+    primary: '#ede9f5',
+    primaryHover: '#d9d2e8',
+    primaryText: '#14101a',
+
+    accent: '#c084fc',
+    accentHover: '#a855f7',
+
+    border: '#2a2136',
+    borderSubtle: '#382c47',
+
+    success: '#7ee0a8',
+    error: '#ff7a8a',
+    warning: '#f5c56b',
+    info: '#8fb8ff',
+
+    overlay: 'rgba(0, 0, 0, 0.72)',
+};
+
 // ============================================
 // LIGHT THEMES
 // ============================================
@@ -248,9 +370,70 @@ export const lightCool: ThemeColors = {
 // THEME REGISTRY
 // ============================================
 
+
+/** Warm paper. Low blue, easy for long reading. */
+export const lightPaper: ThemeColors = {
+    background: '#faf6ef',
+    surface: '#f2ece1',
+    surfaceHover: '#e8e0d2',
+    surfaceActive: '#ddd3c2',
+
+    text: '#3b3630',
+    textMuted: '#6b6257',
+    textSubtle: '#918778',
+
+    primary: '#3b3630',
+    primaryHover: '#2a2621',
+    primaryText: '#faf6ef',
+
+    accent: '#b7791f',
+    accentHover: '#975f13',
+
+    border: '#e0d8ca',
+    borderSubtle: '#ece5d9',
+
+    success: '#4d7c2a',
+    error: '#b83227',
+    warning: '#b7791f',
+    info: '#2b6cb0',
+
+    overlay: 'rgba(0, 0, 0, 0.35)',
+};
+
+/** Cool, crisp light with a blue accent. */
+export const lightFrost: ThemeColors = {
+    background: '#f5f8fa',
+    surface: '#ffffff',
+    surfaceHover: '#eaf0f5',
+    surfaceActive: '#dbe5ee',
+
+    text: '#1f2933',
+    textMuted: '#52616b',
+    textSubtle: '#7b8794',
+
+    primary: '#1f2933',
+    primaryHover: '#111820',
+    primaryText: '#ffffff',
+
+    accent: '#2b7fd4',
+    accentHover: '#1d63ab',
+
+    border: '#dbe3ea',
+    borderSubtle: '#eaf0f5',
+
+    success: '#2f855a',
+    error: '#c53030',
+    warning: '#b7791f',
+    info: '#2b7fd4',
+
+    overlay: 'rgba(15, 23, 42, 0.35)',
+};
+
 export type ThemeMode = 'dark' | 'light';
-export type DarkThemeVariant = 'zinc' | 'slate' | 'crimson' | 'emerald';
-export type LightThemeVariant = 'neutral' | 'warm' | 'cool';
+export type DarkThemeVariant =
+    | 'zinc' | 'slate' | 'crimson' | 'emerald'
+    | 'midnight' | 'ember' | 'carbon' | 'orchid';
+export type LightThemeVariant = 'neutral' | 'warm' | 'cool' | 'paper' | 'frost';
 export type ThemeVariant = DarkThemeVariant | LightThemeVariant;
 
 export interface ThemeConfig {
@@ -263,12 +446,18 @@ export const darkThemes: Record<DarkThemeVariant, ThemeColors> = {
     slate: darkSlate,
     crimson: darkCrimson,
     emerald: darkEmerald,
+    midnight: darkMidnight,
+    ember: darkEmber,
+    carbon: darkCarbon,
+    orchid: darkOrchid,
 };
 
 export const lightThemes: Record<LightThemeVariant, ThemeColors> = {
     neutral: lightNeutral,
     warm: lightWarm,
     cool: lightCool,
+    paper: lightPaper,
+    frost: lightFrost,
 };
 
 export const getThemeColors = (config: ThemeConfig): ThemeColors => {
@@ -289,7 +478,13 @@ export const themeDisplayNames: Record<ThemeVariant, string> = {
     slate: 'Slate',
     crimson: 'Crimson',
     emerald: 'Emerald',
+    midnight: 'Midnight',
+    ember: 'Ember',
+    carbon: 'Carbon',
+    orchid: 'Orchid',
     neutral: 'Neutral',
     warm: 'Warm',
     cool: 'Cool',
+    paper: 'Paper',
+    frost: 'Frost',
 };

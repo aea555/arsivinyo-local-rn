@@ -1,5 +1,3 @@
-import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
@@ -140,7 +138,6 @@ const initialState: DiagnosticsState = {
 export default function DiagnosticsScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const router = useRouter();
   const [state, setState] = useState<DiagnosticsState>(initialState);
   const [vaultDiag, setVaultDiag] = useState<LocalVaultDiagnostics | null>(null);
 
@@ -222,20 +219,6 @@ export default function DiagnosticsScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}> 
-      <View style={[styles.header, { borderBottomColor: colors.border }]}> 
-        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('settings.diagnostics')}</Text>
-        <Pressable
-          onPress={() => router.back()}
-          hitSlop={8}
-          style={({ pressed }) => [
-            styles.closeButton,
-            { backgroundColor: pressed ? colors.surfaceHover : colors.surface },
-          ]}
-        >
-          <Ionicons name="close" size={20} color={colors.text} />
-        </Pressable>
-      </View>
-
       <ScrollView contentContainerStyle={styles.contentContainer}>
         <View style={[styles.card, { backgroundColor: colors.surface }]}>
           <Text style={[styles.title, { color: colors.text }]}>App</Text>
@@ -392,25 +375,6 @@ export default function DiagnosticsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-  },
-  closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   contentContainer: {
     padding: 20,

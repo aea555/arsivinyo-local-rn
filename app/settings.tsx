@@ -1325,11 +1325,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contentContainer: {
-    padding: 20,
+    padding: 16,
     paddingBottom: 40,
   },
   section: {
-    marginBottom: 24,
+    marginBottom: 18,
   },
   sectionTitle: {
     fontSize: 13,
@@ -1339,11 +1339,14 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginLeft: 4,
   },
+  // No horizontal padding here. SettingsItem already carries its own, so the two
+  // stacked to push every label 52px from the screen edge — screen 20, card 16, row 16.
+  // Children that are not rows supply their own inset instead.
   sectionContent: {
     borderRadius: 16,
     overflow: 'hidden',
-    padding: 16,
-    gap: 8,
+    paddingVertical: 4,
+    gap: 2,
   },
   autoPresetRow: {
     flexDirection: 'row',
