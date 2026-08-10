@@ -40,7 +40,7 @@ import {
   type LocalSoundPlaylist,
   type LocalSoundPresetProgressEvent,
 } from '@/src/api';
-import { AppText as Text, ValueSlider } from '@/src/components';
+import { AppText as Text, TrackMetadata, ValueSlider } from '@/src/components';
 import {
   buildParamsSpec,
   duplicatePresetForEditing,
@@ -150,6 +150,8 @@ export default function SoundsScreen() {
   const [customParams, setCustomParams] = useState<AudioPresetParams | null>(null);
   const [savePresetName, setSavePresetName] = useState('');
   const [renderProgress, setRenderProgress] = useState<LocalSoundPresetProgressEvent | null>(null);
+  /** Single track whose metadata sheet is open. Deliberately never a batch. */
+  const [infoTarget, setInfoTarget] = useState<LocalSound | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const showToast = useCallback((message: string) => {
@@ -210,6 +212,17 @@ export default function SoundsScreen() {
     });
     return () => subscription.remove();
   }, [reload, showToast, t]);
+
+  /** Resolve a recorded presetId to its display name, localising built-ins. */
+  const presetDisplayName = useCallback(
+    (presetId?: string | null) => {
+      if (!presetId) return null;
+      const preset = presets.find((p) => p.id === presetId);
+      if (!preset) return presetId;
+      return preset.nameKey ? t(preset.nameKey) : preset.name;
+    },
+    [presets, t]
+  );
 
   const closePresetSheet = useCallback(() => {
     setPresetTarget(null);
@@ -891,6 +904,22 @@ export default function SoundsScreen() {
                 <Ionicons name="remove-circle-outline" size={22} color={colors.text} />
               </Pressable>
             ) : null}
+            {/* Info is single-track only: the sheet describes one file, and there is
+                no sensible way to show one set of metadata for a batch. */}
+            {selectedIds.size === 1 ? (
+              <Pressable
+                hitSlop={8}
+                onPress={() => {
+                  const id = Array.from(selectedIds)[0];
+                  const song = songs.find((s) => s.id === id) ?? null;
+                  if (song) setInfoTarget(song);
+                }}
+                style={styles.selectionBtn}
+                accessibilityLabel={t('sounds.metadata.title')}
+              >
+                <Ionicons name="information-circle-outline" size={22} color={colors.text} />
+              </Pressable>
+            ) : null}
             <Pressable
               hitSlop={8}
               onPress={() => setPresetTarget({ ids: Array.from(selectedIds) })}
@@ -917,6 +946,24 @@ export default function SoundsScreen() {
       ) : null}
 
       {/* Sort menu */}
+      <SimpleSheet visible={infoTarget !== null} onClose={() => setInfoTarget(null)} colors={colors}>
+        {infoTarget ? (
+          <View style={styles.infoSheetBody}>
+            <Text numberOfLines={2} style={[styles.infoTitle, { color: colors.text }]}>
+              {infoTarget.title}
+            </Text>
+            <Text numberOfLines={1} style={[styles.infoArtist, { color: colors.textMuted }]}>
+              {infoTarget.artist || t('sounds.unknownArtist')}
+            </Text>
+            <TrackMetadata
+              song={infoTarget}
+              presetName={presetDisplayName(infoTarget.presetId)}
+              sourceTitle={songs.find((s) => s.id === infoTarget.sourceSongId)?.title ?? null}
+            />
+          </View>
+        ) : null}
+      </SimpleSheet>
+
       {/* Preset picker. Tapping a preset applies it; the pencil opens the sliders, so
           the common two-tap path is not buried behind eleven controls. */}
       <SimpleSheet visible={presetTarget !== null} onClose={closePresetSheet} colors={colors}>
@@ -1504,6 +1551,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   presetBadgeText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.4 },
+  infoSheetBody: { paddingHorizontal: SHEET_INSET, paddingVertical: 4 },
+  infoTitle: { fontSize: 16, fontWeight: '600' },
+  infoArtist: { fontSize: 13, marginTop: 2, marginBottom: 10 },
   sheetTitle: { fontSize: 16, fontWeight: '600', marginBottom: 8, paddingHorizontal: SHEET_INSET },
   presetHeader: {
     flexDirection: 'row',

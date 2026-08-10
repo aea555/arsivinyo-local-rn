@@ -1,9 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Animated, PanResponder, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, PanResponder, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import TrackPlayer, {
   RepeatMode,
@@ -13,8 +13,15 @@ import TrackPlayer, {
   useProgress,
 } from 'react-native-track-player';
 
-import { FAVORITES_PLAYLIST_ID, listLocalSoundPlaylists, setLocalSoundsFavorite } from '@/src/api';
-import { AppText as Text } from '@/src/components';
+import {
+  FAVORITES_PLAYLIST_ID,
+  listLocalSoundPlaylists,
+  listLocalSounds,
+  setLocalSoundsFavorite,
+  type LocalSound,
+} from '@/src/api';
+import { AppText as Text, TrackMetadata } from '@/src/components';
+import { listAllPresets, type AudioPreset } from '@/src/features/audioPresets/presets';
 import { cycleRepeatMode, handlePrevious, seekBy } from '@/src/services/trackPlayerService';
 import { useTheme } from '@/src/theme';
 
@@ -37,6 +44,36 @@ export default function SoundPlayerScreen() {
   const [repeatMode, setRepeatMode] = React.useState<RepeatMode>(RepeatMode.Off);
   const [isFav, setIsFav] = React.useState(false);
   const trackId = track?.id != null ? String(track.id) : null;
+
+  // The player only holds an RNTP track, which carries no format or preset detail.
+  // Resolve the library entry so the metadata section can describe the real file.
+  const [librarySong, setLibrarySong] = useState<LocalSound | null>(null);
+  const [libraryById, setLibraryById] = useState<Map<string, LocalSound>>(new Map());
+  const [presets, setPresets] = useState<AudioPreset[]>([]);
+  /** Height of the scroll viewport, used to size the player pane to one screen. */
+  const [viewportHeight, setViewportHeight] = useState(0);
+
+  useEffect(() => {
+    let mounted = true;
+    void listLocalSounds()
+      .then((library) => {
+        if (!mounted) return;
+        setLibraryById(new Map(library.songs.map((s) => [s.id, s])));
+      })
+      .catch(() => undefined);
+    void listAllPresets()
+      .then((all) => {
+        if (mounted) setPresets(all);
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setLibrarySong(trackId ? libraryById.get(trackId) ?? null : null);
+  }, [trackId, libraryById]);
 
   const barWidth = useRef(0);
   const durationRef = useRef(0);
@@ -222,6 +259,19 @@ export default function SoundPlayerScreen() {
         <View style={styles.iconBtn} />
       </View>
 
+      {/* The whole page scrolls; the top bar stays put. The player pane is sized to the
+          scroll viewport measured at runtime, so on entry the transport fills the screen
+          exactly and the details sit just below the fold — regardless of device size or
+          inset. Measuring beats computing it from window height, which would have to
+          guess at the top bar and safe-area insets. */}
+      <ScrollView
+        style={styles.pageScroll}
+        contentContainerStyle={styles.pageScrollContent}
+        onLayout={(event) => setViewportHeight(event.nativeEvent.layout.height)}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={[styles.playerPane, viewportHeight > 0 ? { minHeight: viewportHeight } : null]}>
+
       <View style={styles.artworkWrap}>
         <View style={[styles.artwork, { backgroundColor: colors.surfaceHover }]}>
           {track.artwork ? (
@@ -309,15 +359,50 @@ export default function SoundPlayerScreen() {
 
       {/* Fixed-height slot so toggling the buffering indicator never reflows the
           layout (which made the artwork resize and "jump" when seeking). */}
-      <View style={styles.bufferingSlot}>
-        {buffering ? <Text style={[styles.buffering, { color: colors.textMuted }]}>…</Text> : null}
-      </View>
+        <View style={styles.bufferingSlot}>
+          {buffering ? <Text style={[styles.buffering, { color: colors.textMuted }]}>…</Text> : null}
+        </View>
+        </View>
+
+        {/* Details for the current track, below the fold. */}
+        {librarySong ? (
+          <View style={styles.metaSection}>
+            <View style={[styles.metaDivider, { backgroundColor: colors.border }]} />
+            <TrackMetadata
+              song={librarySong}
+              presetName={resolvePresetName(librarySong.presetId, presets, t)}
+              sourceTitle={
+                librarySong.sourceSongId ? libraryById.get(librarySong.sourceSongId)?.title ?? null : null
+              }
+            />
+          </View>
+        ) : null}
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
+/** Resolve a recorded presetId to its display name, localising built-ins. */
+function resolvePresetName(
+  presetId: string | null | undefined,
+  presets: AudioPreset[],
+  t: (key: string) => string
+): string | null {
+  if (!presetId) return null;
+  const preset = presets.find((p) => p.id === presetId);
+  if (!preset) return presetId;
+  return preset.nameKey ? t(preset.nameKey) : preset.name;
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 24 },
+  pageScroll: { flex: 1 },
+  pageScrollContent: { paddingBottom: 32 },
+  // Takes over the column layout the container previously provided, so the artwork's
+  // flex:1 still expands to fill one screen rather than competing with the details.
+  playerPane: { justifyContent: 'center' },
+  metaSection: { marginTop: 8 },
+  metaDivider: { height: 1, marginBottom: 12, opacity: 0.5 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   emptyText: { fontSize: 15 },
   topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 },
