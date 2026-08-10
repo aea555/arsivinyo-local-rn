@@ -5,7 +5,6 @@ import LocalDownloaderModule, {
   addPrivateVaultMigrationProgressListener,
   addYtDlpUpdateProgressListener,
   type LocalBackgroundPermissionResult,
-  type LocalBackgroundDownloadsState,
   type LocalStickyNotificationState,
   type LocalBackgroundState,
   type LocalBackgroundStateEvent,
@@ -97,11 +96,6 @@ export async function getLocalBackgroundState(): Promise<LocalBackgroundState> {
 export async function ensureLocalBackgroundPermission(): Promise<LocalBackgroundPermissionResult> {
   ensureAndroid();
   return LocalDownloaderModule.ensureBackgroundPermission();
-}
-
-export async function setLocalBackgroundDownloadsEnabled(enabled: boolean): Promise<LocalBackgroundDownloadsState> {
-  ensureAndroid();
-  return LocalDownloaderModule.setBackgroundDownloadsEnabled({ enabled });
 }
 
 export async function setLocalStickyNotificationEnabled(enabled: boolean): Promise<LocalStickyNotificationState> {

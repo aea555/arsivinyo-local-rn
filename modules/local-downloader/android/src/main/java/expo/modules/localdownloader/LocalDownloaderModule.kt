@@ -309,9 +309,6 @@ class LocalDownloaderModule : Module() {
   private var audioFormat: String = DEFAULT_AUDIO_FORMAT
 
   @Volatile
-  private var backgroundDownloadsEnabled: Boolean = false
-
-  @Volatile
   private var stickyNotificationEnabled: Boolean = false
 
   @Volatile
@@ -347,7 +344,6 @@ class LocalDownloaderModule : Module() {
       audioModeEnabled = isAudioModeEnabledPersisted(context)
       audioFormat = audioFormatPersisted(context)
       resumePresetRenderIfAny()
-      backgroundDownloadsEnabled = isBackgroundDownloadsEnabledPersisted(context)
       stickyNotificationEnabled = isStickyNotificationEnabledPersisted(context)
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
       cleanupRuntimeCookieTemp()
@@ -461,12 +457,6 @@ class LocalDownloaderModule : Module() {
         "granted" to refreshedGranted,
         "canAskAgain" to canAskForNotificationPermission()
       )
-    }
-
-    AsyncFunction("setBackgroundDownloadsEnabled") { input: Map<String, Any?> ->
-      val requested = (input["enabled"] as? Boolean) ?: false
-      val resolved = setBackgroundDownloadsEnabledInternal(requested)
-      mapOf("enabled" to resolved)
     }
 
     AsyncFunction("setStickyNotificationEnabled") { input: Map<String, Any?> ->
@@ -2070,30 +2060,12 @@ class LocalDownloaderModule : Module() {
       "queuedUrls" to synchronized(queueLock) { queuedQuickDownloads.map { it.url } },
       "lastQuickReason" to lastQuickReason,
       "notificationPhase" to notificationPhase,
-      "backgroundDownloadsEnabled" to backgroundDownloadsEnabled,
       "stickyNotificationEnabled" to stickyNotificationEnabled,
       "privateModeEnabled" to privateModeEnabled,
       "audioModeEnabled" to audioModeEnabled,
       "notificationPermissionRequired" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU),
       "notificationPermissionGranted" to granted
     )
-  }
-
-  private fun setBackgroundDownloadsEnabledInternal(enabled: Boolean): Boolean {
-    val context = requireNotNull(appContext.reactContext)
-    // Not gated on notification permission: this feature needs the foreground SERVICE,
-    // which runs either way. Without the permission the work still happens, the user
-    // just does not see progress. Only the sticky notification below genuinely requires
-    // it, because a visible notification is the whole point of that setting.
-    backgroundDownloadsEnabled = enabled
-    persistBackgroundDownloadsEnabled(context, enabled)
-    if (stickyNotificationEnabled) {
-      syncForegroundNotification("idle", if (enabled) "Background downloads enabled" else "Background downloads disabled")
-    } else {
-      stopForegroundNotificationIfIdle()
-    }
-    emitBackgroundStateChanged()
-    return enabled
   }
 
   private fun setStickyNotificationEnabledInternal(enabled: Boolean): Boolean {
@@ -7529,7 +7501,6 @@ class LocalDownloaderModule : Module() {
     private const val PRESET_QUEUE_FILENAME = "audio_preset_queue.json"
     private const val PRESET_PROGRESS_DIRNAME = "audio_preset_progress"
     private const val PRESET_PROGRESS_POLL_MS = 400L
-    private const val PREF_BACKGROUND_DOWNLOADS_ENABLED = "background_downloads_enabled"
     private const val PREF_STICKY_NOTIFICATION_ENABLED = "sticky_notification_enabled"
     private const val PRIVATE_VAULT_DIRNAME = "private_vault"
     private const val PRIVATE_VAULT_OBJECTS_DIRNAME = "objects"
@@ -7897,10 +7868,6 @@ class LocalDownloaderModule : Module() {
       return if (normalized in SUPPORTED_AUDIO_FORMATS) normalized else DEFAULT_AUDIO_FORMAT
     }
 
-    private fun isBackgroundDownloadsEnabledPersisted(context: Context): Boolean {
-      return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .getBoolean(PREF_BACKGROUND_DOWNLOADS_ENABLED, false)
-    }
 
     private fun isStickyNotificationEnabledPersisted(context: Context): Boolean {
       return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -7928,12 +7895,6 @@ class LocalDownloaderModule : Module() {
         .apply()
     }
 
-    private fun persistBackgroundDownloadsEnabled(context: Context, enabled: Boolean) {
-      context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .edit()
-        .putBoolean(PREF_BACKGROUND_DOWNLOADS_ENABLED, enabled)
-        .apply()
-    }
 
     private fun persistStickyNotificationEnabled(context: Context, enabled: Boolean) {
       context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

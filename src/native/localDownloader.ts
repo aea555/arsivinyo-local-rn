@@ -13,7 +13,6 @@ export type {
   LocalSoundPresetProgressEvent,
   LocalSoundPresetStartResult,
   LocalBackgroundPermissionResult,
-  LocalBackgroundDownloadsState,
   LocalBackgroundState,
   LocalBackgroundStateEvent,
   LocalCookieProfile,

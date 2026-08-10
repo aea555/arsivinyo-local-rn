@@ -115,7 +115,6 @@ export interface LocalDownloadStartResult {
 }
 
 export interface LocalBackgroundState {
-  backgroundDownloadsEnabled?: boolean;
   stickyNotificationEnabled?: boolean;
   serviceRunning: boolean;
   activeTaskId: string | null;
@@ -133,10 +132,6 @@ export interface LocalBackgroundState {
 export interface LocalBackgroundPermissionResult {
   granted: boolean;
   canAskAgain: boolean;
-}
-
-export interface LocalBackgroundDownloadsState {
-  enabled: boolean;
 }
 
 export interface LocalStickyNotificationState {

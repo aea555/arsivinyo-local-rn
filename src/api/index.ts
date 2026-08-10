@@ -37,7 +37,6 @@ export {
     runLocalImpersonationSelfTest,
     saveLocalFileToMediaStore,
     setLocalAudioModeEnabled,
-    setLocalBackgroundDownloadsEnabled,
     setLocalSecureScreen,
     setLocalStickyNotificationEnabled,
     setLocalPrivateModeEnabled,

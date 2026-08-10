@@ -7,7 +7,6 @@ import type {
   LocalSoundPresetProgressEvent,
   LocalSoundPresetStartResult,
   LocalCookieProfile,
-  LocalBackgroundDownloadsState,
   LocalBackgroundPermissionResult,
   LocalBackgroundState,
   LocalBackgroundStateEvent,
@@ -60,7 +59,6 @@ type LocalDownloaderNativeModule = {
   cancelTask(taskId: string): Promise<{ success: boolean }>;
   getBackgroundState(): Promise<LocalBackgroundState>;
   ensureBackgroundPermission(): Promise<LocalBackgroundPermissionResult>;
-  setBackgroundDownloadsEnabled(input: { enabled: boolean }): Promise<LocalBackgroundDownloadsState>;
   setStickyNotificationEnabled(input: { enabled: boolean }): Promise<LocalStickyNotificationState>;
   startQuickDownloadFromClipboard(): Promise<LocalQuickDownloadResult>;
   startQuickDownloadWithUrl(input: { url: string }): Promise<LocalQuickDownloadResult>;
@@ -152,7 +150,6 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       cancelTask: async () => unsupported(),
       getBackgroundState: async () => unsupported(),
       ensureBackgroundPermission: async () => unsupported(),
-      setBackgroundDownloadsEnabled: async () => unsupported(),
       setStickyNotificationEnabled: async () => unsupported(),
       startQuickDownloadFromClipboard: async () => unsupported(),
       startQuickDownloadWithUrl: async () => unsupported(),
