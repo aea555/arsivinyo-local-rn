@@ -37,48 +37,61 @@ export function ValueSlider({
   disabled?: boolean;
 }) {
   const { colors } = useTheme();
-  const [trackWidth, setTrackWidth] = useState(0);
 
-  // Kept in refs because the PanResponder closure is created once and would otherwise
-  // capture stale values.
+  // Everything the gesture needs lives in refs, because the PanResponder below is
+  // created ONCE and must never be rebuilt. Rebuilding it mid-drag swaps the handlers
+  // out from under the active gesture and the responder is lost — which showed up as
+  // "tap works, drag doesn't", since only the grant had fired by then.
   const widthRef = useRef(0);
   const startValueRef = useRef(value);
-  const valueRef = useRef(value);
-  valueRef.current = value;
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
+  const rangeRef = useRef({ min, max, step });
+  rangeRef.current = { min, max, step };
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
-  const snap = useCallback(
-    (raw: number) => {
-      const clamped = Math.min(max, Math.max(min, raw));
-      const stepped = Math.round((clamped - min) / step) * step + min;
-      // Re-clamp: rounding up from the last step can overshoot the maximum.
-      const bounded = Math.min(max, Math.max(min, stepped));
-      // Kill floating-point dust like 0.7300000000000001 from repeated addition.
-      return Math.round(bounded * 1000) / 1000;
-    },
-    [max, min, step]
-  );
+  const [trackWidth, setTrackWidth] = useState(0);
+
+  const snapWith = useCallback((raw: number, bounds: { min: number; max: number; step: number }) => {
+    const clamped = Math.min(bounds.max, Math.max(bounds.min, raw));
+    const stepped = Math.round((clamped - bounds.min) / bounds.step) * bounds.step + bounds.min;
+    // Re-clamp: rounding up from the last step can overshoot the maximum.
+    const bounded = Math.min(bounds.max, Math.max(bounds.min, stepped));
+    // Kill floating-point dust like 0.7300000000000001 from repeated addition.
+    return Math.round(bounded * 1000) / 1000;
+  }, []);
+
+  const snapWithRef = useRef(snapWith);
+  snapWithRef.current = snapWith;
 
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => !disabled,
-        onMoveShouldSetPanResponder: () => !disabled,
+        onStartShouldSetPanResponder: () => !disabledRef.current,
+        onMoveShouldSetPanResponder: () => !disabledRef.current,
+        // Hold the gesture once it starts. Without this an enclosing ScrollView can
+        // take the responder away as soon as the finger moves.
+        onPanResponderTerminationRequest: () => false,
+        onShouldBlockNativeResponder: () => true,
         onPanResponderGrant: (event) => {
           const width = widthRef.current;
           if (width <= 0) return;
+          const bounds = rangeRef.current;
           const ratio = event.nativeEvent.locationX / width;
-          const next = snap(min + ratio * (max - min));
+          const next = snapWithRef.current(bounds.min + ratio * (bounds.max - bounds.min), bounds);
           startValueRef.current = next;
-          onChange(next);
+          onChangeRef.current(next);
         },
         onPanResponderMove: (_event, gesture) => {
           const width = widthRef.current;
           if (width <= 0) return;
-          const delta = (gesture.dx / width) * (max - min);
-          onChange(snap(startValueRef.current + delta));
+          const bounds = rangeRef.current;
+          const delta = (gesture.dx / width) * (bounds.max - bounds.min);
+          onChangeRef.current(snapWithRef.current(startValueRef.current + delta, bounds));
         },
       }),
-    [disabled, max, min, onChange, snap]
+    []
   );
 
   const ratio = max > min ? (value - min) / (max - min) : 0;

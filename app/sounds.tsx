@@ -1055,23 +1055,25 @@ export default function SoundsScreen() {
               </Text>
             </View>
 
-            <ScrollView
-              style={styles.presetScroll}
-              contentContainerStyle={styles.presetScrollContent}
-              keyboardShouldPersistTaps="handled"
-            >
-              {/* Built-in names are fixed and localised, so only user presets get a
-                  name field. Renaming one also renames the suffix on future renders. */}
-              {!presetEditor.preset.builtIn ? (
+            {/* Name sits OUTSIDE the scroll area so it stays reachable with the
+                keyboard up, and so the scrollable region is purely the slider list. */}
+            {!presetEditor.preset.builtIn ? (
+              <View style={styles.presetFixedRow}>
                 <TextInput
                   value={presetEditor.name}
                   onChangeText={(name) => setPresetEditor((cur) => (cur ? { ...cur, name } : cur))}
                   placeholder={t('sounds.presetNamePlaceholder')}
                   placeholderTextColor={colors.textMuted}
-                  style={[styles.presetInput, { color: colors.text, borderColor: colors.border, marginBottom: 8 }]}
+                  style={[styles.presetInput, { color: colors.text, borderColor: colors.border }]}
                 />
-              ) : null}
+              </View>
+            ) : null}
 
+            <ScrollView
+              style={styles.presetScroll}
+              contentContainerStyle={styles.presetScrollContent}
+              keyboardShouldPersistTaps="handled"
+            >
               {PRESET_FIELDS.map((field) => (
                 <ValueSlider
                   key={field.key}
@@ -1088,7 +1090,11 @@ export default function SoundsScreen() {
                   }
                 />
               ))}
+            </ScrollView>
 
+            {/* Fixed footer. These are the actions the user came for, so they must not
+                require scrolling to the end of eleven sliders to reach. */}
+            <View style={[styles.presetFooter, { borderColor: colors.border }]}>
               <View style={styles.presetEditorActions}>
                 <Pressable
                   onPress={handleSavePreset}
@@ -1120,20 +1126,20 @@ export default function SoundsScreen() {
                   </Pressable>
                 ) : null}
               </View>
-            </ScrollView>
 
-            {/* Applies the edited values whether or not they were saved, so the sliders
-                can be auditioned on a track without committing them to the preset. */}
-            {!presetEditor.isNew ? (
-              <Pressable
-                onPress={() => startPresetRender(presetEditor.preset, presetEditor.params)}
-                style={[styles.presetApplyBtn, { backgroundColor: colors.accent }]}
-              >
-                <Text style={styles.presetApplyText}>
-                  {t('sounds.presetApplyCount', { count: presetTarget?.ids.length ?? 0 })}
-                </Text>
-              </Pressable>
-            ) : null}
+              {/* Applies the edited values whether or not they were saved, so the
+                  sliders can be auditioned on a track without committing them. */}
+              {!presetEditor.isNew ? (
+                <Pressable
+                  onPress={() => startPresetRender(presetEditor.preset, presetEditor.params)}
+                  style={[styles.presetApplyBtn, { backgroundColor: colors.accent }]}
+                >
+                  <Text style={styles.presetApplyText}>
+                    {t('sounds.presetApplyCount', { count: presetTarget?.ids.length ?? 0 })}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
           </>
         ) : (
           <>
@@ -1379,11 +1385,20 @@ function SimpleSheet({
 }) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={[styles.sheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.modalOverlay}
+      >
+        {/* The backdrop is a SIBLING behind the sheet, not a wrapper around it. A
+            Pressable ancestor competes for the touch responder, which stopped an inner
+            ScrollView from panning at all and stole drags from the sliders. As a
+            sibling it still catches taps outside the sheet, because the sheet is
+            painted on top and consumes its own touches. */}
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={[styles.sheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           {children}
-        </Pressable>
-      </Pressable>
+        </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -1655,7 +1670,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingHorizontal: SHEET_INSET,
   },
-  presetScroll: { maxHeight: 380 },
+  // flexShrink lets the slider list give up height when the keyboard shrinks the
+  // sheet; a fixed maxHeight alone would push the footer off the screen instead.
+  presetScroll: { flexShrink: 1, maxHeight: 380 },
   presetScrollContent: { paddingHorizontal: SHEET_INSET },
   presetRow: {
     flexDirection: 'row',
@@ -1671,7 +1688,13 @@ const styles = StyleSheet.create({
   presetName: { fontSize: 15 },
   presetNameWrap: { flex: 1 },
   presetSubLabel: { fontSize: 11, marginTop: 1 },
-  presetEditorActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  presetFixedRow: { paddingHorizontal: SHEET_INSET, paddingBottom: 8 },
+  presetFooter: {
+    paddingHorizontal: SHEET_INSET,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  presetEditorActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   presetSecondaryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1684,13 +1707,7 @@ const styles = StyleSheet.create({
   presetSaveRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
   presetInput: { flex: 1, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   presetSaveBtn: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 },
-  presetApplyBtn: {
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 12,
-    marginHorizontal: SHEET_INSET,
-  },
+  presetApplyBtn: { borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 10 },
   presetApplyText: { color: '#0b0b0d', fontWeight: '700', fontSize: 15 },
   renderBanner: {
     position: 'absolute',
