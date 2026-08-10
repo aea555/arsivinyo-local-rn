@@ -17,10 +17,12 @@ import {
   authenticateLocalPrivateAccess,
   cancelLocalPrivateVaultMigration,
   ensureLocalBackgroundPermission,
+  getLocalAudioFormat,
   getLocalBackgroundState,
   getLocalYtDlpUpdateStatus,
   listenLocalPrivateVaultMigration,
   listenYtDlpUpdateProgress,
+  setLocalAudioFormat,
   setLocalBackgroundDownloadsEnabled,
   setLocalStickyNotificationEnabled,
   startLocalPrivateVaultMigration,
@@ -29,6 +31,7 @@ import {
 import { AppText as Text, AppTextInput as TextInput, SettingsItem, ThemePicker } from '@/src/components';
 import { BUILD_CONFIG } from '@/src/config';
 import type {
+  LocalAudioFormat,
   LocalPrivateMigrationProgress,
   LocalYtDlpUpdateProgressEvent,
   LocalYtDlpUpdateStatus,
@@ -99,6 +102,8 @@ export default function SettingsScreen() {
   const [stickyNotificationEnabled, setStickyNotificationEnabled] = useState(false);
   const [backgroundToggleBusy, setBackgroundToggleBusy] = useState(false);
   const [stickyToggleBusy, setStickyToggleBusy] = useState(false);
+  const [audioFormat, setAudioFormat] = useState<LocalAudioFormat>('flac');
+  const [audioFormatBusy, setAudioFormatBusy] = useState(false);
 
   const showError = useCallback((message: string) => {
     setFeedback({ title: t('common.error'), message, tone: 'error' });
@@ -121,6 +126,12 @@ export default function SettingsScreen() {
         if (!mounted) return;
         setBackgroundDownloadsEnabled(Boolean(state.backgroundDownloadsEnabled));
         setStickyNotificationEnabled(Boolean(state.stickyNotificationEnabled));
+      })
+      .catch(() => undefined);
+    void getLocalAudioFormat()
+      .then((state) => {
+        if (!mounted) return;
+        setAudioFormat(state.format);
       })
       .catch(() => undefined);
     return () => {
@@ -148,6 +159,23 @@ export default function SettingsScreen() {
       setBackgroundToggleBusy(false);
     }
   }, [backgroundDownloadsEnabled, backgroundToggleBusy, showError, t]);
+
+  // Lossless is the default. Every source we download is already lossy, so encoding
+  // it to AAC again would stack a second generation of loss; FLAC keeps exactly what
+  // the decoder produced, at roughly 3x the size. Only affects NEW downloads.
+  const handleToggleAudioFormat = useCallback(async () => {
+    if (audioFormatBusy) return;
+    const nextFormat: LocalAudioFormat = audioFormat === 'flac' ? 'm4a' : 'flac';
+    setAudioFormatBusy(true);
+    try {
+      const result = await setLocalAudioFormat(nextFormat);
+      setAudioFormat(result.format);
+    } catch (error) {
+      showError(error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR'));
+    } finally {
+      setAudioFormatBusy(false);
+    }
+  }, [audioFormat, audioFormatBusy, showError, t]);
 
   const handleToggleStickyNotification = useCallback(async () => {
     if (stickyToggleBusy) return;
@@ -641,6 +669,27 @@ export default function SettingsScreen() {
                   value={stickyNotificationEnabled}
                   onValueChange={handleToggleStickyNotification}
                   disabled={stickyToggleBusy}
+                  trackColor={{ false: colors.borderSubtle, true: colors.accent }}
+                  thumbColor="#f4f4f5"
+                  ios_backgroundColor={colors.borderSubtle}
+                />
+              }
+            />
+            <SettingsItem
+              icon="musical-notes-outline"
+              title={t('settings.losslessAudio')}
+              subtitle={
+                audioFormat === 'flac'
+                  ? t('settings.losslessAudioOnHint')
+                  : t('settings.losslessAudioOffHint')
+              }
+              showArrow={false}
+              onPress={handleToggleAudioFormat}
+              rightElement={
+                <Switch
+                  value={audioFormat === 'flac'}
+                  onValueChange={handleToggleAudioFormat}
+                  disabled={audioFormatBusy}
                   trackColor={{ false: colors.borderSubtle, true: colors.accent }}
                   thumbColor="#f4f4f5"
                   ios_backgroundColor={colors.borderSubtle}

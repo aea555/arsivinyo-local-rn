@@ -467,6 +467,18 @@ export default function SoundsScreen() {
               </Text>
               <Text numberOfLines={1} style={[styles.rowMeta, { color: colors.textMuted }]}>
                 {(item.artist || t('sounds.unknownArtist')) + ' · ' + formatDuration(item.durationSec)}
+                {item.format ? (
+                  <Text
+                    style={[
+                      styles.rowFormat,
+                      // Lossless is called out in the accent colour so the quality tier
+                      // is visible at a glance rather than inferred from the extension.
+                      { color: item.lossless ? colors.accent : colors.textMuted },
+                    ]}
+                  >
+                    {' · ' + item.format.toUpperCase()}
+                  </Text>
+                ) : null}
               </Text>
             </View>
           </Pressable>
@@ -1200,6 +1212,7 @@ const styles = StyleSheet.create({
   rowText: { flex: 1 },
   rowTitle: { fontSize: 15, fontWeight: '600' },
   rowMeta: { fontSize: 12, marginTop: 2 },
+  rowFormat: { fontSize: 12, fontWeight: '600' },
   rowAction: { padding: 4 },
   playlistActionBtn: {
     width: 34,

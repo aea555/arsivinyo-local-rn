@@ -55,14 +55,17 @@ export {
     deleteLocalSoundPlaylist,
     deleteLocalSounds,
     FAVORITES_PLAYLIST_ID,
+    getLocalAudioFormat,
     getLocalSoundThumbnail,
     importLocalSounds,
     isLocalSoundsSupported,
+    isLosslessSound,
     listLocalSoundPlaylists,
     listLocalSounds,
     removeLocalSoundsFromPlaylist,
     renameLocalSound,
     renameLocalSoundPlaylist,
+    setLocalAudioFormat,
     setLocalSoundPlaylistSongs,
     setLocalSoundsFavorite,
 } from './sounds';
@@ -70,6 +73,8 @@ export type {
     ApiErrorCode, ApiResponse, DownloadProgress, DownloadStartResponse, DownloadState, TaskStatus, TaskStatusResponse
 } from './types';
 export type {
+    LocalAudioFormat,
+    LocalAudioFormatState,
     LocalSound,
     LocalSoundPlaylist,
     LocalSoundsImportResult,
