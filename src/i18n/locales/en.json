@@ -186,6 +186,8 @@
         "foldersItemCount": "{{count}} videos"
     },
     "settings": {
+        "backup": "Backup & restore",
+        "backupHint": "Export or restore your vault, music and preferences",
         "title": "Settings",
         "appearance": "Appearance",
         "backgroundSection": "Downloads",
@@ -524,5 +526,82 @@
         "sortTitleDesc": "Title Z–A",
         "sortDurationDesc": "Longest first",
         "sortDurationAsc": "Shortest first"
+    },
+    "backup": {
+        "title": "Backup & restore",
+        "mode": {
+            "export": "Create backup",
+            "import": "Restore"
+        },
+        "exportBlurb": "Writes everything you pick into a single encrypted file. Choose where it goes; nothing is uploaded anywhere.",
+        "importBlurb": "Reads an existing backup file. Items already on this device are skipped, so restoring twice is safe.",
+        "pickFile": "Choose a backup file",
+        "pickAnother": "Choose a different file",
+        "previewMeta": "Made with version {{version}} on {{date}}",
+        "sectionsTitle": "What to include",
+        "section": {
+            "vault": "Private vault",
+            "music": "Music library",
+            "settings": "Preferences",
+            "cookies": "Cookie profiles"
+        },
+        "sectionHint": {
+            "vault": "Videos in the private vault",
+            "music": "Tracks, cover art, playlists and preset settings",
+            "settings": "Theme, download location and saved presets",
+            "cookies": "Saved sign-ins for supported sites"
+        },
+        "sectionSummary": "{{count}} items · {{size}}",
+        "secretTitle": "Protect it with",
+        "secretTitleImport": "Unlock it with",
+        "kind": {
+            "passphrase": "Passphrase",
+            "password": "Password"
+        },
+        "passwordPlaceholder": "At least {{min}} characters",
+        "confirmPlaceholder": "Type it again",
+        "wordCount": "{{count}} words",
+        "generate": "Generate",
+        "generatedHint": "Write these words down before continuing.",
+        "generateFailed": "Could not generate a passphrase.",
+        "separator": "Joined by",
+        "reveal": "Show what I typed",
+        "hide": "Hide what I typed",
+        "copy": "Copy",
+        "copied": "Copied",
+        "copiedHint": "Copied. Other apps can read the clipboard, so paste it somewhere safe and clear it after.",
+        "copyFailed": "Could not copy to the clipboard.",
+        "strength": {
+            "weak": "Weak",
+            "fair": "Fair",
+            "strong": "Strong",
+            "excellent": "Excellent"
+        },
+        "bits": "about {{bits}} bits",
+        "passphraseIgnored": "You also typed a passphrase. It is not used — this backup is protected by the password above.",
+        "passwordIgnored": "You also typed a password. It is not used — this backup is protected by the passphrase above.",
+        "noRecovery": "There is no way to recover this file if you forget the secret. Nothing is stored anywhere else.",
+        "problem": {
+            "tooShort": "Use at least {{min}} characters. Length matters more than symbols or digits.",
+            "obvious": "This is too easy to guess. Choose something less common.",
+            "tooFewWords": "Use at least {{min}} words.",
+            "tooManyWords": "Use no more than {{max}} words.",
+            "blankWord": "Fill in every word, or remove the empty ones.",
+            "wordContainsSeparator": "A word cannot contain \"{{separator}}\", which joins them together.",
+            "mismatch": "The two entries do not match."
+        },
+        "exportAction": "Create backup",
+        "restoreAction": "Restore",
+        "working": "Working…",
+        "cancelled": "Cancelled.",
+        "exportDone": "Backup written. {{count}} items included.",
+        "exportFailed": "Could not write the backup. {{message}}",
+        "previewFailed": "Could not read that file. {{message}}",
+        "wrongSecret": "That is not the right secret for this file.",
+        "restoreDone": "Restore finished.",
+        "restoreFailed": "Could not finish the restore. {{message}}",
+        "restoreReport": "{{restored}} added · {{duplicates}} already here · {{failed}} failed",
+        "confirmRestoreTitle": "Restore from this backup?",
+        "confirmRestoreMessage": "Items you already have are skipped. Anything new is added to your library."
     }
 }

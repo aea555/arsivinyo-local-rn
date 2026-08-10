@@ -21,6 +21,7 @@ const DOWNLOAD_RECEIVER_NAME = 'expo.modules.localdownloader.DownloadActionRecei
 const QUICK_CAPTURE_ACTIVITY_NAME = 'expo.modules.localdownloader.QuickDownloadCaptureActivity';
 const PRIVATE_IMPORT_ACTIVITY_NAME = 'expo.modules.localdownloader.PrivateVaultImportActivity';
 const SOUNDS_IMPORT_ACTIVITY_NAME = 'expo.modules.localdownloader.SoundsImportActivity';
+const BACKUP_DOCUMENT_ACTIVITY_NAME = 'expo.modules.localdownloader.BackupDocumentActivity';
 
 const TAGS = {
   buildscriptRepo: {
@@ -46,6 +47,10 @@ const TAGS = {
   sourceSetConfig: {
     begin: '// @generated begin local-downloader-sourceset-config',
     end: '// @generated end local-downloader-sourceset-config',
+  },
+  packagingConfig: {
+    begin: '// @generated begin local-downloader-packaging',
+    end: '// @generated end local-downloader-packaging',
   },
   abiFilterConfig: {
     begin: '// @generated begin local-downloader-abi-filter-config',
@@ -165,13 +170,19 @@ function addAppGradleChanges(contents) {
   const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "${PYTHON_VERSION}"\n${buildPythonBlock}\n        pip {\n            install("${YT_DLP_PACKAGE}")\n            install("tenacity==9.0.0")\n${impersonationPipBlock}\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
 
   const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
+  // BouncyCastle (Argon2id for backups) and jspecify both ship a multi-release OSGi
+  // manifest at the same path, which AGP's Java-resource merge refuses to resolve on its
+  // own. Neither file is used at runtime; excluding the path is the documented fix.
+  const packagingBlock = `${TAGS.packagingConfig.begin}\nandroid {\n    packaging {\n        resources {\n            excludes += [\n                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",\n                "META-INF/DEPENDENCIES",\n                "META-INF/LICENSE.md",\n                "META-INF/NOTICE.md",\n            ]\n        }\n    }\n}\n${TAGS.packagingConfig.end}`;
+
   const abiFilterBlock = `${TAGS.abiFilterConfig.begin}\nandroid {\n    defaultConfig {\n        ndk {\n            def localDownloaderAbis = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString().split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n            abiFilters(*localDownloaderAbis)\n        }\n    }\n}\n${TAGS.abiFilterConfig.end}`;
 
   next = stripTaggedBlock(next, TAGS.pythonConfig);
   next = stripTaggedBlock(next, TAGS.sourceSetConfig);
   next = stripTaggedBlock(next, TAGS.abiFilterConfig);
+  next = stripTaggedBlock(next, TAGS.packagingConfig);
 
-  next = `${next.trimEnd()}\n\n${pythonBlock}\n\n${sourceSetBlock}\n\n${abiFilterBlock}\n`;
+  next = `${next.trimEnd()}\n\n${pythonBlock}\n\n${sourceSetBlock}\n\n${abiFilterBlock}\n\n${packagingBlock}\n`;
 
   return next;
 }
@@ -252,6 +263,17 @@ function addAndroidManifestChanges(config) {
     });
 
     ensureApplicationEntry(mainApplication, 'activity', SOUNDS_IMPORT_ACTIVITY_NAME, {
+      'android:exported': 'false',
+      'android:excludeFromRecents': 'true',
+      'android:launchMode': 'singleTask',
+      'android:taskAffinity': '',
+      'android:theme': '@android:style/Theme.Translucent.NoTitleBar',
+    });
+
+    // Backup export/import document picker. Same attribute set as the other SAF pickers —
+    // in particular NO android:noHistory, which would finish this activity the moment the
+    // full-screen picker covers it and cancel the pick.
+    ensureApplicationEntry(mainApplication, 'activity', BACKUP_DOCUMENT_ACTIVITY_NAME, {
       'android:exported': 'false',
       'android:excludeFromRecents': 'true',
       'android:launchMode': 'singleTask',

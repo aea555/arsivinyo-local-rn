@@ -123,6 +123,16 @@ verify_generated_files() {
     echo "[verify-local-downloader-prebuild] SoundsImportActivity must exist exactly once in AndroidManifest.xml"
     exit 1
   fi
+  if [[ "$(grep -F 'expo.modules.localdownloader.BackupDocumentActivity' "$ANDROID_MANIFEST" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "[verify-local-downloader-prebuild] BackupDocumentActivity must exist exactly once in AndroidManifest.xml"
+    exit 1
+  fi
+  # A noHistory picker is finished the instant the document UI covers it, which cancels the
+  # pick before the user chooses anything. Guard the whole activity block, not just one line.
+  if awk '/BackupDocumentActivity/,/\/>/' "$ANDROID_MANIFEST" | grep -Fq 'android:noHistory'; then
+    echo "[verify-local-downloader-prebuild] BackupDocumentActivity must not set android:noHistory"
+    exit 1
+  fi
   if grep -Fq 'expo.modules.localdownloader.PrivateVideoPlayerActivity' "$ANDROID_MANIFEST"; then
     echo "[verify-local-downloader-prebuild] PrivateVideoPlayerActivity must not exist in AndroidManifest.xml"
     exit 1

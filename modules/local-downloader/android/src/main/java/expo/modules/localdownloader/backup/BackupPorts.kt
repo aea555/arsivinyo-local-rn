@@ -1,0 +1,397 @@
+package expo.modules.localdownloader.backup
+
+import org.json.JSONObject
+import java.io.InputStream
+import java.io.OutputStream
+
+/**
+ * Narrow views onto the app's stores, so the collectors and restore targets below can be
+ * written — and tested — without a Context, MediaStore or the Keystore.
+ *
+ * `LocalDownloaderModule` implements these against its own private helpers; the fakes in
+ * `BackupPortsTest` implement them against maps.
+ *
+ * **Duplicate detection without a schema change.** None of the stores record content
+ * hashes, and adding a field to every index would be a migration. Instead each port answers
+ * two questions: what plaintext sizes it already holds, and — only when a size collides —
+ * the hash of the specific colliding items. Sizes are cheap everywhere: music files report
+ * theirs directly, and for vault-cipher v4 `plaintextLength` reads it from the stream header
+ * without decrypting the body. Older vault entries cannot answer cheaply, so they report
+ * `null` and are treated as possible collisions, which costs a decrypt only for items that
+ * are genuinely size-ambiguous.
+ */
+object BackupPorts {
+
+  // ------------------------------------------------------------------ vault
+
+  data class VaultRecord(
+    val id: String,
+    val title: String,
+    val mimeType: String,
+    /** The index entry, carried through so a restore can put back tags and folders. */
+    val meta: JSONObject,
+    /** Null when the cipher version cannot report it without decrypting. */
+    val plaintextSize: Long?,
+  )
+
+  interface VaultPort {
+    fun list(): List<VaultRecord>
+
+    /** Decrypt straight into [out]. Never lands plaintext on disk. */
+    fun writePlaintext(record: VaultRecord, out: OutputStream)
+
+    /** SHA-256 of the decrypted content. Only called for size collisions. */
+    fun hashOf(record: VaultRecord): String
+
+    /**
+     * Store a restored video. [staged] holds plaintext; the implementation re-encrypts it
+     * under this device's Keystore-backed key and regenerates the thumbnail from the video
+     * itself — which is why vault thumbnails are never put in a backup.
+     *
+     * @return the new entry id.
+     */
+    fun restore(staged: java.io.File, name: String, mimeType: String, meta: JSONObject): String
+  }
+
+  // ------------------------------------------------------------------ music
+
+  data class MusicRecord(
+    val id: String,
+    val fileName: String,
+    val sizeBytes: Long,
+    val meta: JSONObject,
+    val thumbnailPath: String?,
+  )
+
+  interface MusicPort {
+    fun list(): List<MusicRecord>
+    fun open(record: MusicRecord): InputStream
+    fun openThumbnail(record: MusicRecord): InputStream?
+    fun hashOf(record: MusicRecord): String
+
+    /** Playlists and favourites, as stored in `sounds/index.json`. */
+    fun playlistsJson(): JSONObject
+
+    /** The natively-stored auto-apply preset configuration, if any. */
+    fun autoPresetConfig(): JSONObject?
+
+    /**
+     * Store a restored track. [thumbnail] is the staged cover art, which arrives *before*
+     * the track precisely so it can be passed here — the sounds store only accepts artwork
+     * when a track is registered.
+     */
+    fun restore(
+      staged: java.io.File,
+      name: String,
+      meta: JSONObject,
+      thumbnail: java.io.File?,
+    ): String
+
+    /**
+     * [idMap] maps the song ids recorded in the backup to the ids they were given on this
+     * device. Playlists and favourites are stored as lists of song ids, so without it every
+     * restored playlist would point at ids that do not exist here.
+     *
+     * Safe to apply directly: the blob is the last item in the section, so every track has
+     * already been committed by the time this runs.
+     */
+    fun restorePlaylists(json: JSONObject, idMap: Map<String, String>)
+    fun restoreAutoPresetConfig(json: JSONObject)
+  }
+
+  // ------------------------------------------------------------------ cookies
+
+  data class CookieRecord(
+    val platform: String,
+    val profileName: String,
+    val isDefault: Boolean,
+  )
+
+  interface CookiePort {
+    fun list(): List<CookieRecord>
+
+    /** The decrypted cookie jar. Re-encrypted under this device's key on restore. */
+    fun readPlaintext(record: CookieRecord): ByteArray
+
+    fun restore(platform: String, profileName: String, isDefault: Boolean, plaintext: ByteArray)
+  }
+
+  // ------------------------------------------------------------------ collectors
+
+  fun collectVault(port: VaultPort): List<BackupSections.BackupItem> {
+    val items = mutableListOf<BackupSections.BackupItem>()
+    port.list().forEach { record ->
+      items.add(
+        BackupSections.BackupItem(
+          name = record.title,
+          kind = BackupSections.KIND_MEDIA,
+          size = record.plaintextSize ?: 0L,
+          meta = JSONObject(record.meta.toString()).apply {
+            put("vaultId", record.id)
+            put("mimeType", record.mimeType)
+            // The stored blob is Keystore-encrypted and cannot travel, so these describe
+            // something that no longer applies to what is in the backup.
+            remove("encFileName")
+            remove("cipherVersion")
+            remove("sizeBytesEncrypted")
+          },
+          writePayload = { out -> port.writePlaintext(record, out) },
+        )
+      )
+    }
+    return items
+  }
+
+  fun collectMusic(port: MusicPort): List<BackupSections.BackupItem> {
+    val items = mutableListOf<BackupSections.BackupItem>()
+    port.list().forEach { record ->
+      // Artwork first: the restore side can only attach it while registering the track, so
+      // it has to be staged and waiting by the time the track itself arrives.
+      if (record.thumbnailPath != null) {
+        items.add(
+          BackupSections.BackupItem(
+            name = record.thumbnailPath.substringAfterLast('/'),
+            kind = BackupSections.KIND_THUMBNAIL,
+            size = 0L,
+            meta = JSONObject().apply { put("ownerId", record.id) },
+            writePayload = { out ->
+              port.openThumbnail(record)?.use { BackupContainer.copy(it, out) }
+            },
+          )
+        )
+      }
+      items.add(
+        BackupSections.BackupItem(
+          name = record.fileName,
+          kind = BackupSections.KIND_MEDIA,
+          size = record.sizeBytes,
+          meta = JSONObject(record.meta.toString()).apply { put("songId", record.id) },
+          writePayload = { out -> port.open(record).use { BackupContainer.copy(it, out) } },
+        )
+      )
+    }
+    // Playlists, favourites and the auto-apply config belong with the music they describe,
+    // not with app settings.
+    items.add(BackupSections.blobItem(BackupSections.BLOB_MUSIC_INDEX, port.playlistsJson()))
+    port.autoPresetConfig()?.let {
+      items.add(BackupSections.blobItem(BackupSections.BLOB_AUTO_PRESETS, it))
+    }
+    return items
+  }
+
+  fun collectCookies(port: CookiePort): List<BackupSections.BackupItem> =
+    port.list().map { record ->
+      val plaintext = port.readPlaintext(record)
+      BackupSections.BackupItem(
+        name = "${record.platform}/${record.profileName}",
+        kind = BackupSections.KIND_COOKIE_PROFILE,
+        size = plaintext.size.toLong(),
+        meta = JSONObject().apply {
+          put("platform", record.platform)
+          put("profileName", record.profileName)
+          put("isDefault", record.isDefault)
+        },
+        writePayload = { out -> out.write(plaintext) },
+      )
+    }
+
+  fun collectSettings(settings: JSONObject): List<BackupSections.BackupItem> =
+    listOf(BackupSections.blobItem(BackupSections.BLOB_APP_SETTINGS, settings))
+
+  // ------------------------------------------------------------------ restore targets
+
+  /**
+   * Duplicate index built from whatever sizes a port can report cheaply.
+   *
+   * [unknownSizeCandidates] are items whose size could not be determined without decrypting
+   * them. They are treated as always potentially colliding — the conservative answer, since
+   * reporting "no collision" for them would let a genuine duplicate through.
+   */
+  private class PortDuplicateIndex<T>(
+    private val bySize: Map<Long, List<T>>,
+    private val unknownSizeCandidates: List<T>,
+    private val hashOf: (T) -> String,
+  ) : BackupSections.DuplicateIndex {
+    private val computed = mutableMapOf<Long, Set<String>>()
+    private val unknownHashes: Set<String> by lazy {
+      unknownSizeCandidates.mapNotNull { runCatching { hashOf(it) }.getOrNull() }.toSet()
+    }
+
+    override fun couldCollideAt(size: Long): Boolean =
+      bySize.containsKey(size) || unknownSizeCandidates.isNotEmpty()
+
+    override fun isDuplicate(sha256: String, size: Long): Boolean {
+      if (unknownHashes.contains(sha256)) return true
+      // Hash only the stored items that share this exact size, and remember the result so a
+      // backup holding many same-sized items does not rehash them for each one.
+      val candidates = bySize[size] ?: return false
+      return computed.getOrPut(size) {
+        candidates.mapNotNull { runCatching { hashOf(it) }.getOrNull() }.toSet()
+      }.contains(sha256)
+    }
+  }
+
+  private fun <T> duplicateIndexFor(
+    records: List<T>,
+    sizeOf: (T) -> Long?,
+    hashOf: (T) -> String,
+  ): BackupSections.DuplicateIndex {
+    if (records.isEmpty()) return BackupSections.DuplicateIndex.EMPTY
+    val known = records.filter { sizeOf(it) != null }.groupBy { sizeOf(it)!! }
+    val unknown = records.filter { sizeOf(it) == null }
+    return PortDuplicateIndex(known, unknown, hashOf)
+  }
+
+  /**
+   * Stages a payload before committing it, so an item that turns out to be a duplicate can
+   * be dropped without having been written into the library.
+   */
+  interface Staging {
+    /** A scratch file the payload can be streamed into. */
+    fun newStagingFile(name: String): java.io.File
+  }
+
+  /**
+   * Staged media is written to a scratch file first and only handed to the store once its
+   * content hash is known. Without that, a duplicate would already be in the library by the
+   * time it could be recognised, and undoing it would mean deleting something just written.
+   *
+   * This costs nothing extra: both the vault importer and the sounds store take a *file*
+   * path, so the payload had to land on disk regardless.
+   */
+  private class StagedMedia(val file: java.io.File, val header: BackupFormat.EntryHeader)
+
+  private fun stage(
+    staging: Staging,
+    header: BackupFormat.EntryHeader,
+    payload: InputStream,
+  ): StagedMedia {
+    val file = staging.newStagingFile(header.name)
+    file.outputStream().use { BackupContainer.copy(payload, it) }
+    return StagedMedia(file, header)
+  }
+
+  fun vaultTarget(port: VaultPort, staging: Staging): BackupSections.RestoreTarget =
+    object : BackupSections.RestoreTarget {
+      private val existing by lazy {
+        duplicateIndexFor(port.list(), { it.plaintextSize }, { port.hashOf(it) })
+      }
+
+      override fun duplicates() = existing
+
+      override fun wants(header: BackupFormat.EntryHeader) =
+        header.kind == BackupSections.KIND_MEDIA
+
+      override fun store(header: BackupFormat.EntryHeader, payload: InputStream): Any? =
+        stage(staging, header, payload)
+
+      override fun discard(token: Any?) {
+        (token as? StagedMedia)?.file?.delete()
+      }
+
+      override fun commit(token: Any?, trailer: BackupFormat.EntryTrailer) {
+        val staged = token as? StagedMedia ?: return
+        try {
+          port.restore(
+            staged.file,
+            staged.header.name,
+            staged.header.meta.optString("mimeType").ifBlank { "video/mp4" },
+            staged.header.meta,
+          )
+        } finally {
+          staged.file.delete()
+        }
+      }
+    }
+
+  fun musicTarget(port: MusicPort, staging: Staging): BackupSections.RestoreTarget =
+    object : BackupSections.RestoreTarget {
+      private val existing by lazy {
+        duplicateIndexFor(port.list(), { it.sizeBytes }, { port.hashOf(it) })
+      }
+
+      /**
+       * Cover art staged by the id of the track it belongs to. Artwork is emitted before its
+       * track so it is waiting here when the track arrives — the sounds store only accepts
+       * artwork at registration time, so it cannot be attached afterwards.
+       */
+      private val pendingArt = mutableMapOf<String, java.io.File>()
+
+      /** Backup song id -> the id this device assigned, for remapping playlists. */
+      private val restoredIds = mutableMapOf<String, String>()
+
+      override fun duplicates() = existing
+
+      override fun store(header: BackupFormat.EntryHeader, payload: InputStream): Any? =
+        when (header.kind) {
+          BackupSections.KIND_THUMBNAIL -> {
+            val owner = header.meta.optString("ownerId")
+            if (owner.isNotBlank()) {
+              pendingArt[owner] = stage(staging, header, payload).file
+            }
+            null
+          }
+          BackupSections.KIND_BLOB -> {
+            val json = JSONObject(String(payload.readBytes(), Charsets.UTF_8))
+            when (header.meta.optString("blobId")) {
+              BackupSections.BLOB_MUSIC_INDEX -> port.restorePlaylists(json, restoredIds)
+              BackupSections.BLOB_AUTO_PRESETS -> port.restoreAutoPresetConfig(json)
+            }
+            null
+          }
+          else -> stage(staging, header, payload)
+        }
+
+      override fun discard(token: Any?) {
+        (token as? StagedMedia)?.file?.delete()
+      }
+
+      override fun commit(token: Any?, trailer: BackupFormat.EntryTrailer) {
+        val staged = token as? StagedMedia ?: return
+        val songId = staged.header.meta.optString("songId")
+        val art = pendingArt.remove(songId)
+        try {
+          val newId = port.restore(staged.file, staged.header.name, staged.header.meta, art)
+          if (songId.isNotBlank()) restoredIds[songId] = newId
+        } finally {
+          staged.file.delete()
+          art?.delete()
+        }
+      }
+    }
+
+  fun cookieTarget(port: CookiePort): BackupSections.RestoreTarget =
+    object : BackupSections.RestoreTarget {
+      override fun wants(header: BackupFormat.EntryHeader) =
+        header.kind == BackupSections.KIND_COOKIE_PROFILE
+
+      override fun store(header: BackupFormat.EntryHeader, payload: InputStream): Any? {
+        port.restore(
+          header.meta.optString("platform"),
+          header.meta.optString("profileName"),
+          header.meta.optBoolean("isDefault", false),
+          payload.readBytes(),
+        )
+        return null
+      }
+    }
+
+  /**
+   * Settings live in AsyncStorage on the TS side, so this only captures the blob; the module
+   * hands it back and the TS layer writes it. Keeping AsyncStorage's shape out of Kotlin
+   * means adding a preference never needs a native change.
+   */
+  class SettingsTarget : BackupSections.RestoreTarget {
+    var settings: JSONObject? = null
+      private set
+
+    override fun wants(header: BackupFormat.EntryHeader) =
+      header.kind == BackupSections.KIND_BLOB &&
+        header.meta.optString("blobId") == BackupSections.BLOB_APP_SETTINGS
+
+    override fun store(header: BackupFormat.EntryHeader, payload: InputStream): Any? {
+      settings = JSONObject(String(payload.readBytes(), Charsets.UTF_8))
+      return null
+    }
+  }
+}

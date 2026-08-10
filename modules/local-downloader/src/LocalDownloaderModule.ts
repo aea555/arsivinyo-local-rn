@@ -4,6 +4,11 @@ import type {
   LocalAudioFormat,
   LocalAudioFormatState,
   LocalAudioPresetDiagnostics,
+  LocalBackupCreateInput,
+  LocalBackupCreateResult,
+  LocalBackupPreview,
+  LocalBackupRestoreInput,
+  LocalBackupRestoreResult,
   LocalSoundPresetProgressEvent,
   LocalSoundPresetStartResult,
   LocalCookieProfile,
@@ -105,6 +110,10 @@ type LocalDownloaderNativeModule = {
   setAutoPresetConfig(input: { config: string }): Promise<{ success: boolean }>;
   getAutoPresetConfig(): Promise<{ config: string | null }>;
   getAudioPresetDiagnostics(): Promise<LocalAudioPresetDiagnostics>;
+  getSecureRandomBytes(input: { count: number }): Promise<{ bytes: number[] }>;
+  createBackup(input: LocalBackupCreateInput): Promise<LocalBackupCreateResult>;
+  previewBackup(): Promise<LocalBackupPreview>;
+  restoreBackup(input: LocalBackupRestoreInput): Promise<LocalBackupRestoreResult>;
   listSounds(): Promise<LocalSoundsLibrary>;
   importSounds(): Promise<LocalSoundsImportResult>;
   deleteSounds(input: { ids: string[] }): Promise<{ deletedCount: number }>;
@@ -191,6 +200,10 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       setAutoPresetConfig: async () => unsupported(),
       getAutoPresetConfig: async () => unsupported(),
       getAudioPresetDiagnostics: async () => unsupported(),
+      getSecureRandomBytes: async () => unsupported(),
+      createBackup: async () => unsupported(),
+      previewBackup: async () => unsupported(),
+      restoreBackup: async () => unsupported(),
       listSounds: async () => unsupported(),
       importSounds: async () => unsupported(),
       deleteSounds: async () => unsupported(),

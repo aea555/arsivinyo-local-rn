@@ -186,6 +186,8 @@
         "foldersItemCount": "{{count}} video"
     },
     "settings": {
+        "backup": "Yedekleme ve geri yükleme",
+        "backupHint": "Kasanı, müziğini ve tercihlerini dışa aktar veya geri yükle",
         "title": "Ayarlar",
         "appearance": "Görünüm",
         "backgroundSection": "İndirmeler",
@@ -524,5 +526,82 @@
         "sortTitleDesc": "Başlık Z–A",
         "sortDurationDesc": "Önce en uzun",
         "sortDurationAsc": "Önce en kısa"
+    },
+    "backup": {
+        "title": "Yedekleme ve geri yükleme",
+        "mode": {
+            "export": "Yedek oluştur",
+            "import": "Geri yükle"
+        },
+        "exportBlurb": "Seçtiğin her şeyi tek bir şifreli dosyaya yazar. Nereye kaydedileceğini sen seçersin; hiçbir yere yüklenmez.",
+        "importBlurb": "Var olan bir yedek dosyasını okur. Bu cihazda zaten olanlar atlanır, bu yüzden iki kez geri yüklemek güvenlidir.",
+        "pickFile": "Yedek dosyası seç",
+        "pickAnother": "Başka bir dosya seç",
+        "previewMeta": "{{date}} tarihinde {{version}} sürümüyle oluşturuldu",
+        "sectionsTitle": "Nelerin dahil edileceği",
+        "section": {
+            "vault": "Özel kasa",
+            "music": "Müzik kitaplığı",
+            "settings": "Tercihler",
+            "cookies": "Çerez profilleri"
+        },
+        "sectionHint": {
+            "vault": "Özel kasadaki videolar",
+            "music": "Parçalar, kapak görselleri, çalma listeleri ve ön ayar seçenekleri",
+            "settings": "Tema, indirme konumu ve kayıtlı ön ayarlar",
+            "cookies": "Desteklenen siteler için kayıtlı oturumlar"
+        },
+        "sectionSummary": "{{count}} öğe · {{size}}",
+        "secretTitle": "Şununla koru",
+        "secretTitleImport": "Şununla aç",
+        "kind": {
+            "passphrase": "Parola cümlesi",
+            "password": "Parola"
+        },
+        "passwordPlaceholder": "En az {{min}} karakter",
+        "confirmPlaceholder": "Tekrar yaz",
+        "wordCount": "{{count}} kelime",
+        "generate": "Oluştur",
+        "generatedHint": "Devam etmeden önce bu kelimeleri bir yere yaz.",
+        "generateFailed": "Parola cümlesi oluşturulamadı.",
+        "separator": "Birleştirici",
+        "reveal": "Yazdığımı göster",
+        "hide": "Yazdığımı gizle",
+        "copy": "Kopyala",
+        "copied": "Kopyalandı",
+        "copiedHint": "Kopyalandı. Diğer uygulamalar panoyu okuyabilir; güvenli bir yere yapıştır ve sonra panoyu temizle.",
+        "copyFailed": "Panoya kopyalanamadı.",
+        "strength": {
+            "weak": "Zayıf",
+            "fair": "Orta",
+            "strong": "Güçlü",
+            "excellent": "Mükemmel"
+        },
+        "bits": "yaklaşık {{bits}} bit",
+        "passphraseIgnored": "Bir parola cümlesi de yazdın. Kullanılmıyor — bu yedek yukarıdaki parolayla korunuyor.",
+        "passwordIgnored": "Bir parola da yazdın. Kullanılmıyor — bu yedek yukarıdaki parola cümlesiyle korunuyor.",
+        "noRecovery": "Bu gizli anahtarı unutursan dosyayı kurtarmanın bir yolu yoktur. Başka hiçbir yerde saklanmaz.",
+        "problem": {
+            "tooShort": "En az {{min}} karakter kullan. Uzunluk, sembol veya rakamdan daha önemlidir.",
+            "obvious": "Bu çok kolay tahmin edilir. Daha az yaygın bir şey seç.",
+            "tooFewWords": "En az {{min}} kelime kullan.",
+            "tooManyWords": "En fazla {{max}} kelime kullan.",
+            "blankWord": "Her kelimeyi doldur ya da boş olanları kaldır.",
+            "wordContainsSeparator": "Bir kelime, kelimeleri birleştiren \"{{separator}}\" karakterini içeremez.",
+            "mismatch": "İki giriş birbirini tutmuyor."
+        },
+        "exportAction": "Yedek oluştur",
+        "restoreAction": "Geri yükle",
+        "working": "Çalışıyor…",
+        "cancelled": "İptal edildi.",
+        "exportDone": "Yedek yazıldı. {{count}} öğe dahil edildi.",
+        "exportFailed": "Yedek yazılamadı. {{message}}",
+        "previewFailed": "Bu dosya okunamadı. {{message}}",
+        "wrongSecret": "Bu dosya için doğru gizli anahtar değil.",
+        "restoreDone": "Geri yükleme bitti.",
+        "restoreFailed": "Geri yükleme tamamlanamadı. {{message}}",
+        "restoreReport": "{{restored}} eklendi · {{duplicates}} zaten vardı · {{failed}} başarısız",
+        "confirmRestoreTitle": "Bu yedekten geri yüklensin mi?",
+        "confirmRestoreMessage": "Zaten sahip olduğun öğeler atlanır. Yeni olan her şey kitaplığına eklenir."
     }
 }

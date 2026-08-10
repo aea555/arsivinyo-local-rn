@@ -528,6 +528,10 @@ export default function SettingsScreen() {
     router.push('/diagnostics' as never);
   }, [router]);
 
+  const openBackup = useCallback(() => {
+    router.push('/backup');
+  }, [router]);
+
   const openRecentFailures = useCallback(() => {
     router.push('/recent-failures' as never);
   }, [router]);
@@ -803,6 +807,12 @@ export default function SettingsScreen() {
               onPress={handleYtDlpUpdate}
               rightElement={ytDlpUpdating ? <ActivityIndicator size="small" color={colors.accent} /> : undefined}
               showArrow={!ytDlpUpdateDisabled}
+            />
+            <SettingsItem
+              icon="archive-outline"
+              title={t('settings.backup')}
+              subtitle={t('settings.backupHint')}
+              onPress={openBackup}
             />
             <SettingsItem
               icon="warning-outline"

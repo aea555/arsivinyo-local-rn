@@ -545,3 +545,87 @@ export interface LocalImpersonationSelfTestResult {
   wheel_version?: string | null;
   build_abi_coverage?: string[];
 }
+
+/** The sections a backup can hold. Wire values shared with `BackupFormat.kt`. */
+export type LocalBackupSectionId = 'vault' | 'music' | 'settings' | 'cookies';
+
+export type LocalBackupSecretKind = 'password' | 'passphrase';
+
+/** One secret and the key slot it opens. A single entry protects the whole file. */
+export interface LocalBackupSecret {
+  slotId: string;
+  secret: string;
+  kind: LocalBackupSecretKind;
+}
+
+export interface LocalBackupSectionSummary {
+  id: LocalBackupSectionId;
+  keySlot?: string;
+  itemCount: number;
+  plaintextBytes: number;
+}
+
+export interface LocalBackupCreateInput {
+  sections: LocalBackupSectionId[];
+  secrets: LocalBackupSecret[];
+  /** Serialised AsyncStorage blob. Native never inspects its shape. */
+  settings?: string;
+  suggestedName?: string;
+  /** Section id -> key slot, for per-section secrets. Defaults to one shared slot. */
+  sectionSlots?: Record<string, string>;
+}
+
+export interface LocalBackupCreateResult {
+  success: boolean;
+  uri?: string;
+  sections?: LocalBackupSectionSummary[];
+  code?: string;
+  message?: string;
+}
+
+/**
+ * What the plaintext header says a backup holds. Readable without any secret, which is what
+ * lets the import screen describe a file before asking for one.
+ */
+export interface LocalBackupPreview {
+  success: boolean;
+  uri?: string;
+  createdAt?: number;
+  appVersion?: string;
+  appVersionCode?: number;
+  sections?: LocalBackupSectionSummary[];
+  keySlots?: { id: string; secretKind: LocalBackupSecretKind }[];
+  code?: string;
+  message?: string;
+}
+
+export type LocalBackupItemOutcome =
+  | 'RESTORED'
+  | 'SKIPPED_DUPLICATE'
+  | 'SKIPPED_UNWANTED'
+  | 'FAILED';
+
+export interface LocalBackupItemResult {
+  section: LocalBackupSectionId;
+  name: string;
+  outcome: LocalBackupItemOutcome;
+  error?: string | null;
+}
+
+export interface LocalBackupRestoreInput {
+  uri: string;
+  sections: LocalBackupSectionId[];
+  secrets: LocalBackupSecret[];
+}
+
+export interface LocalBackupRestoreResult {
+  success: boolean;
+  /** Returned for the TS layer to write back into AsyncStorage. */
+  settings?: string | null;
+  restored?: number;
+  skippedDuplicates?: number;
+  failed?: number;
+  items?: LocalBackupItemResult[];
+  code?: string;
+  message?: string;
+}

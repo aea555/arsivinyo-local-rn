@@ -31,7 +31,6 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.localdownloader.audio.AudioPresetRenderer
 import expo.modules.localdownloader.sounds.SoundsStore
 import expo.modules.localdownloader.vault.ThumbnailGenerator
-import expo.modules.localdownloader.vault.VaultCipherV4
 import expo.modules.localdownloader.vault.VaultLoopbackProvider
 import expo.modules.localdownloader.vault.VaultLoopbackServer
 import expo.modules.localdownloader.vault.VaultMigrator
@@ -52,13 +51,23 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
+import android.provider.DocumentsContract
+import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.security.MessageDigest
+import expo.modules.localdownloader.backup.BackupContainer
+import expo.modules.localdownloader.backup.BackupCrypto
+import expo.modules.localdownloader.backup.BackupFormat
+import expo.modules.localdownloader.backup.BackupPorts
+import expo.modules.localdownloader.backup.BackupSecretException
+import expo.modules.localdownloader.backup.BackupSections
+import expo.modules.localdownloader.vault.VaultCipherV4
 import java.security.KeyStore
 import java.security.SecureRandom
 import java.time.Instant
@@ -629,6 +638,264 @@ class LocalDownloaderModule : Module() {
      * TypeScript serialises its preset definitions into this blob; native only replays
      * them. Kept on this side because a download can complete with no JS running.
      */
+    /**
+     * Write a `.avsbck` backup to a location the user picks.
+     *
+     * `secrets` is a list of `{ slotId, secret, kind }`. One entry means a single passphrase
+     * protects the whole file; several entries give a section its own. `settings` is the
+     * TypeScript layer's AsyncStorage blob — the shape of it is deliberately unknown here,
+     * so adding a preference never needs a native change.
+     *
+     * Argon2id runs once per slot and takes around a second, so this must not be called on
+     * the main thread; `AsyncFunction` already guarantees that.
+     */
+    AsyncFunction("createBackup") { input: Map<String, Any?> ->
+      val context = requireNotNull(appContext.reactContext)
+      @Suppress("UNCHECKED_CAST")
+      val wanted = (input["sections"] as? List<String>)?.toSet()
+        ?: BackupFormat.ALL_SECTIONS.toSet()
+      val secrets = backupSecretsFrom(input["secrets"])
+      if (secrets.isEmpty()) {
+        return@AsyncFunction mapOf("success" to false, "code" to "BACKUP_NO_SECRET")
+      }
+
+      val picked = pickBackupDocument(
+        BackupDocumentActivity.MODE_CREATE,
+        (input["suggestedName"] as? String)?.trim()?.ifBlank { null }
+          ?: defaultBackupFileName(),
+      )
+      val uri = picked.uri
+        ?: return@AsyncFunction mapOf(
+          "success" to false,
+          "code" to (picked.code ?: BackupDocumentActivity.CODE_CANCELLED),
+        )
+
+      val settingsBlob = (input["settings"] as? String)?.takeIf { it.isNotBlank() }
+      val slotFor = { section: String ->
+        (input["sectionSlots"] as? Map<*, *>)?.get(section) as? String
+          ?: BackupFormat.DEFAULT_KEY_SLOT
+      }
+
+      val sections = mutableListOf<BackupContainer.PlannedSection>()
+      if (wanted.contains(BackupFormat.SECTION_VAULT)) {
+        sections.add(
+          BackupSections.plan(
+            BackupFormat.SECTION_VAULT,
+            BackupPorts.collectVault(backupVaultPort()),
+            slotFor(BackupFormat.SECTION_VAULT),
+          )
+        )
+      }
+      if (wanted.contains(BackupFormat.SECTION_MUSIC) && soundsStore.isSupported()) {
+        sections.add(
+          BackupSections.plan(
+            BackupFormat.SECTION_MUSIC,
+            BackupPorts.collectMusic(backupMusicPort()),
+            slotFor(BackupFormat.SECTION_MUSIC),
+          )
+        )
+      }
+      if (wanted.contains(BackupFormat.SECTION_SETTINGS) && settingsBlob != null) {
+        sections.add(
+          BackupSections.plan(
+            BackupFormat.SECTION_SETTINGS,
+            BackupPorts.collectSettings(JSONObject(settingsBlob)),
+            slotFor(BackupFormat.SECTION_SETTINGS),
+          )
+        )
+      }
+      if (wanted.contains(BackupFormat.SECTION_COOKIES)) {
+        sections.add(
+          BackupSections.plan(
+            BackupFormat.SECTION_COOKIES,
+            BackupPorts.collectCookies(backupCookiePort()),
+            slotFor(BackupFormat.SECTION_COOKIES),
+          )
+        )
+      }
+
+      try {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        context.contentResolver.openOutputStream(Uri.parse(uri))?.use { raw ->
+          BufferedOutputStream(raw, PRIVATE_STREAM_BUFFER_BYTES).use { out ->
+            BackupContainer.write(
+              output = out,
+              secrets = secrets,
+              sections = sections,
+              appVersion = info.versionName ?: "",
+              appVersionCode = info.longVersionCode.toInt(),
+              createdAt = System.currentTimeMillis(),
+            )
+          }
+        } ?: throw IllegalStateException("BACKUP_WRITE_FAILED")
+
+        mapOf(
+          "success" to true,
+          "uri" to uri,
+          "sections" to sections.map {
+            mapOf("id" to it.id, "itemCount" to it.itemCount, "plaintextBytes" to it.plaintextBytes)
+          },
+        )
+      } catch (error: Throwable) {
+        // A half-written backup is worse than none — it looks restorable and is not.
+        runCatching { DocumentsContract.deleteDocument(context.contentResolver, Uri.parse(uri)) }
+        val message = error.message ?: "BACKUP_WRITE_FAILED"
+        Log.e(tag, "Backup export failed: ${error.javaClass.simpleName}: $message", error)
+        addError("BACKUP_EXPORT_FAILED: ${error.javaClass.simpleName}: $message")
+        mapOf("success" to false, "code" to "BACKUP_WRITE_FAILED", "message" to message)
+      } finally {
+        secrets.forEach { BackupCrypto.wipe(it.secret) }
+      }
+    }
+
+    /**
+     * Let the user pick a backup and read only its plaintext header.
+     *
+     * No secret is involved: the header states what the file holds and what kind of secret
+     * each slot expects, which is what the import screen needs before it can ask for one.
+     */
+    AsyncFunction("previewBackup") {
+      val context = requireNotNull(appContext.reactContext)
+      val picked = pickBackupDocument(BackupDocumentActivity.MODE_OPEN, null)
+      val uri = picked.uri
+        ?: return@AsyncFunction mapOf(
+          "success" to false,
+          "code" to (picked.code ?: BackupDocumentActivity.CODE_CANCELLED),
+        )
+
+      try {
+        val header = context.contentResolver.openInputStream(Uri.parse(uri))?.use {
+          BackupContainer.peek(BufferedInputStream(it, PRIVATE_STREAM_BUFFER_BYTES))
+        } ?: throw IllegalStateException("BACKUP_READ_FAILED")
+
+        mapOf(
+          "success" to true,
+          "uri" to uri,
+          "createdAt" to header.createdAt,
+          "appVersion" to header.appVersion,
+          "appVersionCode" to header.appVersionCode,
+          "sections" to header.sections.map {
+            mapOf(
+              "id" to it.id,
+              "keySlot" to it.keySlot,
+              "itemCount" to it.itemCount,
+              "plaintextBytes" to it.plaintextBytes,
+            )
+          },
+          "keySlots" to header.keySlots.map {
+            mapOf("id" to it.id, "secretKind" to it.secretKind)
+          },
+        )
+      } catch (error: Throwable) {
+        mapOf(
+          "success" to false,
+          "code" to "BACKUP_READ_FAILED",
+          "message" to (error.message ?: "BACKUP_READ_FAILED"),
+        )
+      }
+    }
+
+    /**
+     * Restore from a previewed backup.
+     *
+     * Import is incremental: an item that cannot be written is reported and the rest carry
+     * on, so one bad file never abandons a restore. Settings come back in the result for the
+     * TypeScript layer to write into AsyncStorage — nothing here knows their shape.
+     */
+    AsyncFunction("restoreBackup") { input: Map<String, Any?> ->
+      val context = requireNotNull(appContext.reactContext)
+      val uri = (input["uri"] as? String)?.trim().orEmpty()
+      if (uri.isBlank()) {
+        return@AsyncFunction mapOf("success" to false, "code" to "BACKUP_NO_FILE")
+      }
+      @Suppress("UNCHECKED_CAST")
+      val wanted = (input["sections"] as? List<String>)?.toSet()
+        ?: BackupFormat.ALL_SECTIONS.toSet()
+      val secrets = backupSecretsFrom(input["secrets"])
+      if (secrets.isEmpty()) {
+        return@AsyncFunction mapOf("success" to false, "code" to "BACKUP_NO_SECRET")
+      }
+
+      clearBackupStaging()
+      val staging = backupStaging()
+      val settingsTarget = BackupPorts.SettingsTarget()
+      val targets = mapOf(
+        BackupFormat.SECTION_VAULT to BackupPorts.vaultTarget(backupVaultPort(), staging),
+        BackupFormat.SECTION_MUSIC to BackupPorts.musicTarget(backupMusicPort(), staging),
+        BackupFormat.SECTION_SETTINGS to settingsTarget,
+        BackupFormat.SECTION_COOKIES to BackupPorts.cookieTarget(backupCookiePort()),
+      )
+      val results = mutableListOf<BackupSections.ItemResult>()
+
+      try {
+        context.contentResolver.openInputStream(Uri.parse(uri))?.use { raw ->
+          val stream = BufferedInputStream(raw, PRIVATE_STREAM_BUFFER_BYTES)
+          val header = BackupContainer.peek(stream)
+          val restorable = wanted.filter { targets.containsKey(it) }.toSet()
+          BackupContainer.read(stream, header, secrets, restorable) { entry ->
+            val target = targets[entry.sectionId]
+            if (target != null) {
+              results.add(BackupSections.restoreEntry(entry, target))
+            }
+          }
+        } ?: throw IllegalStateException("BACKUP_READ_FAILED")
+
+        mapOf(
+          "success" to true,
+          "settings" to settingsTarget.settings?.toString(),
+          "restored" to results.count { it.outcome == BackupSections.ItemOutcome.RESTORED },
+          "skippedDuplicates" to
+            results.count { it.outcome == BackupSections.ItemOutcome.SKIPPED_DUPLICATE },
+          "failed" to results.count { it.outcome == BackupSections.ItemOutcome.FAILED },
+          "items" to results.map {
+            mapOf(
+              "section" to it.sectionId,
+              "name" to it.name,
+              "outcome" to it.outcome.name,
+              "error" to it.error,
+            )
+          },
+        )
+      } catch (error: BackupSecretException) {
+        mapOf(
+          "success" to false,
+          "code" to "BACKUP_WRONG_SECRET",
+          "message" to (error.message ?: "BACKUP_WRONG_SECRET"),
+        )
+      } catch (error: Throwable) {
+        val message = error.message ?: "BACKUP_READ_FAILED"
+        Log.e(tag, "Backup restore failed: ${error.javaClass.simpleName}: $message", error)
+        addError("BACKUP_RESTORE_FAILED: ${error.javaClass.simpleName}: $message")
+        mapOf(
+          "success" to false,
+          "code" to "BACKUP_READ_FAILED",
+          "message" to message,
+          // Whatever landed before the failure stays landed; the report says what that was.
+          "items" to results.map {
+            mapOf("section" to it.sectionId, "name" to it.name, "outcome" to it.outcome.name)
+          },
+        )
+      } finally {
+        secrets.forEach { BackupCrypto.wipe(it.secret) }
+        clearBackupStaging()
+      }
+    }
+
+    /**
+     * Bytes from the platform CSPRNG, for generating a backup passphrase.
+     *
+     * Lives here because there is no `crypto.getRandomValues` in this runtime and no
+     * crypto dependency on the JS side. `Math.random` is not an option: a passphrase drawn
+     * from it is only as unguessable as its seed, which would quietly undo the point of
+     * generating one.
+     */
+    AsyncFunction("getSecureRandomBytes") { input: Map<String, Any?> ->
+      val count = ((input["count"] as? Number)?.toInt() ?: 0).coerceIn(0, 4096)
+      val bytes = ByteArray(count).also { java.security.SecureRandom().nextBytes(it) }
+      // Unsigned, so the JS side does not have to undo Kotlin's signed bytes.
+      mapOf("bytes" to bytes.map { it.toInt() and 0xFF })
+    }
+
     AsyncFunction("setAutoPresetConfig") { input: Map<String, Any?> ->
       val context = requireNotNull(appContext.reactContext)
       val json = (input["config"] as? String).orEmpty()
@@ -2401,6 +2668,314 @@ class LocalDownloaderModule : Module() {
    * definitions still live in TypeScript; it serialises them here, and this side only
    * replays what it was given.
    */
+  // ==================================================================== backup ports
+  //
+  // Concrete implementations of the interfaces in `backup/BackupPorts.kt`. They live here
+  // rather than in that package because every one of them needs private helpers of this
+  // class — vault decryption, the Keystore-backed cookie cipher, the sounds store. The
+  // logic they feed (collectors, duplicate policy, id remapping) is all in `backup/` and is
+  // covered by JVM tests against fakes; these adapters only translate.
+
+  private fun backupStaging(): BackupPorts.Staging = object : BackupPorts.Staging {
+    override fun newStagingFile(name: String): File {
+      val dir = File(requireNotNull(appContext.reactContext).cacheDir, BACKUP_STAGING_DIRNAME)
+        .apply { mkdirs() }
+      return File(dir, "${UUID.randomUUID()}.part")
+    }
+  }
+
+  /** Delete anything a previous run left behind — a crash mid-restore strands scratch files. */
+  private fun clearBackupStaging() {
+    val dir = File(requireNotNull(appContext.reactContext).cacheDir, BACKUP_STAGING_DIRNAME)
+    runCatching { dir.listFiles()?.forEach { it.delete() } }
+  }
+
+  private fun backupVaultPort(): BackupPorts.VaultPort = object : BackupPorts.VaultPort {
+    override fun list(): List<BackupPorts.VaultRecord> = synchronized(privateVaultLock) {
+      val index = readPrivateVaultIndex()
+      val items = index.optJSONArray("items") ?: JSONArray()
+      (0 until items.length()).mapNotNull { i ->
+        val json = items.optJSONObject(i) ?: return@mapNotNull null
+        val entry = privateVideoEntryFromJson(json) ?: return@mapNotNull null
+        BackupPorts.VaultRecord(
+          id = entry.id,
+          title = entry.title,
+          mimeType = entry.mimeType,
+          meta = json,
+          plaintextSize = vaultPlaintextSize(entry),
+        )
+      }
+    }
+
+    override fun writePlaintext(record: BackupPorts.VaultRecord, out: OutputStream) {
+      val entry = findPrivateVideoById(record.id)
+        ?: throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND")
+      val encrypted = File(privateVaultObjectsDir(create = true), entry.encFileName)
+      if (!encrypted.exists()) throw IllegalStateException("PRIVATE_VIDEO_NOT_FOUND")
+      decryptPrivateVaultFileToOutput(
+        source = encrypted,
+        output = out,
+        effectiveVersion = detectPrivateCipherVersion(encrypted, entry.cipherVersion),
+        traceId = "backup",
+        entryId = entry.id,
+      )
+    }
+
+    override fun hashOf(record: BackupPorts.VaultRecord): String {
+      // Only reached when a plaintext size collides, so the decrypt cost is bounded to
+      // genuinely ambiguous entries.
+      val digest = MessageDigest.getInstance("SHA-256")
+      val sink = object : OutputStream() {
+        override fun write(b: Int) = digest.update(b.toByte())
+        override fun write(b: ByteArray, off: Int, len: Int) = digest.update(b, off, len)
+      }
+      writePlaintext(record, sink)
+      return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    override fun restore(
+      staged: File,
+      name: String,
+      mimeType: String,
+      meta: JSONObject,
+    ): String = importFileToPrivateVault(
+      sourceFilePath = staged.absolutePath,
+      filename = sanitizePrivateTitle(name),
+      sourceUrl = meta.optString("sourceUrl").ifBlank { "backup://restore" },
+      mimeType = mimeType.ifBlank { "video/mp4" },
+    ).id
+  }
+
+  /**
+   * Plaintext size without decrypting the body. Cipher v4 records it in the stream header,
+   * which Tink can read from a seekable channel; older versions cannot answer cheaply and
+   * report null, which the duplicate index treats as "might collide".
+   */
+  private fun vaultPlaintextSize(entry: PrivateVideoEntry): Long? {
+    if (entry.cipherVersion != PRIVATE_STORE_VERSION_V4) return null
+    val encrypted = File(privateVaultObjectsDir(create = false), entry.encFileName)
+    if (!encrypted.exists()) return null
+    return runCatching {
+      VaultCipherV4.plaintextLength(encrypted, entry.id, getOrCreateVaultDekV4())
+    }.getOrNull()
+  }
+
+  private fun backupMusicPort(): BackupPorts.MusicPort = object : BackupPorts.MusicPort {
+    private fun songs(): List<Map<String, Any?>> {
+      @Suppress("UNCHECKED_CAST")
+      return (soundsStore.listLibrary()["songs"] as? List<Map<String, Any?>>).orEmpty()
+    }
+
+    override fun list(): List<BackupPorts.MusicRecord> = songs().map { song ->
+      BackupPorts.MusicRecord(
+        id = song["id"] as? String ?: "",
+        fileName = song["fileName"] as? String ?: "",
+        sizeBytes = (song["sizeBytes"] as? Number)?.toLong() ?: 0L,
+        meta = JSONObject().apply {
+          put("title", song["title"] as? String)
+          put("artist", song["artist"] as? String)
+          put("durationSec", (song["durationSec"] as? Number)?.toDouble() ?: 0.0)
+          put("presetId", song["presetId"] as? String)
+          put("sourceSongId", song["sourceSongId"] as? String)
+          put("createdAt", (song["createdAt"] as? Number)?.toLong() ?: 0L)
+        },
+        thumbnailPath = song["thumbnailPath"] as? String,
+      )
+    }
+
+    override fun open(record: BackupPorts.MusicRecord): InputStream {
+      val song = songs().firstOrNull { it["id"] == record.id }
+        ?: throw IllegalStateException("SOUND_NOT_FOUND")
+      val uri = (song["contentUri"] as? String)?.takeIf { it.isNotBlank() }
+        ?: throw IllegalStateException("SOUND_NOT_FOUND")
+      return requireNotNull(appContext.reactContext).contentResolver
+        .openInputStream(Uri.parse(uri))
+        ?: throw IllegalStateException("SOUND_NOT_READABLE")
+    }
+
+    override fun openThumbnail(record: BackupPorts.MusicRecord): InputStream? =
+      record.thumbnailPath
+        ?.let { File(it) }
+        ?.takeIf { it.exists() }
+        ?.inputStream()
+
+    override fun hashOf(record: BackupPorts.MusicRecord): String =
+      open(record).use { BackupContainer.sha256(it) }
+
+    override fun playlistsJson(): JSONObject {
+      @Suppress("UNCHECKED_CAST")
+      val playlists = (soundsStore.listLibrary()["playlists"] as? List<Map<String, Any?>>).orEmpty()
+      val array = JSONArray()
+      playlists.forEach { playlist ->
+        @Suppress("UNCHECKED_CAST")
+        val songIds = (playlist["songIds"] as? List<String>).orEmpty()
+        array.put(
+          JSONObject().apply {
+            put("id", playlist["id"] as? String)
+            put("name", playlist["name"] as? String)
+            put("system", playlist["system"] as? Boolean ?: false)
+            put("songIds", JSONArray().also { ids -> songIds.forEach(ids::put) })
+          }
+        )
+      }
+      return JSONObject().apply { put("playlists", array) }
+    }
+
+    override fun autoPresetConfig(): JSONObject? = readAutoPresetConfig()
+
+    override fun restore(
+      staged: File,
+      name: String,
+      meta: JSONObject,
+      thumbnail: File?,
+    ): String {
+      val song = soundsStore.registerDownloadedSound(
+        sourceFilePath = staged.absolutePath,
+        displayName = name,
+        sourceUrl = null,
+        thumbnailPath = thumbnail?.absolutePath,
+      )
+      return song["id"] as? String ?: ""
+    }
+
+    override fun restorePlaylists(json: JSONObject, idMap: Map<String, String>) {
+      val playlists = json.optJSONArray("playlists") ?: return
+      for (i in 0 until playlists.length()) {
+        val playlist = playlists.optJSONObject(i) ?: continue
+        val name = playlist.optString("name").trim()
+        val backedUpIds = playlist.optJSONArray("songIds") ?: JSONArray()
+        // Songs skipped as duplicates have no mapping, so they simply drop out of the
+        // playlist rather than leaving an id that points at nothing.
+        val mapped = (0 until backedUpIds.length())
+          .mapNotNull { idMap[backedUpIds.optString(it)] }
+        if (mapped.isEmpty()) continue
+
+        if (playlist.optBoolean("system", false) ||
+          playlist.optString("id") == SoundsStore.FAVORITES_PLAYLIST_ID
+        ) {
+          // Favourites is a reserved playlist that always exists; it is populated by
+          // toggling membership rather than by being recreated.
+          runCatching { soundsStore.setSoundsFavorite(mapped, true) }
+          continue
+        }
+        if (name.isBlank()) continue
+        runCatching {
+          val created = soundsStore.createPlaylist(name)
+          val newId = created["id"] as? String ?: return@runCatching
+          soundsStore.setPlaylistSongs(newId, mapped)
+        }
+      }
+    }
+
+    override fun restoreAutoPresetConfig(json: JSONObject) {
+      requireNotNull(appContext.reactContext)
+        .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_AUTO_PRESETS, json.toString())
+        .apply()
+    }
+  }
+
+  private fun backupCookiePort(): BackupPorts.CookiePort = object : BackupPorts.CookiePort {
+    override fun list(): List<BackupPorts.CookieRecord> = SUPPORTED_PLATFORMS.flatMap { platform ->
+      val dir = secureCookiePlatformDir(platform, create = false)
+      if (!dir.exists()) return@flatMap emptyList()
+      val default = readDefaultProfile(dir)
+      dir.listFiles()
+        ?.filter { it.isFile && it.extension == "enc" }
+        ?.map {
+          BackupPorts.CookieRecord(
+            platform = platform,
+            profileName = it.nameWithoutExtension,
+            isDefault = it.nameWithoutExtension == default,
+          )
+        }
+        .orEmpty()
+    }
+
+    override fun readPlaintext(record: BackupPorts.CookieRecord): ByteArray {
+      val file = File(
+        secureCookiePlatformDir(record.platform, create = false),
+        "${record.profileName}.enc"
+      )
+      // Decrypted here and re-encrypted into the backup under the user's passphrase. The
+      // stored form is bound to this device's Keystore key and would be unreadable anywhere
+      // else — including on this phone after a reinstall.
+      return decryptCookieBytes(file.readBytes())
+    }
+
+    override fun restore(
+      platform: String,
+      profileName: String,
+      isDefault: Boolean,
+      plaintext: ByteArray,
+    ) {
+      val normalized = platform.trim().lowercase()
+      if (!SUPPORTED_PLATFORMS.contains(normalized) || profileName.isBlank()) return
+      val dir = secureCookiePlatformDir(normalized, create = true)
+      File(dir, "${profileName}.enc").writeBytes(encryptCookieBytes(plaintext))
+      if (isDefault) {
+        writeDefaultProfile(dir, profileName)
+      }
+    }
+  }
+
+  /**
+   * Launch the SAF picker and block until it answers, mirroring the sounds/vault importers.
+   * The latch timeout is the safety net for a picker that never returns a result.
+   */
+  private fun pickBackupDocument(mode: String, suggestedName: String?): BackupDocumentActivity.Result {
+    val context = appContext.reactContext
+      ?: return BackupDocumentActivity.Result(code = BackupDocumentActivity.CODE_FAILED)
+
+    val resultRef = AtomicReference<BackupDocumentActivity.Result?>()
+    val latch = CountDownLatch(1)
+    val launched = BackupDocumentActivity.launch(context, mode, suggestedName) { result ->
+      resultRef.set(result)
+      latch.countDown()
+    }
+    if (!launched) {
+      return BackupDocumentActivity.Result(code = BackupDocumentActivity.CODE_FAILED)
+    }
+    val completed = runCatching {
+      latch.await(PRIVATE_IMPORT_PICK_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    }.getOrDefault(false)
+    if (!completed) {
+      BackupDocumentActivity.cancelPendingWith(BackupDocumentActivity.CODE_CANCELLED)
+      return BackupDocumentActivity.Result(code = BackupDocumentActivity.CODE_CANCELLED)
+    }
+    return resultRef.get()
+      ?: BackupDocumentActivity.Result(code = BackupDocumentActivity.CODE_FAILED)
+  }
+
+  /**
+   * Convert the JS `secrets` payload into slot secrets.
+   *
+   * The secret is copied into a CharArray so the caller can wipe it after use; the String
+   * that arrived from JS still lingers until GC, which is unavoidable across the bridge.
+   */
+  private fun backupSecretsFrom(raw: Any?): List<BackupContainer.SlotSecret> {
+    val list = raw as? List<*> ?: return emptyList()
+    return list.mapNotNull { item ->
+      val map = item as? Map<*, *> ?: return@mapNotNull null
+      val secret = (map["secret"] as? String)?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+      BackupContainer.SlotSecret(
+        slotId = (map["slotId"] as? String)?.takeIf { it.isNotBlank() }
+          ?: BackupFormat.DEFAULT_KEY_SLOT,
+        secret = secret.toCharArray(),
+        secretKind = (map["kind"] as? String)?.takeIf { it.isNotBlank() }
+          ?: BackupFormat.SECRET_KIND_PASSPHRASE,
+      )
+    }
+  }
+
+  /** `arsivinyo-backup-2026-08-11.avsbck` — dated so successive exports do not collide. */
+  private fun defaultBackupFileName(): String {
+    val stamp = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+      .format(java.util.Date())
+    return "arsivinyo-backup-$stamp.${BackupFormat.FILE_EXTENSION}"
+  }
+
   private fun readAutoPresetConfig(): JSONObject? {
     val context = appContext.reactContext ?: return null
     val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -7532,6 +8107,9 @@ class LocalDownloaderModule : Module() {
     private const val PRIVATE_PLAYBACK_CACHE_DIRNAME = "private_playback"
     private const val PRIVATE_EXPORT_CACHE_DIRNAME = "private_export"
     private const val PRIVATE_IMPORT_CACHE_DIRNAME = "private_import"
+    // Scratch space for restores. Lives in cacheDir so the OS can reclaim it if a
+    // crash strands anything; the importer also clears it either side of a run.
+    private const val BACKUP_STAGING_DIRNAME = "backup_staging"
     private const val PRIVATE_VAULT_FEATURE_FLAG = true
     private const val PRIVATE_STREAM_BUFFER_BYTES = 1024 * 1024
     private const val PRIVATE_LOG_PROGRESS_STEP_BYTES = 25L * 1024L * 1024L
