@@ -4,6 +4,35 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+## [2.4.0-beta.1] — Audio presets (native C++ DSP)
+
+Apply Slowed + Reverb, Nightcore or Bass Boost to any track, and download audio losslessly. `versionCode` → `20400`.
+
+### Added
+- **Audio presets, rendered by a native C++ DSP module.** A new `libaudiopresets.so` owns the signal processing: a fractional resampler for the rate control, a Schroeder-Moorer reverb, RBJ shelving EQ, and a lookahead limiter. The bundled FFmpeg is used only for container and codec work — it decodes to raw float on a pipe, the DSP processes it, and a second FFmpeg encodes the result. The rate control resamples without pitch correction, so tempo and pitch move together; that is what makes "slowed" sound slowed rather than time-stretched.
+- **Three built-in presets** — Slowed + Reverb, Nightcore, Bass Boost — plus **user-created presets** with a name and eleven sliders. Built-ins can be adjusted and restored to their shipped values; user presets can be renamed, changed and deleted. Every destructive action confirms first.
+- **Apply to one track or many.** Long-press to select, then the wand button. A single track is just a batch of one, so both use the same path.
+- **Auto-applied presets on download.** Choose in Settings what an audio download produces: the original, and/or one track per selected preset. One download can therefore create several library entries. At least one option must stay selected.
+- **Batch renders survive the app being stopped.** The queue is written to disk after every job and the foreground service is held for the duration, so a swipe from recents — or a real process death — does not lose the remaining work.
+- **Track metadata**, in a sheet from the library (single selection only) and as a section below the player controls. Shows format, quality tier, duration, size, date, and file name; a rendered track also names its preset and its source track.
+- **A badge on rendered tracks**, read from the recorded `presetId` rather than the title, so it survives a rename.
+
+### Changed
+- **Audio downloads are now 16-bit FLAC with TPDF dither** instead of M4A/AAC 256k, with a **"Lossless downloads"** setting to switch back. Every source is already lossy, so encoding to AAC again stacked a second generation of loss for no benefit; FLAC keeps exactly what the decoder produced at roughly 3x the size. Sample rate is no longer pinned — a 48 kHz source stays at 48 kHz rather than being resampled to 44.1 kHz.
+- **A preset render matches the quality tier of its source.** A lossless source gives FLAC; a lossy source gives AAC at 320k, above the downloader's 256k because that render is a second generation. FLAC recovers nothing a lossy encoder discarded, so inflating an already-lossy track would triple its size for no gain.
+- The music library shows each track's format, with lossless called out in the accent colour.
+- `ConfirmModal` moved into `src/components` and is now shared by the library and settings.
+
+### Fixed
+- Chaquopy could not build on a host whose default Python is 3.13 or newer: its bundled pip imports the `cgi` module, which Python removed. The plugin now finds a suitable interpreter for pip, independently of the Python the app targets.
+- Sheets did not scroll and their sliders did not respond to a drag, because a `Pressable` ancestor took the touch responder. Affects every sheet, not only the preset editor.
+- The dim layer behind a sheet did not cover the screen once the keyboard opened.
+
+### Internal
+- 82 host checks for the C++ DSP and render pipeline (`npm run test:dsp`), and 30 for the preset rules (`npm run test:presets`). One test compares the parameter ranges against the clamps in `preset_params.cpp`, where a mismatch would otherwise silently disable a slider's range.
+- The Python tests no longer report success when the module fails to import — that previously hid a real defect behind `OK (skipped=N)`.
+- The local changes that make ffmpeg-kit build the `ffmpeg`/`ffprobe` executables are saved as a patch in `modules/local-downloader/ffmpeg-build/`, with the upstream tag and commit recorded. The binaries themselves stay out of the repository.
+
 ## [2.3.0-beta.1] — Audio downloads + in-app music player
 
 Audio downloads and a full music player with playlists and background playback. `versionCode` → `20300`.
