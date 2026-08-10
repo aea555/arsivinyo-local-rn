@@ -46,6 +46,8 @@
         "backgroundActive": "İndiriliyor… • Sıra: {{count}}",
         "modeOn": "AÇIK",
         "modeOff": "KAPALI",
+        "modeVideo": "Video",
+        "modeAudioOnly": "Sadece ses",
         "modePrivate": "Gizli",
         "modeAudio": "Ses",
         "privateModeOn": "Gizli mod: AÇIK",
@@ -68,8 +70,6 @@
         "audioModeOff": "Ses modu: KAPALI",
         "audioModeHintOn": "En iyi sesi müzik kitaplığınıza indirir.",
         "audioModeHintOff": "Video indirir. Yalnızca sesi almak için açın.",
-        "audioModeBadgeOn": "SES",
-        "audioModeBadgeOff": "KAPALI",
         "musicLibrary": "Müzik kitaplığı",
         "musicLibraryHint": "Müzik çaları açın ve müziğinizi yönetin.",
         "savedToMusic": "Müzik kitaplığına kaydedildi."

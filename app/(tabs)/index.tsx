@@ -302,8 +302,8 @@ export default function HomeScreen() {
     router.push('/sounds' as Href);
   }, [router]);
 
-  const handleToggleAudioMode = useCallback(async () => {
-    const next = !audioModeEnabled;
+  const handleSelectAudioMode = useCallback(async (next: boolean) => {
+    if (next === audioModeEnabled) return;
     setAudioModeEnabled(next); // optimistic
     try {
       const result = await setLocalAudioModeEnabled(next);
@@ -496,32 +496,49 @@ export default function HomeScreen() {
               </Text>
             </Pressable>
 
-            <Pressable
-              accessibilityRole="switch"
-              accessibilityState={{ checked: audioModeEnabled }}
-              accessibilityLabel={audioModeEnabled ? t('home.audioModeOn') : t('home.audioModeOff')}
-              accessibilityHint={audioModeEnabled ? t('home.audioModeHintOn') : t('home.audioModeHintOff')}
-              onPress={handleToggleAudioMode}
-              style={({ pressed }) => [
-                styles.modeChip,
-                {
-                  backgroundColor: audioModeEnabled ? colors.accent + '1F' : (pressed ? colors.surfaceHover : colors.surface),
-                  borderColor: audioModeEnabled ? colors.accent : colors.border,
-                },
-              ]}
-            >
-              <Ionicons
-                name={audioModeEnabled ? 'musical-notes' : 'videocam-outline'}
-                size={17}
-                color={audioModeEnabled ? colors.accent : colors.textMuted}
-              />
-              <Text numberOfLines={1} style={[styles.modeChipLabel, { color: audioModeEnabled ? colors.text : colors.textMuted }]}>
-                {t('home.modeAudio')}
-              </Text>
-              <Text numberOfLines={1} style={[styles.modeChipState, { color: audioModeEnabled ? colors.accent : colors.textMuted }]}>
-                {audioModeEnabled ? t('home.modeOn') : t('home.modeOff')}
-              </Text>
-            </Pressable>
+            {/* A choice, not a toggle. "Audio off" never meant silent video — it meant
+                video. Presenting the two as alternatives says what actually happens,
+                and matches that they are mutually exclusive. */}
+            <View style={[styles.modeSegment, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityState={{ checked: !audioModeEnabled }}
+                accessibilityLabel={t('home.modeVideo')}
+                onPress={() => handleSelectAudioMode(false)}
+                style={[
+                  styles.modeSegmentOption,
+                  !audioModeEnabled && { backgroundColor: colors.accent + '22' },
+                ]}
+              >
+                <Ionicons
+                  name="videocam-outline"
+                  size={16}
+                  color={!audioModeEnabled ? colors.accent : colors.textMuted}
+                />
+                <Text numberOfLines={1} style={[styles.modeChipLabel, { color: !audioModeEnabled ? colors.text : colors.textMuted }]}>
+                  {t('home.modeVideo')}
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityState={{ checked: audioModeEnabled }}
+                accessibilityLabel={t('home.modeAudioOnly')}
+                onPress={() => handleSelectAudioMode(true)}
+                style={[
+                  styles.modeSegmentOption,
+                  audioModeEnabled && { backgroundColor: colors.accent + '22' },
+                ]}
+              >
+                <Ionicons
+                  name="musical-notes-outline"
+                  size={16}
+                  color={audioModeEnabled ? colors.accent : colors.textMuted}
+                />
+                <Text numberOfLines={1} style={[styles.modeChipLabel, { color: audioModeEnabled ? colors.text : colors.textMuted }]}>
+                  {t('home.modeAudioOnly')}
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
           {/* Shown only while there is actually work. A permanent "Idle" line reports
@@ -775,6 +792,20 @@ const styles = StyleSheet.create({
     minHeight: 40,
   },
   modeChipLabel: { fontSize: 13, fontWeight: '600' },
+  modeSegment: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderRadius: 999,
+    overflow: 'hidden',
+    minHeight: 40,
+  },
+  modeSegmentOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+  },
   modeChipState: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4 },
   statusLine: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12 },
   statusLineText: { fontSize: 11 },

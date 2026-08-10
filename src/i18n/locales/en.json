@@ -46,6 +46,8 @@
         "backgroundActive": "Downloading… • Queue: {{count}}",
         "modeOn": "ON",
         "modeOff": "OFF",
+        "modeVideo": "Video",
+        "modeAudioOnly": "Audio only",
         "modePrivate": "Private",
         "modeAudio": "Audio",
         "privateModeOn": "Private mode: ON",
@@ -68,8 +70,6 @@
         "audioModeOff": "Audio mode: OFF",
         "audioModeHintOn": "Downloads the best audio into your music library.",
         "audioModeHintOff": "Downloads video. Turn on to grab audio only.",
-        "audioModeBadgeOn": "AUDIO",
-        "audioModeBadgeOff": "OFF",
         "musicLibrary": "Music library",
         "musicLibraryHint": "Open the music player and manage your music.",
         "savedToMusic": "Saved to music library."
