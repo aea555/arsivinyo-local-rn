@@ -245,6 +245,10 @@ class LocalDownloaderModule : Module() {
   private val cancelFlags = ConcurrentHashMap<String, File>()
   /** renderId -> cancel flag file for an in-flight preset render batch. */
   private val presetRenderCancelFlags = ConcurrentHashMap<String, File>()
+
+  /** renderId of the batch currently rendering, or null. Holds the service foreground. */
+  @Volatile
+  private var presetRenderActive: String? = null
   private val ignoredTaskResults = ConcurrentHashMap.newKeySet<String>()
   private val lastErrors = ArrayDeque<String>()
   private val failureLogLock = Any()
@@ -342,6 +346,7 @@ class LocalDownloaderModule : Module() {
       privateModeEnabled = isPrivateModeEnabledPersisted(context)
       audioModeEnabled = isAudioModeEnabledPersisted(context)
       audioFormat = audioFormatPersisted(context)
+      resumePresetRenderIfAny()
       backgroundDownloadsEnabled = isBackgroundDownloadsEnabledPersisted(context)
       stickyNotificationEnabled = isStickyNotificationEnabledPersisted(context)
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
@@ -2130,14 +2135,42 @@ class LocalDownloaderModule : Module() {
    * Caveat: this is tied to the module's lifetime. A batch does not currently survive
    * the app being killed; wiring it to DownloadForegroundService is the next step.
    */
+  /**
+   * Queue a preset render batch and return its renderId.
+   *
+   * The batch is persisted to disk before any work starts and rewritten after every
+   * track, so a process death mid-batch leaves an accurate record of what is left. The
+   * foreground service is held for the duration, which is what stops Android reclaiming
+   * the process when the task is swiped away (the service is declared stopWithTask
+   * false). Between the two, a batch survives both the common case and the hard case.
+   */
   private fun startPresetRender(
     songIds: List<String>,
     presetId: String,
     paramsSpec: String,
     titleSuffix: String,
   ): Map<String, Any?> {
-    val context = requireNotNull(appContext.reactContext)
     val renderId = "preset_${UUID.randomUUID()}"
+    persistPresetQueue(renderId, presetId, paramsSpec, titleSuffix, songIds, songIds.size, 0, 0)
+    runPresetBatch(renderId, presetId, paramsSpec, titleSuffix, songIds, songIds.size, 0, 0)
+    return mapOf("renderId" to renderId, "total" to songIds.size)
+  }
+
+  /**
+   * Run (or continue) a batch over [pending]. `completedSoFar` / `failedSoFar` carry the
+   * totals from before an interruption so a resumed batch reports honest numbers.
+   */
+  private fun runPresetBatch(
+    renderId: String,
+    presetId: String,
+    paramsSpec: String,
+    titleSuffix: String,
+    pending: List<String>,
+    total: Int,
+    completedSoFar: Int,
+    failedSoFar: Int,
+  ) {
+    val context = requireNotNull(appContext.reactContext)
 
     val cancelDir = File(context.cacheDir, PRESET_CANCEL_DIRNAME).apply { mkdirs() }
     val cancelFlag = File(cancelDir, "$renderId.cancel")
@@ -2147,13 +2180,18 @@ class LocalDownloaderModule : Module() {
     val progressDir = File(context.cacheDir, PRESET_PROGRESS_DIRNAME).apply { mkdirs() }
     val renderer = AudioPresetRenderer(context, soundsStore)
 
+    presetRenderActive = renderId
+    syncForegroundNotification("rendering", null)
+
     scope.launch {
-      val total = songIds.size
-      var completed = 0
-      var failed = 0
+      var completed = completedSoFar
+      var failed = failedSoFar
+      val remaining = ArrayDeque(pending)
       try {
-        for ((index, songId) in songIds.withIndex()) {
+        while (remaining.isNotEmpty()) {
           if (cancelFlag.exists()) break
+          val songId = remaining.removeFirst()
+          val index = total - remaining.size - 1
 
           val progressFile = File(progressDir, "$renderId-$index.json")
           runCatching { progressFile.delete() }
@@ -2190,6 +2228,11 @@ class LocalDownloaderModule : Module() {
             addError("PRESET_RENDER_FAILED: song=$songId message=$message")
             emitPresetProgress(renderId, "TRACK_FAILED", songId, index, total, null, message)
           }
+
+          // Rewrite AFTER each track: if the process dies now, the finished track is
+          // already in the library and must not be rendered a second time on resume.
+          persistPresetQueue(renderId, presetId, paramsSpec, titleSuffix, remaining.toList(), total, completed, failed)
+          syncForegroundNotification("rendering", null)
         }
 
         val cancelled = cancelFlag.exists()
@@ -2205,10 +2248,87 @@ class LocalDownloaderModule : Module() {
       } finally {
         presetRenderCancelFlags.remove(renderId)
         runCatching { cancelFlag.delete() }
+        clearPersistedPresetQueue()
+        presetRenderActive = null
+        // Hand the notification back to whatever the downloader is doing; if nothing
+        // is, shouldRunForeground goes false and the service stops.
+        syncForegroundNotification(notificationPhase, null)
       }
     }
+  }
 
-    return mapOf("renderId" to renderId, "total" to songIds.size)
+  /**
+   * Continue a batch that a process death interrupted. Called once at module start.
+   *
+   * Only the tracks still listed as pending are rendered — the file is rewritten after
+   * every track precisely so a resume cannot duplicate work already in the library.
+   */
+  private fun resumePresetRenderIfAny() {
+    val queue = readPersistedPresetQueue() ?: return
+    val pending = queue.optJSONArray("pending") ?: return
+    if (pending.length() == 0) {
+      clearPersistedPresetQueue()
+      return
+    }
+    val songIds = ArrayList<String>(pending.length())
+    for (i in 0 until pending.length()) songIds.add(pending.getString(i))
+    debug("Resuming interrupted preset batch: ${songIds.size} track(s) left")
+    runPresetBatch(
+      renderId = queue.optString("renderId").ifBlank { "preset_${UUID.randomUUID()}" },
+      presetId = queue.optString("presetId"),
+      paramsSpec = queue.optString("paramsSpec"),
+      titleSuffix = queue.optString("titleSuffix"),
+      pending = songIds,
+      total = queue.optInt("total", songIds.size),
+      completedSoFar = queue.optInt("completed", 0),
+      failedSoFar = queue.optInt("failed", 0),
+    )
+  }
+
+  private fun presetQueueFile(): File? {
+    val context = appContext.reactContext ?: return null
+    return File(context.filesDir, PRESET_QUEUE_FILENAME)
+  }
+
+  private fun persistPresetQueue(
+    renderId: String,
+    presetId: String,
+    paramsSpec: String,
+    titleSuffix: String,
+    pending: List<String>,
+    total: Int,
+    completed: Int,
+    failed: Int,
+  ) {
+    val file = presetQueueFile() ?: return
+    runCatching {
+      val payload = JSONObject().apply {
+        put("renderId", renderId)
+        put("presetId", presetId)
+        put("paramsSpec", paramsSpec)
+        put("titleSuffix", titleSuffix)
+        put("pending", JSONArray(pending))
+        put("total", total)
+        put("completed", completed)
+        put("failed", failed)
+      }
+      val tmp = File(file.parentFile, file.name + ".tmp")
+      tmp.writeText(payload.toString(), Charsets.UTF_8)
+      if (!tmp.renameTo(file)) {
+        tmp.copyTo(file, overwrite = true)
+        tmp.delete()
+      }
+    }.onFailure { Log.w(tag, "persistPresetQueue failed: ${it.message}") }
+  }
+
+  private fun readPersistedPresetQueue(): JSONObject? {
+    val file = presetQueueFile() ?: return null
+    if (!file.exists()) return null
+    return runCatching { JSONObject(file.readText(Charsets.UTF_8)) }.getOrNull()
+  }
+
+  private fun clearPersistedPresetQueue() {
+    runCatching { presetQueueFile()?.delete() }
   }
 
   /** Poll the native progress file and forward it as events until cancelled. */
@@ -2305,7 +2425,10 @@ class LocalDownloaderModule : Module() {
       queueSize = queueSize(),
       privateModeEnabled = privateModeEnabled,
       audioModeEnabled = audioModeEnabled,
-      pinned = stickyNotificationEnabled,
+      // A render batch pins the notification the same way the sticky setting does.
+      // Without this the service would stop as soon as no download was active, and
+      // Android would be free to reclaim the process mid-batch.
+      pinned = stickyNotificationEnabled || presetRenderActive != null,
     )
     if (state.shouldRunForeground) {
       DownloadNotificationController.startOrUpdate(context, state)
@@ -7282,6 +7405,7 @@ class LocalDownloaderModule : Module() {
     private const val PREF_AUDIO_MODE_ENABLED = "audio_mode_enabled"
     private const val PREF_AUDIO_FORMAT = "audio_format"
     private const val PRESET_CANCEL_DIRNAME = "audio_preset_cancel_flags"
+    private const val PRESET_QUEUE_FILENAME = "audio_preset_queue.json"
     private const val PRESET_PROGRESS_DIRNAME = "audio_preset_progress"
     private const val PRESET_PROGRESS_POLL_MS = 400L
     private const val PREF_BACKGROUND_DOWNLOADS_ENABLED = "background_downloads_enabled"
