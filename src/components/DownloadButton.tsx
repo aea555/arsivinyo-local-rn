@@ -146,10 +146,16 @@ export const DownloadButton: React.FC<DownloadButtonProps> = ({
     );
 };
 
+/**
+ * Edge length of the download square. Exported so the controls stacked beneath it can
+ * match its width from one source of truth rather than repeating the number.
+ */
+export const DOWNLOAD_BUTTON_SIZE = 260;
+
 const styles = StyleSheet.create({
     button: {
-        width: 260,
-        height: 260,
+        width: DOWNLOAD_BUTTON_SIZE,
+        height: DOWNLOAD_BUTTON_SIZE,
         borderRadius: 32,
         borderWidth: 2,
         justifyContent: 'center',

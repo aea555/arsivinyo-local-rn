@@ -25,7 +25,7 @@ import {
   setLocalPrivateModeEnabled,
 } from '@/src/api';
 import type { DownloadState } from '@/src/api/types';
-import { AppText as Text, DownloadButton } from '@/src/components';
+import { AppText as Text, DownloadButton, DOWNLOAD_BUTTON_SIZE } from '@/src/components';
 import {
   downloadAndSaveFile,
   getUrlFromClipboard,
@@ -463,39 +463,6 @@ export default function HomeScreen() {
               so the state has to be readable without opening anything. State is carried
               by the label as well as the colour, so it does not depend on seeing hue. */}
           <View style={styles.modeRow}>
-            <Pressable
-              accessibilityRole="switch"
-              accessibilityState={{ checked: privateModeEnabled, disabled: audioModeEnabled }}
-              accessibilityLabel={privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
-              accessibilityHint={privateModeEnabled ? t('home.privateModeHintOn') : t('home.privateModeHintOff')}
-              onPress={handleTogglePrivateMode}
-              disabled={isPrivateToggleBusy || audioModeEnabled}
-              style={({ pressed }) => [
-                styles.modeChip,
-                {
-                  backgroundColor: privateModeEnabled ? colors.accent + '1F' : (pressed ? colors.surfaceHover : colors.surface),
-                  borderColor: privateModeEnabled ? colors.accent : colors.border,
-                  opacity: (isPrivateToggleBusy || audioModeEnabled) ? 0.45 : 1,
-                },
-              ]}
-            >
-              {isPrivateToggleBusy ? (
-                <ActivityIndicator size="small" color={colors.text} />
-              ) : (
-                <Ionicons
-                  name={privateModeEnabled ? 'lock-closed' : 'lock-open-outline'}
-                  size={17}
-                  color={privateModeEnabled ? colors.accent : colors.textMuted}
-                />
-              )}
-              <Text numberOfLines={1} style={[styles.modeChipLabel, { color: privateModeEnabled ? colors.text : colors.textMuted }]}>
-                {t('home.modePrivate')}
-              </Text>
-              <Text numberOfLines={1} style={[styles.modeChipState, { color: privateModeEnabled ? colors.accent : colors.textMuted }]}>
-                {privateModeEnabled ? t('home.modeOn') : t('home.modeOff')}
-              </Text>
-            </Pressable>
-
             {/* A choice, not a toggle. "Audio off" never meant silent video — it meant
                 video. Presenting the two as alternatives says what actually happens,
                 and matches that they are mutually exclusive. */}
@@ -539,18 +506,53 @@ export default function HomeScreen() {
                 </Text>
               </Pressable>
             </View>
+            <Pressable
+              accessibilityRole="switch"
+              accessibilityState={{ checked: privateModeEnabled, disabled: audioModeEnabled }}
+              accessibilityLabel={privateModeEnabled ? t('home.privateModeOn') : t('home.privateModeOff')}
+              accessibilityHint={privateModeEnabled ? t('home.privateModeHintOn') : t('home.privateModeHintOff')}
+              onPress={handleTogglePrivateMode}
+              disabled={isPrivateToggleBusy || audioModeEnabled}
+              style={({ pressed }) => [
+                styles.modeChip,
+                {
+                  backgroundColor: privateModeEnabled ? colors.accent + '1F' : (pressed ? colors.surfaceHover : colors.surface),
+                  borderColor: privateModeEnabled ? colors.accent : colors.border,
+                  opacity: (isPrivateToggleBusy || audioModeEnabled) ? 0.45 : 1,
+                },
+              ]}
+            >
+              {isPrivateToggleBusy ? (
+                <ActivityIndicator size="small" color={colors.text} />
+              ) : (
+                <Ionicons
+                  name={privateModeEnabled ? 'lock-closed' : 'lock-open-outline'}
+                  size={17}
+                  color={privateModeEnabled ? colors.accent : colors.textMuted}
+                />
+              )}
+              <Text numberOfLines={1} style={[styles.modeChipLabel, { color: privateModeEnabled ? colors.text : colors.textMuted }]}>
+                {t('home.modePrivate')}
+              </Text>
+              <Text numberOfLines={1} style={[styles.modeChipState, { color: privateModeEnabled ? colors.accent : colors.textMuted }]}>
+                {privateModeEnabled ? t('home.modeOn') : t('home.modeOff')}
+              </Text>
+            </Pressable>
           </View>
 
-          {/* Shown only while there is actually work. A permanent "Idle" line reports
-              nothing and turns the modes into the middle of three stacked blocks. */}
-          {backgroundServiceRunning ? (
-            <View style={styles.statusLine}>
-              <Ionicons name="cloud-download-outline" size={13} color={colors.accent} />
-              <Text numberOfLines={1} style={[styles.statusLineText, { color: colors.textMuted }]}>
-                {t('home.backgroundActive', { count: backgroundQueueSize })}
-              </Text>
-            </View>
-          ) : null}
+          {/* Always present, so the absence of activity is stated rather than implied. */}
+          <View style={styles.statusLine}>
+            <Ionicons
+              name={backgroundServiceRunning ? 'cloud-download-outline' : 'cloud-offline-outline'}
+              size={13}
+              color={backgroundServiceRunning ? colors.accent : colors.textMuted}
+            />
+            <Text numberOfLines={1} style={[styles.statusLineText, { color: colors.textMuted }]}>
+              {backgroundServiceRunning
+                ? t('home.backgroundActive', { count: backgroundQueueSize })
+                : t('home.backgroundInactive')}
+            </Text>
+          </View>
 
           {isOngoingDownload ? (
             <View style={styles.progressSection}>
@@ -773,17 +775,24 @@ const styles = StyleSheet.create({
   // Content-width and centred rather than a grid of flex:1 cells. A two-across grid
   // only looks right at an even count — a third toggle would strand one on its own row
   // — and full-width cells fight a screen composed around a single centred focal point.
+  // Stacked and centred rather than one wide row. The segment is a binary choice and
+  // the vault pill is a single toggle, so their widths can never match — side by side
+  // they read as misaligned however they are spaced. Stacking also keeps the group
+  // narrow, which suits a screen built around one centred focal point, and it extends
+  // to further controls without a grid that breaks at odd counts.
+  // Matched to the download square so the three stack as one column of equal width.
+  // Taken from the button's own exported size rather than repeated, so the two cannot
+  // drift apart.
   modeRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
+    width: DOWNLOAD_BUTTON_SIZE,
+    alignItems: 'stretch',
     gap: 8,
     marginTop: 18,
-    paddingHorizontal: 20,
   },
   modeChip: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 6,
     borderWidth: 1,
     borderRadius: 999,
@@ -800,11 +809,13 @@ const styles = StyleSheet.create({
     minHeight: 40,
   },
   modeSegmentOption: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 6,
     paddingVertical: 9,
-    paddingHorizontal: 14,
+    paddingHorizontal: 8,
   },
   modeChipState: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4 },
   statusLine: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12 },
