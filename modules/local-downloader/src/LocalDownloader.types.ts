@@ -21,8 +21,24 @@ export interface LocalSound {
   durationSec: number;
   sizeBytes: number;
   thumbnailPath?: string | null;
+  /**
+   * Container the track is stored in, lowercase and without the dot (e.g. `flac`,
+   * `m4a`). Derived natively from the file name, so it always reflects what is
+   * actually on disk rather than what was requested at download time.
+   */
+  format?: string | null;
+  /** True when [format] stores the audio without further loss (FLAC, ALAC, WAV...). */
+  lossless: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+/** Container the downloader encodes audio into. FLAC is lossless and the default. */
+export type LocalAudioFormat = 'flac' | 'm4a';
+
+export interface LocalAudioFormatState {
+  format: LocalAudioFormat;
+  lossless: boolean;
 }
 
 /** A user-defined playlist. Many-to-many: a song may appear in several playlists. */

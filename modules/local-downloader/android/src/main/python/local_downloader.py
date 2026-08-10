@@ -52,6 +52,14 @@ RETRYABLE_STATUS_MARKERS = (
 )
 
 VIDEO_TIMESTAMP_EXTENSIONS = {".mp4", ".mov", ".m4v", ".3gp"}
+# Audio download formats. FLAC is the default because every source we fetch is already
+# lossy; see _apply_audio_postprocessing for the full reasoning. These must stay at
+# module scope (not next to that function) because they are used as default argument
+# values further up the file, which Python evaluates at import time.
+AUDIO_FORMAT_FLAC = "flac"
+AUDIO_FORMAT_M4A = "m4a"
+DEFAULT_AUDIO_FORMAT = AUDIO_FORMAT_FLAC
+SUPPORTED_AUDIO_FORMATS = (AUDIO_FORMAT_FLAC, AUDIO_FORMAT_M4A)
 GENERIC_UNSUPPORTED_MARKERS = (
     "unsupported url",
     "no video formats found",
@@ -1927,6 +1935,7 @@ def _perform_attempts(
     merge_capable: bool,
     impersonation_available: bool,
     audio_only: bool = False,
+    audio_format: str = DEFAULT_AUDIO_FORMAT,
     output_dir: Optional[str] = None,
     progress_hooks: Optional[List[Any]] = None,
     debug_logging: bool = False,
@@ -2000,7 +2009,7 @@ def _perform_attempts(
         if force_generic_extractor:
             opts["force_generic_extractor"] = True
         if audio_only and download:
-            _apply_audio_postprocessing(opts)
+            _apply_audio_postprocessing(opts, audio_format)
 
         _append_diag_target(impersonate)
 
@@ -2115,7 +2124,7 @@ def _perform_attempts(
                 if force_generic_extractor:
                     retry_opts["force_generic_extractor"] = True
                 if audio_only and download:
-                    _apply_audio_postprocessing(retry_opts)
+                    _apply_audio_postprocessing(retry_opts, audio_format)
 
                 _push_attempt_trace(
                     {
@@ -2264,18 +2273,44 @@ def _sanitize_audio_title(name: str) -> str:
     return name[:150]
 
 
-def _apply_audio_postprocessing(opts: Dict[str, Any]) -> None:
+def _normalize_audio_format(audio_format: Optional[str]) -> str:
+    """Map an arbitrary caller-supplied format onto one we can actually encode."""
+    normalized = (audio_format or "").strip().lower()
+    return normalized if normalized in SUPPORTED_AUDIO_FORMATS else DEFAULT_AUDIO_FORMAT
+
+
+def _apply_audio_postprocessing(
+    opts: Dict[str, Any], audio_format: str = DEFAULT_AUDIO_FORMAT
+) -> None:
     """Mutate yt-dlp opts in place for an audio-only download.
 
-    Takes the best available audio stream and produces an **M4A (AAC)** file, then
-    embeds cover art + metadata into it.
+    Takes the best available audio stream and produces either a **FLAC** file (the
+    default) or an **M4A (AAC)** file, then writes metadata into it.
 
-    Why M4A and not MP3: the bundled FFmpeg (ffmpeg-kit 6.0) is built without an MP3
-    encoder (no ``libmp3lame``/``libshine``), so it physically cannot transcode to
-    MP3 — attempting it fails with ``Unknown encoder 'libmp3lame'``. AAC uses
-    FFmpeg's always-available native ``aac`` encoder. When the source is already AAC
-    (the common YouTube case) yt-dlp losslessly remuxes it into M4A; only a non-AAC
-    source (e.g. Opus) gets re-encoded, at a high 256k bitrate.
+    Why FLAC by default: every source we download is already lossy (YouTube serves
+    Opus or AAC). Encoding that to AAC again stacks a second generation of loss on top
+    of the first for no benefit. FLAC is lossless, so whatever the decoder produced is
+    what gets stored — the only cost is roughly 3x the file size. The bundled FFmpeg
+    has ``CONFIG_FLAC_ENCODER``, so this needs no new native dependency.
+
+    We pin the output to 16-bit with triangular (TPDF) dither. FFmpeg's FLAC encoder
+    would otherwise pick a sample format on its own, and the dither matters when the
+    decoder hands us float samples: truncating float to 16-bit without it adds
+    correlated quantization distortion instead of benign noise. 16 bits is the right
+    depth here precisely because the source is lossy — there is nothing below that
+    noise floor except the source codec's own artifacts, so 24-bit would spend 50%
+    more storage encoding those more accurately.
+
+    Why M4A and not MP3 for the lossy option: the bundled FFmpeg is built without an
+    MP3 encoder (no ``libmp3lame``/``libshine``), so it physically cannot transcode to
+    MP3 — attempting it fails with ``Unknown encoder 'libmp3lame'``. AAC uses FFmpeg's
+    always-available native ``aac`` encoder. When the source is already AAC (the common
+    YouTube case) yt-dlp losslessly remuxes it into M4A; only a non-AAC source (e.g.
+    Opus) gets re-encoded, at a high 256k bitrate.
+
+    Sample rate is deliberately NOT pinned in either branch. Resampling a 48 kHz source
+    to 44.1 kHz would degrade it for no reason — the rate the decoder produces is the
+    rate we keep.
 
     Thumbnail: we ``writethumbnail`` (downloads the cover art as a sidecar file) but
     deliberately do NOT use ``EmbedThumbnail``. The bundled FFmpeg is also built
@@ -2287,11 +2322,25 @@ def _apply_audio_postprocessing(opts: Dict[str, Any]) -> None:
     title/artist are still written into the file via ``FFmpegMetadata`` (stream copy,
     no encoder needed).
     """
+    resolved = _normalize_audio_format(audio_format)
+
     opts["format"] = "bestaudio/best"
     opts.pop("merge_output_format", None)
     opts["writethumbnail"] = True
+
+    if resolved == AUDIO_FORMAT_FLAC:
+        extract: Dict[str, Any] = {"key": "FFmpegExtractAudio", "preferredcodec": "flac"}
+        # `preferredquality` is a bitrate/VBR knob and is meaningless for a lossless
+        # codec, so it is omitted rather than set to a value yt-dlp would ignore.
+        opts["postprocessor_args"] = {
+            "extractaudio": ["-sample_fmt", "s16", "-dither_method", "triangular"],
+        }
+    else:
+        extract = {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "256"}
+        opts.pop("postprocessor_args", None)
+
     opts["postprocessors"] = [
-        {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "256"},
+        extract,
         {"key": "FFmpegMetadata", "add_metadata": True},
     ]
 
@@ -2733,6 +2782,7 @@ def run_download(
     force_no_cookie: bool = False,
     merge_capable: bool = True,
     audio_only: bool = False,
+    audio_format: str = DEFAULT_AUDIO_FORMAT,
     user_agent: str = DEFAULT_HTTP_USER_AGENT,
     debug_logging: bool = False,
 ) -> str:
@@ -2987,6 +3037,7 @@ def run_download(
             merge_capable=effective_merge_capable,
             impersonation_available=impersonation_available,
             audio_only=audio_only,
+            audio_format=audio_format,
             output_dir=output_dir,
             progress_hooks=[_progress_hook],
             debug_logging=debug_logging,
@@ -3016,7 +3067,11 @@ def run_download(
         thumbnail_path = _resolve_thumbnail_file(info) if audio_only else None
         if audio_only:
             stem, ext = os.path.splitext(source_basename)
-            basename = _sanitize_audio_title(stem) + (ext.lower() or ".m4a")
+            # The extension normally comes from the file the postprocessor produced;
+            # the fallback tracks the requested format so a missing extension does not
+            # silently mislabel a FLAC file as M4A.
+            fallback_ext = "." + _normalize_audio_format(audio_format)
+            basename = _sanitize_audio_title(stem) + (ext.lower() or fallback_ext)
         else:
             basename = _sanitize_filename(source_basename)
         final_path = os.path.join(output_dir, basename)

@@ -213,7 +213,7 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         # Length is capped.
         self.assertLessEqual(len(ld._sanitize_audio_title("x" * 500)), 150)
 
-    def test_apply_audio_postprocessing_sets_m4a_chain(self):
+    def test_apply_audio_postprocessing_defaults_to_flac_chain(self):
         opts = {"format": "bestvideo+bestaudio/best", "merge_output_format": "mp4"}
         ld._apply_audio_postprocessing(opts)
         self.assertEqual(opts["format"], "bestaudio/best")
@@ -224,9 +224,55 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         # webp cover fails. We download the cover (writethumbnail) and store it as a
         # sidecar in Kotlin instead.
         self.assertEqual(pp_keys, ["FFmpegExtractAudio", "FFmpegMetadata"])
-        # The bundled FFmpeg has no MP3 encoder, so we target M4A/AAC instead.
+        # Lossless by default: the source is already lossy, so re-encoding to AAC would
+        # stack a second generation of loss for nothing.
+        self.assertEqual(opts["postprocessors"][0]["preferredcodec"], "flac")
+        # A bitrate knob is meaningless for a lossless codec.
+        self.assertNotIn("preferredquality", opts["postprocessors"][0])
+        # 16-bit with TPDF dither, and no sample-rate override.
+        extract_args = opts["postprocessor_args"]["extractaudio"]
+        self.assertIn("-sample_fmt", extract_args)
+        self.assertEqual(extract_args[extract_args.index("-sample_fmt") + 1], "s16")
+        self.assertIn("-dither_method", extract_args)
+        self.assertEqual(extract_args[extract_args.index("-dither_method") + 1], "triangular")
+        self.assertNotIn("-ar", extract_args)
+
+    def test_apply_audio_postprocessing_m4a_chain(self):
+        opts = {"format": "bestvideo+bestaudio/best"}
+        ld._apply_audio_postprocessing(opts, "m4a")
+        pp_keys = [pp["key"] for pp in opts["postprocessors"]]
+        self.assertEqual(pp_keys, ["FFmpegExtractAudio", "FFmpegMetadata"])
+        # The bundled FFmpeg has no MP3 encoder, so the lossy option is M4A/AAC.
         self.assertEqual(opts["postprocessors"][0]["preferredcodec"], "m4a")
         self.assertEqual(opts["postprocessors"][0]["preferredquality"], "256")
+        # The FLAC-only sample-format args must not leak into the lossy branch.
+        self.assertNotIn("postprocessor_args", opts)
+
+    def test_apply_audio_postprocessing_clears_stale_flac_args(self):
+        # Switching format on a reused opts dict must not leave the FLAC args behind,
+        # which would hand `-sample_fmt s16` to the AAC encoder.
+        opts = {}
+        ld._apply_audio_postprocessing(opts, "flac")
+        self.assertIn("postprocessor_args", opts)
+        ld._apply_audio_postprocessing(opts, "m4a")
+        self.assertNotIn("postprocessor_args", opts)
+
+    def test_normalize_audio_format_falls_back_to_flac(self):
+        self.assertEqual(ld._normalize_audio_format("flac"), "flac")
+        self.assertEqual(ld._normalize_audio_format("m4a"), "m4a")
+        self.assertEqual(ld._normalize_audio_format("M4A"), "m4a")
+        self.assertEqual(ld._normalize_audio_format("  flac  "), "flac")
+        # Anything we cannot actually encode falls back to the lossless default rather
+        # than reaching FFmpeg as an unknown codec.
+        self.assertEqual(ld._normalize_audio_format("mp3"), "flac")
+        self.assertEqual(ld._normalize_audio_format(""), "flac")
+        self.assertEqual(ld._normalize_audio_format(None), "flac")
+
+    def test_apply_audio_postprocessing_rejects_unsupported_format(self):
+        opts = {}
+        ld._apply_audio_postprocessing(opts, "mp3")
+        # MP3 has no encoder in the bundled FFmpeg, so it must not reach the opts.
+        self.assertEqual(opts["postprocessors"][0]["preferredcodec"], "flac")
 
     def test_resolve_thumbnail_file_prefers_last_existing(self):
         import os

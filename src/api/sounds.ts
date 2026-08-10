@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
 import LocalDownloaderModule, {
+  type LocalAudioFormat,
+  type LocalAudioFormatState,
   type LocalSound,
   type LocalSoundPlaylist,
   type LocalSoundsImportResult,
@@ -125,3 +127,26 @@ export async function setLocalSoundsFavorite(
 
 /** Reserved id of the Favorites playlist (mirrors the native constant). */
 export const FAVORITES_PLAYLIST_ID = 'favorites';
+
+/**
+ * Container audio downloads are encoded into.
+ *
+ * FLAC is the default. Every source we download is already lossy, so encoding it to
+ * AAC again would stack a second generation of loss for no benefit; FLAC keeps exactly
+ * what the decoder produced, at roughly 3x the file size. `m4a` trades that back for
+ * space. Existing tracks are not affected — this only applies to new downloads.
+ */
+export async function getLocalAudioFormat(): Promise<LocalAudioFormatState> {
+  ensureAndroid();
+  return LocalDownloaderModule.getAudioFormat();
+}
+
+export async function setLocalAudioFormat(format: LocalAudioFormat): Promise<LocalAudioFormatState> {
+  ensureAndroid();
+  return LocalDownloaderModule.setAudioFormat({ format });
+}
+
+/** Whether a track is stored without further loss. Mirrors `LocalSound.lossless`. */
+export function isLosslessSound(sound: Pick<LocalSound, 'lossless'>): boolean {
+  return sound.lossless === true;
+}

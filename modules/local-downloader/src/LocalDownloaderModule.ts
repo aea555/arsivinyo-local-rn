@@ -1,6 +1,8 @@
 import { EventEmitter, type EventSubscription, requireNativeModule } from 'expo-modules-core';
 import { Platform } from 'react-native';
 import type {
+  LocalAudioFormat,
+  LocalAudioFormatState,
   LocalCookieProfile,
   LocalBackgroundDownloadsState,
   LocalBackgroundPermissionResult,
@@ -63,6 +65,8 @@ type LocalDownloaderNativeModule = {
   setPrivateModeEnabled(input: { enabled: boolean }): Promise<LocalPrivateModeState>;
   getAudioModeState(): Promise<{ enabled: boolean }>;
   setAudioModeEnabled(input: { enabled: boolean }): Promise<{ enabled: boolean }>;
+  getAudioFormat(): Promise<LocalAudioFormatState>;
+  setAudioFormat(input: { format: LocalAudioFormat }): Promise<LocalAudioFormatState>;
   authenticatePrivateAccess(input: { purpose: LocalPrivateAuthPurpose }): Promise<LocalPrivateAuthResult>;
   listPrivateVideos(): Promise<LocalPrivateVideoItem[]>;
   deletePrivateVideo(input: { id: string }): Promise<{ success: boolean }>;
@@ -143,6 +147,8 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       setPrivateModeEnabled: async () => unsupported(),
       getAudioModeState: async () => unsupported(),
       setAudioModeEnabled: async () => unsupported(),
+      getAudioFormat: async () => unsupported(),
+      setAudioFormat: async () => unsupported(),
       authenticatePrivateAccess: async () => unsupported(),
       listPrivateVideos: async () => unsupported(),
       deletePrivateVideo: async () => unsupported(),

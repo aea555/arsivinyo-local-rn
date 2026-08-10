@@ -6,6 +6,8 @@ export {
   addYtDlpUpdateProgressListener,
 } from '../../modules/local-downloader/src';
 export type {
+  LocalAudioFormat,
+  LocalAudioFormatState,
   LocalBackgroundPermissionResult,
   LocalBackgroundDownloadsState,
   LocalBackgroundState,

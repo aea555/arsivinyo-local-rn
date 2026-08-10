@@ -148,6 +148,16 @@ data class PreflightPythonInput(
   val debugLogging: Boolean = false
 )
 
+// Audio download formats. Must stay in sync with SUPPORTED_AUDIO_FORMATS in
+// local_downloader.py — Python re-validates what it receives, but a mismatch here
+// would silently downgrade the user's choice before it ever gets there.
+// File scope rather than the companion object: DownloadPythonInput below is a
+// top-level class and uses DEFAULT_AUDIO_FORMAT as a default argument.
+const val AUDIO_FORMAT_FLAC = "flac"
+const val AUDIO_FORMAT_M4A = "m4a"
+const val DEFAULT_AUDIO_FORMAT = AUDIO_FORMAT_FLAC
+val SUPPORTED_AUDIO_FORMATS = setOf(AUDIO_FORMAT_FLAC, AUDIO_FORMAT_M4A)
+
 data class DownloadPythonInput(
   val url: String,
   val outputDir: String,
@@ -161,6 +171,7 @@ data class DownloadPythonInput(
   val forceNoCookie: Boolean = false,
   val mergeCapable: Boolean = true,
   val audioOnly: Boolean = false,
+  val audioFormat: String = DEFAULT_AUDIO_FORMAT,
   val userAgent: String,
   val debugLogging: Boolean = false
 )
@@ -282,6 +293,14 @@ class LocalDownloaderModule : Module() {
   @Volatile
   private var audioModeEnabled: Boolean = false
 
+  /**
+   * Container/codec used for audio downloads. FLAC (lossless) by default so a download
+   * does not stack a second generation of lossy encoding onto an already-lossy source;
+   * see _apply_audio_postprocessing in local_downloader.py for the full reasoning.
+   */
+  @Volatile
+  private var audioFormat: String = DEFAULT_AUDIO_FORMAT
+
   @Volatile
   private var backgroundDownloadsEnabled: Boolean = false
 
@@ -313,6 +332,7 @@ class LocalDownloaderModule : Module() {
       val context = requireNotNull(appContext.reactContext)
       privateModeEnabled = isPrivateModeEnabledPersisted(context)
       audioModeEnabled = isAudioModeEnabledPersisted(context)
+      audioFormat = audioFormatPersisted(context)
       backgroundDownloadsEnabled = isBackgroundDownloadsEnabledPersisted(context)
       stickyNotificationEnabled = isStickyNotificationEnabledPersisted(context)
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
@@ -468,6 +488,15 @@ class LocalDownloaderModule : Module() {
       val requested = (input["enabled"] as? Boolean) ?: false
       val resolved = setAudioModeEnabledInternal(requested)
       mapOf("enabled" to resolved)
+    }
+
+    AsyncFunction("getAudioFormat") {
+      mapOf("format" to audioFormat, "lossless" to (audioFormat == AUDIO_FORMAT_FLAC))
+    }
+
+    AsyncFunction("setAudioFormat") { input: Map<String, Any?> ->
+      val resolved = setAudioFormatInternal(input["format"] as? String)
+      mapOf("format" to resolved, "lossless" to (resolved == AUDIO_FORMAT_FLAC))
     }
 
     AsyncFunction("authenticatePrivateAccess") { input: Map<String, Any?> ->
@@ -1544,6 +1573,7 @@ class LocalDownloaderModule : Module() {
             forceNoCookie = false,
             mergeCapable = ffmpegInfo.mergeCapable,
             audioOnly = audioOnly,
+            audioFormat = audioFormat,
             userAgent = DEFAULT_HTTP_USER_AGENT,
             debugLogging = debugLoggingEnabled,
           )
@@ -1571,6 +1601,7 @@ class LocalDownloaderModule : Module() {
               forceNoCookie = true,
               mergeCapable = ffmpegInfo.mergeCapable,
               audioOnly = audioOnly,
+              audioFormat = audioFormat,
               userAgent = DEFAULT_HTTP_USER_AGENT,
               debugLogging = debugLoggingEnabled,
             )
@@ -2045,6 +2076,14 @@ class LocalDownloaderModule : Module() {
     return enabled
   }
 
+  private fun setAudioFormatInternal(format: String?): String {
+    val context = requireNotNull(appContext.reactContext)
+    val resolved = normalizeAudioFormat(format)
+    audioFormat = resolved
+    persistAudioFormat(context, resolved)
+    return resolved
+  }
+
   private fun reportQuickActionReason(reason: String?) {
     lastQuickReason = reason
     lastQuickReasonFallback = reason
@@ -2247,6 +2286,7 @@ class LocalDownloaderModule : Module() {
       input.forceNoCookie,
       input.mergeCapable,
       input.audioOnly,
+      input.audioFormat,
       input.userAgent,
       input.debugLogging
     )
@@ -7045,6 +7085,7 @@ class LocalDownloaderModule : Module() {
     private const val PREFS_NAME = "local_downloader_prefs"
     private const val PREF_PRIVATE_MODE_ENABLED = "private_mode_enabled"
     private const val PREF_AUDIO_MODE_ENABLED = "audio_mode_enabled"
+    private const val PREF_AUDIO_FORMAT = "audio_format"
     private const val PREF_BACKGROUND_DOWNLOADS_ENABLED = "background_downloads_enabled"
     private const val PREF_STICKY_NOTIFICATION_ENABLED = "sticky_notification_enabled"
     private const val PRIVATE_VAULT_DIRNAME = "private_vault"
@@ -7400,6 +7441,19 @@ class LocalDownloaderModule : Module() {
         .getBoolean(PREF_AUDIO_MODE_ENABLED, false)
     }
 
+    private fun audioFormatPersisted(context: Context): String {
+      return normalizeAudioFormat(
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+          .getString(PREF_AUDIO_FORMAT, null)
+      )
+    }
+
+    /** Anything we cannot actually encode falls back to the lossless default. */
+    fun normalizeAudioFormat(format: String?): String {
+      val normalized = format?.trim()?.lowercase().orEmpty()
+      return if (normalized in SUPPORTED_AUDIO_FORMATS) normalized else DEFAULT_AUDIO_FORMAT
+    }
+
     private fun isBackgroundDownloadsEnabledPersisted(context: Context): Boolean {
       return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .getBoolean(PREF_BACKGROUND_DOWNLOADS_ENABLED, false)
@@ -7421,6 +7475,13 @@ class LocalDownloaderModule : Module() {
       context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(PREF_AUDIO_MODE_ENABLED, enabled)
+        .apply()
+    }
+
+    private fun persistAudioFormat(context: Context, format: String) {
+      context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_AUDIO_FORMAT, format)
         .apply()
     }
 

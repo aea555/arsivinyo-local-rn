@@ -848,6 +848,11 @@ class SoundsStore(private val context: Context) {
   private fun jsonToSongMap(s: JSONObject): Map<String, Any?> {
     val thumbName = s.optString("thumbFileName").takeUnless { it.isBlank() || s.isNull("thumbFileName") }
     val thumbPath = thumbName?.let { File(thumbsDir(), it).takeIf { f -> f.exists() }?.absolutePath }
+    // Format is DERIVED from the file name rather than stored in the index. That keeps
+    // it correct for every entry with no schema version bump and no migration: imports,
+    // downloads, and entries re-adopted from MediaStore all report the real container
+    // on disk, and it can never drift from the actual file.
+    val format = extensionOf(s.optString("fileName"))
     return mapOf(
       "id" to s.optString("id"),
       "title" to s.optString("title"),
@@ -857,6 +862,8 @@ class SoundsStore(private val context: Context) {
       "durationSec" to s.optDouble("durationSec", 0.0),
       "sizeBytes" to s.optLong("sizeBytes", 0L),
       "thumbnailPath" to thumbPath,
+      "format" to format.ifBlank { null },
+      "lossless" to (format in LOSSLESS_EXTENSIONS),
       "createdAt" to s.optLong("createdAt", 0L),
       "updatedAt" to s.optLong("updatedAt", 0L),
     )
@@ -911,5 +918,9 @@ class SoundsStore(private val context: Context) {
     )
     // Sidecar thumbnail formats expo-image renders directly (no transcode).
     private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
+    // Containers that hold the audio without further loss. Downloads default to FLAC;
+    // the rest can appear here through SAF imports. Reported to the UI so a track's
+    // quality tier is visible rather than something the user has to infer.
+    private val LOSSLESS_EXTENSIONS = setOf("flac", "alac", "wav", "aiff", "aif")
   }
 }
