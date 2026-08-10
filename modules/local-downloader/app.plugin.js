@@ -1,6 +1,17 @@
 const { createRunOncePlugin, withAndroidManifest, withAppBuildGradle, withGradleProperties, withProjectBuildGradle } = require('expo/config-plugins');
 
 const CHAQUOPY_VERSION = '15.0.1';
+// Python that runs ON DEVICE.
+const PYTHON_VERSION = '3.11';
+// Host interpreters Chaquopy may use to RUN PIP at build time, best first.
+//
+// This is not the same thing as PYTHON_VERSION. Chaquopy 15's bundled pip imports the
+// `cgi` module, which Python removed in 3.13, so the host interpreter must be 3.12 or
+// older regardless of which Python the app targets. Without a match the build fails in
+// `generateDebugPythonRequirements` with "No module named 'cgi'". The target version is
+// listed first because Chaquopy needs the two to agree when it inspects a source
+// distribution.
+const BUILD_PYTHON_CANDIDATES = [`python${PYTHON_VERSION}`, 'python3.12', 'python3.10'];
 const YT_DLP_PACKAGE = 'yt-dlp';
 const CURL_CFFI_VERSION = '0.14.0';
 const IMPERSONATION_WHEELS_DIR = 'modules/local-downloader/android/chaquopy-wheels';
@@ -149,7 +160,9 @@ function addAppGradleChanges(contents) {
 
   const wheelsDirNormalized = IMPERSONATION_WHEELS_DIR.replace(/\\/g, '/');
   const impersonationPipBlock = `${TAGS.impersonationPip.begin}\n            def impersonationWheelsDir = file("../../${wheelsDirNormalized}")\n            if (!impersonationWheelsDir.exists()) {\n                println("[local-downloader] Impersonation wheels not found at ${wheelsDirNormalized}; continuing without curl-cffi")\n            } else {\n                def archProp = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString()\n                def requiredAbis = archProp.split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n                def wheelFiles = impersonationWheelsDir.listFiles()?.collect { it.name } ?: []\n                def missingAbis = requiredAbis.findAll { abi ->\n                    def abiToken = abi.replace("-", "_")\n                    !wheelFiles.any { name -> name ==~ /curl_cffi-.*android.*\${abiToken}.*\\.whl/ }\n                }\n                if (missingAbis.isEmpty()) {\n                    options("--find-links", impersonationWheelsDir.absolutePath)\n                    install("curl-cffi==${CURL_CFFI_VERSION}")\n                } else {\n                    println("[local-downloader] Skipping curl-cffi install: missing Android wheel(s) for ABIs: \${missingAbis.join(', ')} at ${wheelsDirNormalized}")\n                }\n            }\n${TAGS.impersonationPip.end}`;
-  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "3.11"\n        pip {\n            install("${YT_DLP_PACKAGE}")\n            install("tenacity==9.0.0")\n${impersonationPipBlock}\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
+  const buildPythonCandidatesGroovy = BUILD_PYTHON_CANDIDATES.map((c) => `"${c}"`).join(', ');
+  const buildPythonBlock = `        def buildPythonOverride = System.getenv("LOCAL_DOWNLOADER_BUILD_PYTHON")\n        def buildPythonCandidates = (buildPythonOverride != null && !buildPythonOverride.trim().isEmpty())\n            ? [buildPythonOverride.trim()]\n            : [${buildPythonCandidatesGroovy}]\n        def resolvedBuildPython = buildPythonCandidates.find { candidate ->\n            try {\n                new ProcessBuilder(candidate, "--version").redirectErrorStream(true).start().waitFor() == 0\n            } catch (Exception ignored) {\n                false\n            }\n        }\n        if (resolvedBuildPython != null) {\n            println("[local-downloader] Chaquopy buildPython: " + resolvedBuildPython)\n            buildPython(resolvedBuildPython)\n        } else {\n            println("[local-downloader] Chaquopy buildPython: none of ${BUILD_PYTHON_CANDIDATES.join(', ')} found on PATH; using the default interpreter. If the build fails in generateDebugPythonRequirements with a missing 'cgi' module, install python${PYTHON_VERSION} or set LOCAL_DOWNLOADER_BUILD_PYTHON.")\n        }`;
+  const pythonBlock = `${TAGS.pythonConfig.begin}\nchaquopy {\n    defaultConfig {\n        version = "${PYTHON_VERSION}"\n${buildPythonBlock}\n        pip {\n            install("${YT_DLP_PACKAGE}")\n            install("tenacity==9.0.0")\n${impersonationPipBlock}\n        }\n    }\n    sourceSets {\n        getByName("main") {\n            srcDir("../../modules/local-downloader/android/src/main/python")\n        }\n    }\n}\n${TAGS.pythonConfig.end}`;
 
   const sourceSetBlock = `${TAGS.sourceSetConfig.begin}\nandroid {\n    sourceSets {\n        main {\n            assets.srcDirs += ["../../modules/local-downloader/android/src/main/assets"]\n        }\n    }\n}\n${TAGS.sourceSetConfig.end}`;
   const abiFilterBlock = `${TAGS.abiFilterConfig.begin}\nandroid {\n    defaultConfig {\n        ndk {\n            def localDownloaderAbis = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString().split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n            abiFilters(*localDownloaderAbis)\n        }\n    }\n}\n${TAGS.abiFilterConfig.end}`;
