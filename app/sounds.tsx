@@ -32,10 +32,24 @@ import {
   removeLocalSoundsFromPlaylist,
   renameLocalSoundPlaylist,
   setLocalSoundsFavorite,
+  applyLocalSoundPresets,
+  cancelLocalSoundPresetRender,
+  listenLocalSoundPresetProgress,
   type LocalSound,
   type LocalSoundPlaylist,
+  type LocalSoundPresetProgressEvent,
 } from '@/src/api';
-import { AppText as Text } from '@/src/components';
+import { AppText as Text, ValueSlider } from '@/src/components';
+import {
+  buildParamsSpec,
+  duplicatePresetForEditing,
+  listAllPresets,
+  PARAM_RANGES,
+  sanitizeParams,
+  saveCustomPreset,
+  type AudioPreset,
+  type AudioPresetParams,
+} from '@/src/features/audioPresets/presets';
 import { playSongs, reconcileQueueAfterReload, setupTrackPlayer } from '@/src/services/trackPlayerService';
 import { useTheme } from '@/src/theme';
 
@@ -56,6 +70,29 @@ function formatDuration(seconds: number): string {
   const s = total % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
+
+/**
+ * Parameters exposed in the customize view, in the order they are shown.
+ *
+ * The limiter is deliberately absent: it exists to stop a boosted render clipping on
+ * the way into the encoder, so it is a safety net rather than a creative control.
+ */
+const PRESET_FIELDS: {
+  key: Exclude<keyof AudioPresetParams, 'limiterEnabled' | 'limiterCeilingDb'>;
+  format: (value: number) => string;
+}[] = [
+  { key: 'rate', format: (v) => `${v.toFixed(2)}x` },
+  { key: 'reverbMix', format: (v) => `${Math.round(v * 100)}%` },
+  { key: 'reverbRoom', format: (v) => `${Math.round(v * 100)}%` },
+  { key: 'reverbDamp', format: (v) => `${Math.round(v * 100)}%` },
+  { key: 'reverbWidth', format: (v) => `${Math.round(v * 100)}%` },
+  { key: 'reverbPreDelayMs', format: (v) => `${Math.round(v)} ms` },
+  { key: 'bassGainDb', format: (v) => `${v > 0 ? '+' : ''}${v} dB` },
+  { key: 'bassFreqHz', format: (v) => `${Math.round(v)} Hz` },
+  { key: 'trebleGainDb', format: (v) => `${v > 0 ? '+' : ''}${v} dB` },
+  { key: 'trebleFreqHz', format: (v) => `${Math.round(v)} Hz` },
+  { key: 'outputGainDb', format: (v) => `${v > 0 ? '+' : ''}${v} dB` },
+];
 
 function normalize(text: string): string {
   return text.trim().toLocaleLowerCase();
@@ -100,6 +137,15 @@ export default function SoundsScreen() {
   const [renameValue, setRenameValue] = useState('');
 
   const [playlistPickerTarget, setPlaylistPickerTarget] = useState<{ ids: string[]; title?: string } | null>(null);
+
+  // Preset rendering. `presetTarget` holds the tracks the sheet will act on; a null
+  // `customizing` means the sheet is showing the preset list rather than the sliders.
+  const [presetTarget, setPresetTarget] = useState<{ ids: string[] } | null>(null);
+  const [presets, setPresets] = useState<AudioPreset[]>([]);
+  const [customizing, setCustomizing] = useState<AudioPreset | null>(null);
+  const [customParams, setCustomParams] = useState<AudioPresetParams | null>(null);
+  const [savePresetName, setSavePresetName] = useState('');
+  const [renderProgress, setRenderProgress] = useState<LocalSoundPresetProgressEvent | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const showToast = useCallback((message: string) => {
@@ -130,6 +176,86 @@ export default function SoundsScreen() {
   useEffect(() => {
     setupTrackPlayer().catch(() => undefined);
   }, []);
+
+  // Presets live in AsyncStorage (plus the frozen built-ins), so they are loaded once
+  // rather than on every sheet open.
+  const reloadPresets = useCallback(async () => {
+    try {
+      setPresets(await listAllPresets());
+    } catch {
+      setPresets([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadPresets();
+  }, [reloadPresets]);
+
+  // Render progress. A finished batch reloads the library so the new tracks appear.
+  useEffect(() => {
+    const subscription = listenLocalSoundPresetProgress((event) => {
+      setRenderProgress(event);
+      if (event.status === 'TRACK_FAILED' && event.message) {
+        showToast(t('sounds.presetTrackFailed', { message: event.message }));
+      }
+      if (event.status === 'FINISHED' || event.status === 'CANCELLED') {
+        void reload();
+        // Leave the banner up briefly so the outcome is readable, then clear it.
+        setTimeout(() => setRenderProgress((cur) => (cur === event ? null : cur)), 2500);
+      }
+    });
+    return () => subscription.remove();
+  }, [reload, showToast, t]);
+
+  const closePresetSheet = useCallback(() => {
+    setPresetTarget(null);
+    setCustomizing(null);
+    setCustomParams(null);
+    setSavePresetName('');
+  }, []);
+
+  const startPresetRender = useCallback(
+    async (preset: AudioPreset, params: AudioPresetParams) => {
+      const ids = presetTarget?.ids ?? [];
+      if (ids.length === 0) return;
+      closePresetSheet();
+      setSelectionMode(false);
+      setSelectedIds(new Set());
+      try {
+        await applyLocalSoundPresets({
+          songIds: ids,
+          presetId: preset.id,
+          paramsSpec: buildParamsSpec(params),
+          titleSuffix: preset.titleSuffix,
+        });
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR'));
+      }
+    },
+    [closePresetSheet, presetTarget, showToast, t]
+  );
+
+  const handleSaveCustomPreset = useCallback(async () => {
+    if (!customizing || !customParams) return;
+    const name = savePresetName.trim();
+    if (!name) return;
+    try {
+      // Always a NEW user preset, never an overwrite of a built-in.
+      const created = duplicatePresetForEditing({ ...customizing, params: customParams }, name);
+      await saveCustomPreset(created);
+      await reloadPresets();
+      setSavePresetName('');
+      showToast(t('sounds.presetSaved', { name }));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : t('errors.UNKNOWN_ERROR'));
+    }
+  }, [customizing, customParams, reloadPresets, savePresetName, showToast, t]);
+
+  const handleCancelRender = useCallback(async () => {
+    const renderId = renderProgress?.renderId;
+    if (!renderId) return;
+    await cancelLocalSoundPresetRender(renderId).catch(() => undefined);
+  }, [renderProgress]);
 
   // Refresh on every focus so changes made elsewhere (favoriting from the player,
   // downloads finishing) are reflected when the user returns to the library.
@@ -750,6 +876,14 @@ export default function SoundsScreen() {
             ) : null}
             <Pressable
               hitSlop={8}
+              onPress={() => setPresetTarget({ ids: Array.from(selectedIds) })}
+              style={styles.selectionBtn}
+              accessibilityLabel={t('sounds.applyPreset')}
+            >
+              <Ionicons name="color-wand-outline" size={22} color={colors.text} />
+            </Pressable>
+            <Pressable
+              hitSlop={8}
               onPress={() => setPendingAction({ type: 'deleteBatch', ids: Array.from(selectedIds) })}
               style={styles.selectionBtn}
             >
@@ -766,6 +900,129 @@ export default function SoundsScreen() {
       ) : null}
 
       {/* Sort menu */}
+      {/* Preset picker. Tapping a preset applies it; the pencil opens the sliders, so
+          the common two-tap path is not buried behind eleven controls. */}
+      <SimpleSheet visible={presetTarget !== null} onClose={closePresetSheet} colors={colors}>
+        {customizing && customParams ? (
+          <>
+            <View style={styles.presetHeader}>
+              <Pressable hitSlop={8} onPress={() => { setCustomizing(null); setCustomParams(null); }}>
+                <Ionicons name="chevron-back" size={22} color={colors.text} />
+              </Pressable>
+              <Text style={[styles.sheetTitle, { color: colors.text }]}>
+                {customizing.nameKey ? t(customizing.nameKey) : customizing.name}
+              </Text>
+            </View>
+            <ScrollView style={styles.presetScroll} keyboardShouldPersistTaps="handled">
+              {PRESET_FIELDS.map((field) => (
+                <ValueSlider
+                  key={field.key}
+                  label={t(`sounds.presetParams.${field.key}`)}
+                  value={customParams[field.key]}
+                  min={PARAM_RANGES[field.key].min}
+                  max={PARAM_RANGES[field.key].max}
+                  step={PARAM_RANGES[field.key].step}
+                  formatValue={field.format}
+                  onChange={(next) =>
+                    setCustomParams((cur) => (cur ? { ...cur, [field.key]: next } : cur))
+                  }
+                />
+              ))}
+              <View style={styles.presetSaveRow}>
+                <TextInput
+                  value={savePresetName}
+                  onChangeText={setSavePresetName}
+                  placeholder={t('sounds.presetSavePlaceholder')}
+                  placeholderTextColor={colors.textMuted}
+                  style={[styles.presetInput, { color: colors.text, borderColor: colors.border }]}
+                />
+                <Pressable
+                  onPress={handleSaveCustomPreset}
+                  disabled={!savePresetName.trim()}
+                  style={[
+                    styles.presetSaveBtn,
+                    { borderColor: colors.border, opacity: savePresetName.trim() ? 1 : 0.4 },
+                  ]}
+                >
+                  <Text style={{ color: colors.text }}>{t('sounds.presetSave')}</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+            <Pressable
+              onPress={() => startPresetRender(customizing, customParams)}
+              style={[styles.presetApplyBtn, { backgroundColor: colors.accent }]}
+            >
+              <Text style={styles.presetApplyText}>
+                {t('sounds.presetApplyCount', { count: presetTarget?.ids.length ?? 0 })}
+              </Text>
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <Text style={[styles.sheetTitle, { color: colors.text }]}>{t('sounds.applyPreset')}</Text>
+            <ScrollView style={styles.presetScroll}>
+              {presets.map((preset) => (
+                <View key={preset.id} style={[styles.presetRow, { borderColor: colors.border }]}>
+                  <Pressable
+                    style={styles.presetRowMain}
+                    onPress={() => startPresetRender(preset, preset.params)}
+                  >
+                    <Ionicons name="color-wand-outline" size={20} color={colors.accent} />
+                    <Text style={[styles.presetName, { color: colors.text }]}>
+                      {preset.nameKey ? t(preset.nameKey) : preset.name}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    hitSlop={8}
+                    onPress={() => {
+                      setCustomizing(preset);
+                      setCustomParams(sanitizeParams(preset.params));
+                      setSavePresetName('');
+                    }}
+                    accessibilityLabel={t('sounds.presetCustomize')}
+                  >
+                    <Ionicons name="options-outline" size={20} color={colors.textMuted} />
+                  </Pressable>
+                </View>
+              ))}
+            </ScrollView>
+          </>
+        )}
+      </SimpleSheet>
+
+      {/* Render progress. Sits above the list so a long batch stays visible. */}
+      {renderProgress ? (
+        <View style={[styles.renderBanner, { backgroundColor: colors.surface, borderColor: colors.border, bottom: bottomBarOffset }]}>
+          <View style={styles.renderBannerText}>
+            <Text numberOfLines={1} style={[styles.renderBannerTitle, { color: colors.text }]}>
+              {renderProgress.status === 'FINISHED'
+                ? t('sounds.presetFinished')
+                : renderProgress.status === 'CANCELLED'
+                  ? t('sounds.presetCancelled')
+                  : t('sounds.presetRendering', {
+                      current: Math.min(renderProgress.index + 1, renderProgress.total),
+                      total: renderProgress.total,
+                    })}
+            </Text>
+            {renderProgress.status === 'PROGRESS' && renderProgress.percent != null ? (
+              <View style={[styles.renderBarTrack, { backgroundColor: colors.borderSubtle }]}>
+                <View
+                  style={[
+                    styles.renderBarFill,
+                    { backgroundColor: colors.accent, width: `${Math.round(renderProgress.percent)}%` },
+                  ]}
+                />
+              </View>
+            ) : null}
+          </View>
+          {renderProgress.status !== 'FINISHED' && renderProgress.status !== 'CANCELLED' ? (
+            <Pressable hitSlop={8} onPress={handleCancelRender}>
+              <Ionicons name="close-circle-outline" size={22} color={colors.textMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
       <SimpleSheet visible={sortMenuOpen} onClose={() => setSortMenuOpen(false)} colors={colors}>
         {(
           [
@@ -1213,6 +1470,42 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 15, fontWeight: '600' },
   rowMeta: { fontSize: 12, marginTop: 2 },
   rowFormat: { fontSize: 12, fontWeight: '600' },
+  sheetTitle: { fontSize: 16, fontWeight: '600', marginBottom: 8 },
+  presetHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  presetScroll: { maxHeight: 380 },
+  presetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  presetRowMain: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  presetName: { fontSize: 15 },
+  presetSaveRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  presetInput: { flex: 1, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  presetSaveBtn: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 },
+  presetApplyBtn: { borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 12 },
+  presetApplyText: { color: '#0b0b0d', fontWeight: '700', fontSize: 15 },
+  renderBanner: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  renderBannerText: { flex: 1 },
+  renderBannerTitle: { fontSize: 13 },
+  renderBarTrack: { height: 4, borderRadius: 2, marginTop: 6, overflow: 'hidden' },
+  renderBarFill: { height: '100%' },
   rowAction: { padding: 4 },
   playlistActionBtn: {
     width: 34,
