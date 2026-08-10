@@ -2052,8 +2052,15 @@ class LocalDownloaderModule : Module() {
   private fun backgroundStateMap(): Map<String, Any?> {
     val context = appContext.reactContext
     val granted = context?.let { isNotificationPermissionGranted(it) } ?: false
+    // Derived from the work this module knows about, NOT from the service's own flag.
+    // That flag is set by the service in its lifecycle callbacks, so at the moment a
+    // download finishes it is still true: the module sends ACTION_STOP, emits state
+    // immediately, and only later does the service actually stop. Nothing emitted
+    // again afterwards, so the UI latched "downloading" forever. This value is correct
+    // at the instant it is read and needs no callback from the service.
+    val hasBackgroundWork = activeTaskId != null || queueSize() > 0 || presetRenderActive != null
     return mapOf(
-      "serviceRunning" to DownloadForegroundService.isRunning,
+      "serviceRunning" to hasBackgroundWork,
       "activeTaskId" to activeTaskId,
       "queueSize" to queueSize(),
       "maxQueueSize" to MAX_QUEUED_DOWNLOADS,
