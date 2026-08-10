@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **NEVER run Android builds yourself** — do not invoke `expo run:android`, `npm run android`, `gradlew assemble*`/`install*`, or any background Gradle build. The maintainer runs all builds locally on the device. Make the code changes, run non-build checks (`npm run lint`, `npm run test:python`, `tsc --noEmit`, `npm run verify:prebuild`), then hand the build command to the maintainer. Only build if the maintainer explicitly says to. (`expo prebuild` is fine — it does not start a Gradle daemon.)
 >
-> **adb gets stuck (the real cause of the "stalling").** On this Windows machine the `adb.exe` server wedges — especially right after a build — and that hang (not Gradle/Expo) is what stalls `expo run:android`/Metro. When adb is unresponsive or a command hangs, revive it before doing anything else with the device:
-> ```powershell
-> taskkill /f /im adb.exe        # PowerShell-tool equivalent: Get-Process adb -ErrorAction SilentlyContinue | Stop-Process -Force
-> & "C:/Android/Sdk/platform-tools/adb.exe" start-server
-> & "C:/Android/Sdk/platform-tools/adb.exe" devices   # confirm the device is back
+> **adb can wedge (the real cause of the "stalling").** The adb server occasionally hangs — especially right after a build — and that hang (not Gradle/Expo) is what stalls `expo run:android`/Metro. When adb is unresponsive or a command hangs, revive it before doing anything else with the device:
+> ```bash
+> adb kill-server        # if that itself hangs: pkill -f adb
+> adb start-server
+> adb devices            # confirm the device is back
 > ```
-> Avoid leaving long-running `adb logcat` captures running; stop them when done, since they contribute to the wedging.
+> `adb` is on `PATH` via `ANDROID_HOME=~/Android/Sdk`. Avoid leaving long-running `adb logcat` captures running; stop them when done, since they contribute to the wedging.
 
 ## Commands
 
@@ -27,9 +27,15 @@ npm run verify:impersonation-wheels        # validates curl_cffi wheels + SHA256
 npm run build:impersonation-wheels         # requires CHAQUOPY_PYPI_DIR env var
 npm run test:python                        # python3 -m unittest modules/local-downloader/tests/test_local_downloader.py
 
+# Audio-preset DSP core (pure C++, no device needed — see "Audio presets" below)
+npm run test:dsp                           # build + run the host-side DSP tests
+npm run test:dsp:sanitize                  # same, plus an ASan/UBSan build
+
 # Run a single Python test
 python3 -m unittest modules.local-downloader.tests.test_local_downloader.<ClassName>.<test_method>
 ```
+
+Host toolchain is Linux. `npm run verify:signing` is still a PowerShell script (`scripts/verify-signing.ps1`) and does not run here — port or replace it before relying on it.
 
 Expo Go cannot run this project — the local-downloader native module is required. Always use `expo run:android` (or a custom dev client build).
 
