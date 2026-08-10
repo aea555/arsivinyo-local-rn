@@ -14,14 +14,20 @@ CPP_DIR="$REPO_ROOT/modules/local-downloader/android/src/main/cpp"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
-SOURCES=(
-  "$CPP_DIR/test/test_dsp.cpp"
+CORE_SOURCES=(
   "$CPP_DIR/preset_params.cpp"
   "$CPP_DIR/dsp/freeverb.cpp"
   "$CPP_DIR/dsp/resampler.cpp"
   "$CPP_DIR/dsp/limiter.cpp"
   "$CPP_DIR/dsp/preset_chain.cpp"
 )
+
+# DSP-only unit tests: pure signal processing, no external tools needed.
+SOURCES=("$CPP_DIR/test/test_dsp.cpp" "${CORE_SOURCES[@]}")
+
+# Integration tests: drive the real render through fork/exec'd ffmpeg processes.
+# Skipped by the test itself if ffmpeg/ffprobe are not on PATH.
+RENDER_SOURCES=("$CPP_DIR/test/test_render.cpp" "$CPP_DIR/ffmpeg_pipe.cpp" "${CORE_SOURCES[@]}")
 
 if command -v g++ >/dev/null 2>&1; then
   CXX="${CXX:-g++}"
@@ -32,11 +38,17 @@ else
   exit 1
 fi
 
-echo "==> building with $CXX"
+echo "==> building DSP tests with $CXX"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror "${SOURCES[@]}" -o "$BUILD_DIR/test_dsp"
 
-echo "==> running"
+echo "==> running DSP tests"
 "$BUILD_DIR/test_dsp"
+
+echo "==> building render tests with $CXX"
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror "${RENDER_SOURCES[@]}" -o "$BUILD_DIR/test_render"
+
+echo "==> running render tests"
+"$BUILD_DIR/test_render"
 
 if [[ "${1:-}" == "--sanitize" ]]; then
   # GCC ships the sanitizer headers without the runtime on some distros, so prefer

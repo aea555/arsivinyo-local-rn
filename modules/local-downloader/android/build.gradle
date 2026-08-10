@@ -12,6 +12,26 @@ android {
     targetSdkVersion rootProject.ext.targetSdkVersion
     versionCode 1
     versionName "1.0.0"
+
+    // Build libaudiopresets.so only for the ABIs the app actually ships. Without this
+    // CMake builds every ABI the NDK supports, which is slow and packages code no
+    // device here will load. Mirrors the app-level abiFilters that app.plugin.js
+    // injects, and reads the same Gradle property so the two cannot drift.
+    ndk {
+      def audioPresetAbis = (findProperty("reactNativeArchitectures") ?: "arm64-v8a")
+          .toString().split(",").collect { it.trim() }.findAll { !it.isEmpty() }
+      abiFilters(*audioPresetAbis)
+    }
+  }
+
+  // The native renderer. This module owns its own CMake build rather than having it
+  // injected by app.plugin.js: the plugin exists to modify the GENERATED app project,
+  // while this is the module's own source and belongs with it.
+  externalNativeBuild {
+    cmake {
+      path "src/main/cpp/CMakeLists.txt"
+      version "3.22.1"
+    }
   }
 
   sourceSets {
@@ -21,6 +41,9 @@ android {
   }
 
   packagingOptions {
+    // The bundled ffmpeg/ffprobe are executables shipped as .so files; stripping
+    // them breaks execution. libaudiopresets.so is a real library and is left to be
+    // stripped normally.
     doNotStrip "**/libffmpeg.so"
     doNotStrip "**/libffprobe.so"
   }
