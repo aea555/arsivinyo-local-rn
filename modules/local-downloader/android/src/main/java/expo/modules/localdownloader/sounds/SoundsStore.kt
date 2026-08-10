@@ -160,6 +160,80 @@ class SoundsStore(private val context: Context) {
     }
   }
 
+  /**
+   * Register a rendered preset output as a NEW library entry, leaving the source track
+   * untouched. A render is therefore always undoable by deleting the result, and the
+   * original stays available to re-render from — which is why renders never need to be
+   * chained on top of one another.
+   *
+   * [presetId] and [sourceSongId] are recorded so the UI can show where a track came
+   * from and so a re-render can find its source. The caller supplies the already
+   * rendered file; this only moves it into the library.
+   */
+  fun registerProcessedSound(
+    sourceFilePath: String,
+    displayName: String,
+    sourceSongId: String,
+    presetId: String,
+  ): Map<String, Any?> {
+    requireSupported()
+    val rendered = File(sourceFilePath)
+    if (!rendered.exists() || !rendered.isFile || rendered.length() <= 0L) {
+      throw IllegalStateException(ERR_SAVE_FAILED)
+    }
+    synchronized(lock) {
+      val index = readIndexLocked()
+      val original = findSongLocked(index, sourceSongId)
+      val originalThumb = original?.optString("thumbFileName")?.takeUnless { it.isBlank() }
+      val originalArtist = original?.optString("artist")?.takeUnless { it.isBlank() }
+
+      val safeName = ensureAudioExtension(displayName.ifBlank { rendered.nameWithoutExtension })
+      val uniqueName = uniqueDisplayNameLocked(safeName)
+      val uri = insertAudioEntry(uniqueName)
+      try {
+        rendered.inputStream().use { input ->
+          context.contentResolver.openOutputStream(uri)?.use { out ->
+            BufferedOutputStream(out, STREAM_BUFFER).use { input.copyTo(it, STREAM_BUFFER) }
+          } ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_FAILED")
+        }
+        finalizeAudioEntry(uri)
+      } catch (e: Exception) {
+        runCatching { context.contentResolver.delete(uri, null, null) }
+        throw e
+      }
+
+      // Inherit the source's cover art. The rendered file carries no embedded image —
+      // the bundled FFmpeg has no image encoder — so re-extracting it would find
+      // nothing and the render would show up in the library with a blank thumbnail.
+      val inheritedThumb = originalThumb
+        ?.let { File(thumbsDir(), it) }
+        ?.takeIf { it.exists() }
+        ?.absolutePath
+
+      val song = buildSongFromUri(uri, uniqueName, null, inheritedThumb)
+      // A render is a stream copy of processed audio and carries no artist tag of its
+      // own, so keep the source's rather than letting the track show as unknown.
+      if (originalArtist != null && song.optString("artist").isBlank()) {
+        song.put("artist", originalArtist)
+      }
+      song.put("presetId", presetId)
+      song.put("sourceSongId", sourceSongId)
+
+      index.getJSONArray("songs").put(song)
+      writeIndexLocked(index)
+      return jsonToSongMap(song)
+    }
+  }
+
+  /** Look up a single song by id, or null. Used to resolve a render's source track. */
+  fun findSong(id: String): Map<String, Any?>? {
+    requireSupported()
+    synchronized(lock) {
+      val song = findSongLocked(readIndexLocked(), id) ?: return null
+      return jsonToSongMap(song)
+    }
+  }
+
   /** Import existing audio files chosen via SAF. Returns { importedCount, failedCount, songs }. */
   fun importFromUris(uris: List<Uri>): Map<String, Any?> {
     requireSupported()
@@ -864,6 +938,10 @@ class SoundsStore(private val context: Context) {
       "thumbnailPath" to thumbPath,
       "format" to format.ifBlank { null },
       "lossless" to (format in LOSSLESS_EXTENSIONS),
+      // Present only on tracks produced by a preset render. Null everywhere else, so
+      // the UI can distinguish a rendered track from an original without a schema bump.
+      "presetId" to s.optString("presetId").ifBlank { null },
+      "sourceSongId" to s.optString("sourceSongId").ifBlank { null },
       "createdAt" to s.optLong("createdAt", 0L),
       "updatedAt" to s.optLong("updatedAt", 0L),
     )

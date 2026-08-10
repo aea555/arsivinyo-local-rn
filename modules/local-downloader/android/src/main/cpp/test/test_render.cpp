@@ -90,6 +90,20 @@ bool MakeSource(const std::string& path, double seconds, int sampleRate) {
 }
 
 /**
+ * Build an incompressible test source. A pure tone is useless for checking a bitrate
+ * setting: AAC encodes it far below any target because there is almost no information
+ * in it, so the measured rate says nothing about what was requested. White noise makes
+ * the encoder actually spend its budget.
+ */
+bool MakeNoiseSource(const std::string& path, double seconds, int sampleRate) {
+  const std::string command = "\"" + g_ffmpeg + "\" -nostdin -v error -f lavfi -i " +
+                              "\"anoisesrc=color=white:sample_rate=" + std::to_string(sampleRate) +
+                              ":duration=" + std::to_string(seconds) + "\"" +
+                              " -ac 2 -c:a pcm_s16le -y \"" + path + "\" 2>/dev/null";
+  return std::system(command.c_str()) == 0 && FileExists(path);
+}
+
+/**
  * Read one ffprobe field from a file. `entry` is passed straight to -show_entries.
  *
  * Note the stream filter is applied only for stream entries: `-select_streams`
@@ -199,6 +213,21 @@ void TestM4aOutput() {
   std::string error;
   Check(RenderPreset(request, &error), "m4a render succeeds: " + error);
   Check(Probe(out, "stream=codec_name") == "aac", "output is AAC");
+
+  // 320k, not the downloader's 256k: this branch only runs when the source was
+  // already lossy, so the extra headroom limits second-generation loss. Measured on
+  // noise, since a tone would compress far below the target regardless of the setting.
+  const std::string noiseSrc = g_tmp + "/noise.wav";
+  const std::string noiseOut = g_tmp + "/noise.m4a";
+  Check(MakeNoiseSource(noiseSrc, 3.0, 48000), "built a noise test source");
+  RenderRequest noiseRequest = BaseRequest(noiseSrc, noiseOut);
+  noiseRequest.outputFormat = "m4a";
+  std::string noiseError;
+  Check(RenderPreset(noiseRequest, &noiseError), "noise render succeeds: " + noiseError);
+  const std::string bitrateText = Probe(noiseOut, "stream=bit_rate");
+  const long bitrate = bitrateText.empty() ? 0 : std::atol(bitrateText.c_str());
+  Check(bitrate > 280000, "lossy renders target a bitrate above the download default, got " +
+                              std::to_string(bitrate));
   Check(Probe(out, "format_tags=title") == "Test Title", "title metadata is written");
   Check(Probe(out, "format_tags=artist") == "Test Artist", "artist metadata is written");
 }

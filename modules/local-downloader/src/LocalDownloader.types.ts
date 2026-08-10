@@ -29,6 +29,16 @@ export interface LocalSound {
   format?: string | null;
   /** True when [format] stores the audio without further loss (FLAC, ALAC, WAV...). */
   lossless: boolean;
+  /**
+   * Id of the preset this track was rendered with, or null for an original.
+   * Together with [sourceSongId] this is what marks a track as a render.
+   */
+  presetId?: string | null;
+  /**
+   * Id of the track this one was rendered from, or null for an original. The source is
+   * never modified by a render, so it remains available to re-render from.
+   */
+  sourceSongId?: string | null;
   createdAt: number;
   updatedAt: number;
 }

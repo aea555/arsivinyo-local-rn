@@ -313,7 +313,12 @@ bool RenderPreset(const RenderRequest& request, std::string* error) {
       "-f", "f32le", "-ar", rateText, "-ac", "2", "-i", "-",
   };
   if (request.outputFormat == "m4a") {
-    encodeArgv.insert(encodeArgv.end(), {"-c:a", "aac", "-b:a", "256k"});
+    // 320k, deliberately above the 256k the downloader uses. This branch only runs
+    // when the SOURCE was already lossy, so the render is a second generation of AAC.
+    // Generation loss is worst when re-encoding at the same bitrate; the extra
+    // headroom absorbs most of it and still costs far less than inflating an
+    // already-lossy track to FLAC.
+    encodeArgv.insert(encodeArgv.end(), {"-c:a", "aac", "-b:a", "320k"});
   } else {
     // 16-bit FLAC with TPDF dither. The DSP works in float, so without dither the
     // truncation to 16 bits would add correlated distortion rather than benign noise.
