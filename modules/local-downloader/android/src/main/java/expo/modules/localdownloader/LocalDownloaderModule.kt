@@ -2222,6 +2222,7 @@ class LocalDownloaderModule : Module() {
 
     presetRenderActive = renderId
     syncForegroundNotification("rendering", null)
+    emitBackgroundStateChanged()
 
     scope.launch {
       var completed = completedSoFar
@@ -2300,6 +2301,10 @@ class LocalDownloaderModule : Module() {
         // Hand the notification back to whatever the downloader is doing; if nothing
         // is, shouldRunForeground goes false and the service stops.
         syncForegroundNotification(notificationPhase, null)
+        // Tell the UI too. Updating only the notification left the home screen showing
+        // work forever, because a render batch is the last thing to finish after an
+        // auto-applied download and nothing emitted once it cleared.
+        emitBackgroundStateChanged()
       }
     }
   }
