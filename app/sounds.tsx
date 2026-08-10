@@ -77,6 +77,9 @@ function formatDuration(seconds: number): string {
  * The limiter is deliberately absent: it exists to stop a boosted render clipping on
  * the way into the encoder, so it is a safety net rather than a creative control.
  */
+/** Horizontal inset for sheet content. `sheet` has no horizontal padding of its own. */
+const SHEET_INSET = 12;
+
 const PRESET_FIELDS: {
   key: Exclude<keyof AudioPresetParams, 'limiterEnabled' | 'limiterCeilingDb'>;
   format: (value: number) => string;
@@ -913,7 +916,11 @@ export default function SoundsScreen() {
                 {customizing.nameKey ? t(customizing.nameKey) : customizing.name}
               </Text>
             </View>
-            <ScrollView style={styles.presetScroll} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              style={styles.presetScroll}
+              contentContainerStyle={styles.presetScrollContent}
+              keyboardShouldPersistTaps="handled"
+            >
               {PRESET_FIELDS.map((field) => (
                 <ValueSlider
                   key={field.key}
@@ -960,7 +967,7 @@ export default function SoundsScreen() {
         ) : (
           <>
             <Text style={[styles.sheetTitle, { color: colors.text }]}>{t('sounds.applyPreset')}</Text>
-            <ScrollView style={styles.presetScroll}>
+            <ScrollView style={styles.presetScroll} contentContainerStyle={styles.presetScrollContent}>
               {presets.map((preset) => (
                 <View key={preset.id} style={[styles.presetRow, { borderColor: colors.border }]}>
                   <Pressable
@@ -1470,9 +1477,16 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 15, fontWeight: '600' },
   rowMeta: { fontSize: 12, marginTop: 2 },
   rowFormat: { fontSize: 12, fontWeight: '600' },
-  sheetTitle: { fontSize: 16, fontWeight: '600', marginBottom: 8 },
-  presetHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  sheetTitle: { fontSize: 16, fontWeight: '600', marginBottom: 8, paddingHorizontal: SHEET_INSET },
+  presetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+    paddingHorizontal: SHEET_INSET,
+  },
   presetScroll: { maxHeight: 380 },
+  presetScrollContent: { paddingHorizontal: SHEET_INSET },
   presetRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1488,7 +1502,13 @@ const styles = StyleSheet.create({
   presetSaveRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
   presetInput: { flex: 1, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   presetSaveBtn: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 },
-  presetApplyBtn: { borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 12 },
+  presetApplyBtn: {
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 12,
+    marginHorizontal: SHEET_INSET,
+  },
   presetApplyText: { color: '#0b0b0d', fontWeight: '700', fontSize: 15 },
   renderBanner: {
     position: 'absolute',
