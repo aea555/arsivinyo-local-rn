@@ -13,6 +13,7 @@
     "test:python": "python3 -m unittest modules/local-downloader/tests/test_local_downloader.py",
     "test:dsp": "bash ./scripts/test-audio-presets.sh",
     "test:dsp:sanitize": "bash ./scripts/test-audio-presets.sh --sanitize",
+    "test:presets": "node --test src/features/audioPresets/*.test.ts",
     "build:impersonation-wheels": "bash ./scripts/build-impersonation-wheels.sh",
     "verify:impersonation-wheels": "bash ./scripts/verify-impersonation-wheels.sh",
     "verify:prebuild": "bash ./scripts/verify-local-downloader-prebuild.sh",

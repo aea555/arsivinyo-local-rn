@@ -30,7 +30,7 @@ import {
   startLocalPrivateVaultMigration,
   updateLocalYtDlp,
 } from '@/src/api';
-import { AppText as Text, AppTextInput as TextInput, SettingsItem, ThemePicker } from '@/src/components';
+import { AppText as Text, AppTextInput as TextInput, ConfirmModal, SettingsItem, ThemePicker } from '@/src/components';
 import {
   DEFAULT_AUTO_PRESET_CONFIG,
   getAutoPresetConfig,
@@ -1110,45 +1110,25 @@ export default function SettingsScreen() {
         </View>
       </Modal>
 
-      <Modal
+      <ConfirmModal
         visible={pendingBuiltInDelete !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={closeBuiltInDeleteConfirmModal}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>
-              {t('settings.deleteCookieProfileConfirmTitle')}
-            </Text>
-            <Text style={[styles.modalDescription, { color: colors.textMuted }]}>
-              {t('settings.deleteCookieProfileConfirmMessage', { profile: pendingBuiltInDelete?.profileName ?? '' })}
-            </Text>
-            <View style={styles.modalActions}>
-              <Pressable
-                onPress={closeBuiltInDeleteConfirmModal}
-                style={({ pressed }) => [
-                  styles.modalActionButton,
-                  { backgroundColor: pressed ? colors.surfaceHover : colors.background },
-                ]}
-              >
-                <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.cancel')}</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  void handleDeleteCookieProfile();
-                }}
-                style={({ pressed }) => [
-                  styles.modalActionButton,
-                  { backgroundColor: pressed ? colors.error + 'bb' : colors.error },
-                ]}
-              >
-                <Text style={[styles.modalCloseText, { color: colors.background }]}>{t('settings.deleteCookieProfileAction')}</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        config={
+          pendingBuiltInDelete
+            ? {
+                title: t('settings.deleteCookieProfileConfirmTitle'),
+                message: t('settings.deleteCookieProfileConfirmMessage', {
+                  profile: pendingBuiltInDelete.profileName,
+                }),
+                confirm: t('settings.deleteCookieProfileAction'),
+                destructive: true,
+              }
+            : null
+        }
+        onCancel={closeBuiltInDeleteConfirmModal}
+        onConfirm={() => {
+          void handleDeleteCookieProfile();
+        }}
+      />
 
       <Modal
         visible={customDomainAction !== null}
@@ -1206,45 +1186,25 @@ export default function SettingsScreen() {
         </View>
       </Modal>
 
-      <Modal
+      <ConfirmModal
         visible={pendingCustomDelete !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={closeDeleteConfirmModal}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>
-              {t('settings.deleteCustomProfileConfirmTitle')}
-            </Text>
-            <Text style={[styles.modalDescription, { color: colors.textMuted }]}>
-              {t('settings.deleteCustomProfileConfirmMessage', { profile: pendingCustomDelete?.profileName ?? '' })}
-            </Text>
-            <View style={styles.modalActions}>
-              <Pressable
-                onPress={closeDeleteConfirmModal}
-                style={({ pressed }) => [
-                  styles.modalActionButton,
-                  { backgroundColor: pressed ? colors.surfaceHover : colors.background },
-                ]}
-              >
-                <Text style={[styles.modalCloseText, { color: colors.text }]}>{t('common.cancel')}</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  void handleDeleteCustomProfile();
-                }}
-                style={({ pressed }) => [
-                  styles.modalActionButton,
-                  { backgroundColor: pressed ? colors.error + 'bb' : colors.error },
-                ]}
-              >
-                <Text style={[styles.modalCloseText, { color: colors.background }]}>{t('settings.deleteCustomProfileAction')}</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        config={
+          pendingCustomDelete
+            ? {
+                title: t('settings.deleteCustomProfileConfirmTitle'),
+                message: t('settings.deleteCustomProfileConfirmMessage', {
+                  profile: pendingCustomDelete.profileName,
+                }),
+                confirm: t('settings.deleteCustomProfileAction'),
+                destructive: true,
+              }
+            : null
+        }
+        onCancel={closeDeleteConfirmModal}
+        onConfirm={() => {
+          void handleDeleteCustomProfile();
+        }}
+      />
 
       <Modal
         visible={showCustomImportModal}

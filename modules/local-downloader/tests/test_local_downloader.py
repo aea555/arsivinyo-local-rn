@@ -33,8 +33,15 @@ try:
         fake_ytdlp.YoutubeDL = FakeYoutubeDL
         sys.modules["yt_dlp"] = fake_ytdlp
     import local_downloader as ld
-except Exception:  # pragma: no cover
-    ld = None
+except Exception as exc:  # pragma: no cover
+    # Do NOT swallow this. yt_dlp is already stubbed above, so the only remaining
+    # reasons the module fails to import are real defects — a syntax error, or a name
+    # used before it is defined at module scope. Skipping on those turned a broken
+    # module into a green "OK (skipped=N)" run, which has already hidden one bug.
+    raise RuntimeError(
+        "local_downloader failed to import; this is a defect in the module, not a "
+        f"missing test dependency: {exc!r}"
+    ) from exc
 
 try:
     import sys
@@ -43,8 +50,13 @@ try:
     python_src = Path(__file__).resolve().parent.parent / "android" / "src" / "main" / "python"
     sys.path.insert(0, str(python_src))
     import yt_dlp_override_bootstrap as yb
-except Exception:  # pragma: no cover
-    yb = None
+except Exception as exc:  # pragma: no cover
+    # Same reasoning as local_downloader above: nothing external is required to import
+    # this module, so a failure here is a defect and must fail the run.
+    raise RuntimeError(
+        "yt_dlp_override_bootstrap failed to import; this is a defect in the module, "
+        f"not a missing test dependency: {exc!r}"
+    ) from exc
 
 
 def _write_fake_ytdlp_package(root, version):
@@ -56,7 +68,6 @@ def _write_fake_ytdlp_package(root, version):
         f.write(f'__version__ = "{version}"\n')
 
 
-@unittest.skipIf(yb is None, "yt_dlp override bootstrap unavailable in this environment")
 class YtDlpOverrideBootstrapTests(unittest.TestCase):
     def tearDown(self):
         yb._clear_ytdlp_modules()
@@ -174,7 +185,6 @@ class YtDlpOverrideBootstrapTests(unittest.TestCase):
             self.assertEqual(manifest["failedVersion"], "2026.3.17")
 
 
-@unittest.skipIf(ld is None, "local_downloader module unavailable in this environment")
 class LocalDownloaderUnitTests(unittest.TestCase):
     def test_build_format_selector_uses_limit(self):
         merged_selector = ld._build_format_selector(50, True)
