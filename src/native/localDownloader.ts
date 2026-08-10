@@ -3,11 +3,15 @@ export {
   addBackgroundStateListener,
   addDownloadProgressListener,
   addPrivateVaultMigrationProgressListener,
+  addSoundPresetProgressListener,
   addYtDlpUpdateProgressListener,
 } from '../../modules/local-downloader/src';
 export type {
   LocalAudioFormat,
   LocalAudioFormatState,
+  LocalAudioPresetDiagnostics,
+  LocalSoundPresetProgressEvent,
+  LocalSoundPresetStartResult,
   LocalBackgroundPermissionResult,
   LocalBackgroundDownloadsState,
   LocalBackgroundState,

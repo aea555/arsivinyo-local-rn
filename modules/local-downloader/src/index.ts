@@ -2,6 +2,7 @@ import LocalDownloaderModule, {
   addBackgroundStateListener,
   addDownloadProgressListener,
   addPrivateVaultMigrationProgressListener,
+  addSoundPresetProgressListener,
   addYtDlpUpdateProgressListener,
 } from './LocalDownloaderModule';
 
@@ -10,6 +11,7 @@ export {
   addBackgroundStateListener,
   addDownloadProgressListener,
   addPrivateVaultMigrationProgressListener,
+  addSoundPresetProgressListener,
   addYtDlpUpdateProgressListener,
 };
 export default LocalDownloaderModule;

@@ -3,6 +3,9 @@ import { Platform } from 'react-native';
 import type {
   LocalAudioFormat,
   LocalAudioFormatState,
+  LocalAudioPresetDiagnostics,
+  LocalSoundPresetProgressEvent,
+  LocalSoundPresetStartResult,
   LocalCookieProfile,
   LocalBackgroundDownloadsState,
   LocalBackgroundPermissionResult,
@@ -94,6 +97,14 @@ type LocalDownloaderNativeModule = {
   getPrivateVaultMigrationStatus(): Promise<LocalPrivateMigrationStatus>;
   getVaultDiagnostics(): Promise<LocalVaultDiagnostics>;
   isSoundsSupported(): boolean;
+  applySoundPresets(input: {
+    songIds: string[];
+    presetId: string;
+    paramsSpec: string;
+    titleSuffix: string;
+  }): Promise<LocalSoundPresetStartResult>;
+  cancelSoundPresetRender(input: { renderId: string }): Promise<{ success: boolean }>;
+  getAudioPresetDiagnostics(): Promise<LocalAudioPresetDiagnostics>;
   listSounds(): Promise<LocalSoundsLibrary>;
   importSounds(): Promise<LocalSoundsImportResult>;
   deleteSounds(input: { ids: string[] }): Promise<{ deletedCount: number }>;
@@ -176,6 +187,9 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       getPrivateVaultMigrationStatus: async () => unsupported(),
       getVaultDiagnostics: async () => unsupported(),
       isSoundsSupported: () => false,
+      applySoundPresets: async () => unsupported(),
+      cancelSoundPresetRender: async () => unsupported(),
+      getAudioPresetDiagnostics: async () => unsupported(),
       listSounds: async () => unsupported(),
       importSounds: async () => unsupported(),
       deleteSounds: async () => unsupported(),
@@ -209,6 +223,15 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       clearYtDlpOverride: async () => unsupported(),
     };
 const emitter: any = Platform.OS === 'android' ? new EventEmitter(NativeLocalDownloader as never) : null;
+
+export function addSoundPresetProgressListener(
+  listener: (event: LocalSoundPresetProgressEvent) => void
+): EventSubscription {
+  if (!emitter) {
+    return { remove: () => undefined };
+  }
+  return emitter.addListener('soundPresetProgress', listener);
+}
 
 export function addDownloadProgressListener(listener: (event: LocalDownloadEvent) => void): EventSubscription {
   if (!emitter) {

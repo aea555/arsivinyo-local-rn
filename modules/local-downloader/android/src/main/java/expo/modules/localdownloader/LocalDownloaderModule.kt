@@ -28,6 +28,7 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.localdownloader.audio.AudioPresetRenderer
 import expo.modules.localdownloader.sounds.SoundsStore
 import expo.modules.localdownloader.vault.ThumbnailGenerator
 import expo.modules.localdownloader.vault.VaultCipherV4
@@ -242,6 +243,8 @@ class LocalDownloaderModule : Module() {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val tasks = ConcurrentHashMap<String, TaskState>()
   private val cancelFlags = ConcurrentHashMap<String, File>()
+  /** renderId -> cancel flag file for an in-flight preset render batch. */
+  private val presetRenderCancelFlags = ConcurrentHashMap<String, File>()
   private val ignoredTaskResults = ConcurrentHashMap.newKeySet<String>()
   private val lastErrors = ArrayDeque<String>()
   private val failureLogLock = Any()
@@ -324,7 +327,13 @@ class LocalDownloaderModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("LocalDownloader")
-    Events("downloadProgress", "backgroundStateChanged", "ytDlpUpdateProgress", "privateVaultMigrationProgress")
+    Events(
+      "downloadProgress",
+      "backgroundStateChanged",
+      "ytDlpUpdateProgress",
+      "privateVaultMigrationProgress",
+      "soundPresetProgress",
+    )
 
     OnCreate {
       activeModule = this@LocalDownloaderModule
@@ -602,6 +611,36 @@ class LocalDownloaderModule : Module() {
       val playlistId = (input["playlistId"] as? String)?.trim().orEmpty()
       val songIds = (input["songIds"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
       soundsStore.removeSongsFromPlaylist(playlistId, songIds)
+    }
+
+    /**
+     * Apply a preset to one or more library tracks. A single track is just a batch of
+     * one, so the UI has a single path for both. Returns immediately with a renderId;
+     * follow `soundPresetProgress` events for the outcome of each track.
+     */
+    AsyncFunction("applySoundPresets") { input: Map<String, Any?> ->
+      val songIds = (input["songIds"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+      val presetId = (input["presetId"] as? String)?.trim().orEmpty()
+      val paramsSpec = (input["paramsSpec"] as? String).orEmpty()
+      val titleSuffix = (input["titleSuffix"] as? String).orEmpty()
+      if (songIds.isEmpty()) throw IllegalArgumentException("NO_SONGS_SELECTED")
+      if (presetId.isBlank()) throw IllegalArgumentException("NO_PRESET")
+      startPresetRender(songIds, presetId, paramsSpec, titleSuffix)
+    }
+
+    AsyncFunction("cancelSoundPresetRender") { input: Map<String, Any?> ->
+      val renderId = (input["renderId"] as? String)?.trim().orEmpty()
+      mapOf("success" to cancelPresetRender(renderId))
+    }
+
+    AsyncFunction("getAudioPresetDiagnostics") {
+      val ffmpegInfo = getOrResolveFfmpegInfo()
+      mapOf(
+        "nativeAvailable" to expo.modules.localdownloader.audio.AudioPresets.isAvailable,
+        "nativeVersion" to expo.modules.localdownloader.audio.AudioPresets.version(),
+        "ffmpegPath" to ffmpegInfo.path,
+        "ffprobePath" to ffmpegInfo.ffprobePath,
+      )
     }
 
     AsyncFunction("setSoundsFavorite") { input: Map<String, Any?> ->
@@ -2074,6 +2113,162 @@ class LocalDownloaderModule : Module() {
     syncForegroundNotification(notificationPhase, null)
     emitBackgroundStateChanged()
     return enabled
+  }
+
+  // ---------------------------------------------------------------------------
+  // Audio preset rendering
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Kick off a preset render over [songIds] and return its renderId.
+   *
+   * Runs on the IO scope rather than blocking the module queue: a render is seconds of
+   * work per track, and a batch is minutes. Tracks are rendered SEQUENTIALLY — each one
+   * already saturates a core through ffmpeg plus the DSP, so running them in parallel
+   * would not finish sooner and would multiply peak memory and cache use.
+   *
+   * Caveat: this is tied to the module's lifetime. A batch does not currently survive
+   * the app being killed; wiring it to DownloadForegroundService is the next step.
+   */
+  private fun startPresetRender(
+    songIds: List<String>,
+    presetId: String,
+    paramsSpec: String,
+    titleSuffix: String,
+  ): Map<String, Any?> {
+    val context = requireNotNull(appContext.reactContext)
+    val renderId = "preset_${UUID.randomUUID()}"
+
+    val cancelDir = File(context.cacheDir, PRESET_CANCEL_DIRNAME).apply { mkdirs() }
+    val cancelFlag = File(cancelDir, "$renderId.cancel")
+    runCatching { if (cancelFlag.exists()) cancelFlag.delete() }
+    presetRenderCancelFlags[renderId] = cancelFlag
+
+    val progressDir = File(context.cacheDir, PRESET_PROGRESS_DIRNAME).apply { mkdirs() }
+    val renderer = AudioPresetRenderer(context, soundsStore)
+
+    scope.launch {
+      val total = songIds.size
+      var completed = 0
+      var failed = 0
+      try {
+        for ((index, songId) in songIds.withIndex()) {
+          if (cancelFlag.exists()) break
+
+          val progressFile = File(progressDir, "$renderId-$index.json")
+          runCatching { progressFile.delete() }
+
+          // Watch the file the native side rewrites so a long track reports movement
+          // rather than sitting at 0% until it finishes.
+          val watcher = launch { watchPresetProgress(renderId, songId, index, total, progressFile) }
+
+          val ffmpegInfo = getOrResolveFfmpegInfo()
+          val outcome = runCatching {
+            renderer.render(
+              AudioPresetRenderer.Request(
+                songId = songId,
+                presetId = presetId,
+                paramsSpec = paramsSpec,
+                titleSuffix = titleSuffix,
+                ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location.orEmpty(),
+                ffprobePath = ffmpegInfo.ffprobePath.orEmpty(),
+                progressFilePath = progressFile.absolutePath,
+                cancelFlagPath = cancelFlag.absolutePath,
+              )
+            )
+          }
+          watcher.cancel()
+          runCatching { progressFile.delete() }
+
+          outcome.onSuccess { song ->
+            completed += 1
+            emitPresetProgress(renderId, "TRACK_DONE", songId, index, total, 100.0, song = song)
+          }.onFailure { error ->
+            if (cancelFlag.exists()) return@onFailure
+            failed += 1
+            val message = error.message ?: "PRESET_RENDER_FAILED"
+            addError("PRESET_RENDER_FAILED: song=$songId message=$message")
+            emitPresetProgress(renderId, "TRACK_FAILED", songId, index, total, null, message)
+          }
+        }
+
+        val cancelled = cancelFlag.exists()
+        emitPresetProgress(
+          renderId,
+          if (cancelled) "CANCELLED" else "FINISHED",
+          null,
+          total,
+          total,
+          100.0,
+          message = "completed=$completed failed=$failed",
+        )
+      } finally {
+        presetRenderCancelFlags.remove(renderId)
+        runCatching { cancelFlag.delete() }
+      }
+    }
+
+    return mapOf("renderId" to renderId, "total" to songIds.size)
+  }
+
+  /** Poll the native progress file and forward it as events until cancelled. */
+  private suspend fun watchPresetProgress(
+    renderId: String,
+    songId: String,
+    index: Int,
+    total: Int,
+    progressFile: File,
+  ) {
+    var lastPercent = -1.0
+    while (currentCoroutineContext().isActive) {
+      val percent = readPresetPercent(progressFile)
+      if (percent != null && percent - lastPercent >= 1.0) {
+        lastPercent = percent
+        emitPresetProgress(renderId, "PROGRESS", songId, index, total, percent)
+      }
+      delay(PRESET_PROGRESS_POLL_MS)
+    }
+  }
+
+  private fun readPresetPercent(progressFile: File): Double? {
+    if (!progressFile.exists()) return null
+    return runCatching {
+      JSONObject(progressFile.readText(Charsets.UTF_8)).optDouble("percent", Double.NaN)
+        .takeUnless { it.isNaN() }
+    }.getOrNull()
+  }
+
+  private fun emitPresetProgress(
+    renderId: String,
+    status: String,
+    songId: String?,
+    index: Int,
+    total: Int,
+    percent: Double?,
+    message: String? = null,
+    song: Map<String, Any?>? = null,
+  ) {
+    runCatching {
+      sendEvent(
+        "soundPresetProgress",
+        mapOf(
+          "renderId" to renderId,
+          "status" to status,
+          "songId" to songId,
+          "index" to index,
+          "total" to total,
+          "percent" to percent,
+          "message" to message,
+          "song" to song,
+        )
+      )
+    }
+  }
+
+  /** Create the cancel flag the native render polls. Returns false if unknown. */
+  private fun cancelPresetRender(renderId: String): Boolean {
+    val flag = presetRenderCancelFlags[renderId] ?: return false
+    return runCatching { flag.createNewFile() || flag.exists() }.getOrDefault(false)
   }
 
   private fun setAudioFormatInternal(format: String?): String {
@@ -7086,6 +7281,9 @@ class LocalDownloaderModule : Module() {
     private const val PREF_PRIVATE_MODE_ENABLED = "private_mode_enabled"
     private const val PREF_AUDIO_MODE_ENABLED = "audio_mode_enabled"
     private const val PREF_AUDIO_FORMAT = "audio_format"
+    private const val PRESET_CANCEL_DIRNAME = "audio_preset_cancel_flags"
+    private const val PRESET_PROGRESS_DIRNAME = "audio_preset_progress"
+    private const val PRESET_PROGRESS_POLL_MS = 400L
     private const val PREF_BACKGROUND_DOWNLOADS_ENABLED = "background_downloads_enabled"
     private const val PREF_STICKY_NOTIFICATION_ENABLED = "sticky_notification_enabled"
     private const val PRIVATE_VAULT_DIRNAME = "private_vault"

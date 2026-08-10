@@ -1,7 +1,12 @@
+import type { EventSubscription } from 'expo-modules-core';
 import { Platform } from 'react-native';
 import LocalDownloaderModule, {
+  addSoundPresetProgressListener,
   type LocalAudioFormat,
   type LocalAudioFormatState,
+  type LocalAudioPresetDiagnostics,
+  type LocalSoundPresetProgressEvent,
+  type LocalSoundPresetStartResult,
   type LocalSound,
   type LocalSoundPlaylist,
   type LocalSoundsImportResult,
@@ -149,4 +154,46 @@ export async function setLocalAudioFormat(format: LocalAudioFormat): Promise<Loc
 /** Whether a track is stored without further loss. Mirrors `LocalSound.lossless`. */
 export function isLosslessSound(sound: Pick<LocalSound, 'lossless'>): boolean {
   return sound.lossless === true;
+}
+
+/** Whether a track was produced by applying a preset to another track. */
+export function isRenderedSound(sound: Pick<LocalSound, 'presetId'>): boolean {
+  return typeof sound.presetId === 'string' && sound.presetId.length > 0;
+}
+
+/**
+ * Apply a preset to one or more tracks.
+ *
+ * Each render creates a NEW library entry and leaves the source untouched, so applying
+ * a preset is always undoable by deleting the result. Returns as soon as the batch is
+ * queued; subscribe with {@link listenLocalSoundPresetProgress} for per-track outcomes.
+ *
+ * `paramsSpec` is the flat `key=value;` form the native DSP reads — preset identity
+ * never crosses the bridge, which is why user-defined presets need no native support.
+ */
+export async function applyLocalSoundPresets(input: {
+  songIds: string[];
+  presetId: string;
+  paramsSpec: string;
+  titleSuffix: string;
+}): Promise<LocalSoundPresetStartResult> {
+  ensureAndroid();
+  return LocalDownloaderModule.applySoundPresets(input);
+}
+
+export async function cancelLocalSoundPresetRender(renderId: string): Promise<{ success: boolean }> {
+  ensureAndroid();
+  return LocalDownloaderModule.cancelSoundPresetRender({ renderId });
+}
+
+export function listenLocalSoundPresetProgress(
+  listener: (event: LocalSoundPresetProgressEvent) => void
+): EventSubscription {
+  return addSoundPresetProgressListener(listener);
+}
+
+/** Native-renderer availability and resolved tool paths, for the diagnostics screen. */
+export async function getLocalAudioPresetDiagnostics(): Promise<LocalAudioPresetDiagnostics> {
+  ensureAndroid();
+  return LocalDownloaderModule.getAudioPresetDiagnostics();
 }

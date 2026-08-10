@@ -43,6 +43,37 @@ export interface LocalSound {
   updatedAt: number;
 }
 
+/** Progress of a preset render batch. A single track is a batch of one. */
+export interface LocalSoundPresetProgressEvent {
+  renderId: string;
+  /**
+   * `PROGRESS` while a track renders, `TRACK_DONE` / `TRACK_FAILED` per track, then
+   * `FINISHED` or `CANCELLED` once for the batch.
+   */
+  status: 'PROGRESS' | 'TRACK_DONE' | 'TRACK_FAILED' | 'FINISHED' | 'CANCELLED';
+  songId?: string | null;
+  /** Zero-based position of the track within the batch. */
+  index: number;
+  total: number;
+  /** Percentage through the current track, not the batch. Null when unknown. */
+  percent?: number | null;
+  message?: string | null;
+  /** The newly created library entry, present on `TRACK_DONE`. */
+  song?: LocalSound | null;
+}
+
+export interface LocalSoundPresetStartResult {
+  renderId: string;
+  total: number;
+}
+
+export interface LocalAudioPresetDiagnostics {
+  nativeAvailable: boolean;
+  nativeVersion?: string | null;
+  ffmpegPath?: string | null;
+  ffprobePath?: string | null;
+}
+
 /** Container the downloader encodes audio into. FLAC is lossless and the default. */
 export type LocalAudioFormat = 'flac' | 'm4a';
 
