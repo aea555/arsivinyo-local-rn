@@ -114,17 +114,25 @@ object BackupSections {
     fun couldCollideAt(size: Long): Boolean
 
     /**
-     * @return true if [sha256] is already stored. Consulted only after a size collision.
-     * [size] is the authoritative size from the trailer, so an implementation can hash
-     * only the stored items that share it rather than the whole library.
+     * Find the stored item with this content.
+     *
+     * Returns the item's own id rather than a boolean, because a skipped duplicate still
+     * has to be addressable: playlists are lists of song ids, so restoring one onto a
+     * device that already holds the tracks needs to map the backup's ids onto the local
+     * ones. A plain "yes, duplicate" left those tracks unmapped and every playlist empty.
+     *
+     * [size] is the authoritative size from the trailer, so an implementation can hash only
+     * the stored items that share it rather than the whole library.
+     *
+     * @return the local id, or null if nothing matches.
      */
-    fun isDuplicate(sha256: String, size: Long): Boolean
+    fun existingIdFor(sha256: String, size: Long): String?
 
     /** Nothing stored yet, so nothing can collide. */
     companion object {
       val EMPTY = object : DuplicateIndex {
         override fun couldCollideAt(size: Long) = false
-        override fun isDuplicate(sha256: String, size: Long) = false
+        override fun existingIdFor(sha256: String, size: Long): String? = null
       }
     }
   }
@@ -200,6 +208,12 @@ object BackupSections {
     fun discard(token: Any?) = Unit
 
     /**
+     * Called instead of [commit] when the item is already stored, naming what it matched.
+     * Targets that remap identities record the pairing here.
+     */
+    fun onDuplicate(header: BackupFormat.EntryHeader, existingId: String?) = Unit
+
+    /**
      * Finalise a stored item now that its content hash is known. Targets that record the
      * hash for cheap duplicate detection on later imports do it here.
      */
@@ -243,8 +257,10 @@ object BackupSections {
       // value — but the cheap filter above could only use the header. Re-check against the
       // trailer so a wrong advisory size cannot let a duplicate through.
       if (mightBeDuplicate || duplicates.couldCollideAt(trailer.size)) {
-        if (duplicates.isDuplicate(trailer.sha256, trailer.size)) {
+        val existingId = duplicates.existingIdFor(trailer.sha256, trailer.size)
+        if (existingId != null) {
           target.discard(token)
+          target.onDuplicate(header, existingId)
           return ItemResult(entry.sectionId, header.name, ItemOutcome.SKIPPED_DUPLICATE)
         }
       }

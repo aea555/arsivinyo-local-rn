@@ -480,22 +480,56 @@ class BackupPortsTest {
   }
 
   @Test
-  fun aSkippedDuplicateLeavesNoStaleIdMapping() {
-    // A duplicate is never stored, so it has no new id. Mapping it to something would point
-    // a restored playlist at the wrong track.
+  fun aSkippedDuplicateMapsOntoTheTrackAlreadyOnTheDevice() {
+    // This asserted the opposite until an interrupted restore exposed the mistake. A track
+    // that is already here has no *new* id, but it does have a local one, and restored
+    // playlists are lists of ids. Leaving it unmapped made every playlist come out empty on
+    // a second restore — which is exactly how an interrupted restore is finished.
     val shared = bytes(3_000, 8L)
     val source = FakeMusic().add("old-dupe", "dupe.flac", shared)
+    source.playlists = JSONObject().apply { put("favorites", "old-dupe") }
     val file = writeBackup(
       listOf(BackupSections.plan(BackupFormat.SECTION_MUSIC, BackupPorts.collectMusic(source)))
     )
 
-    val destination = FakeMusic().add("already", "already.flac", shared)
+    val destination = FakeMusic().add("already-here", "already.flac", shared)
     restore(file, mapOf(BackupFormat.SECTION_MUSIC to BackupPorts.musicTarget(destination, TempStaging())))
 
-    assertTrue(
-      "A duplicate must not appear in the id map",
-      !destination.lastIdMap.containsKey("old-dupe"),
+    assertEquals(
+      "The backup's id must point at the copy already on the device",
+      "already-here",
+      destination.lastIdMap["old-dupe"],
     )
+    assertEquals("Nothing new should have been stored", 1, destination.content.size)
+  }
+
+  @Test
+  fun restoringTwiceStillRebuildsPlaylists() {
+    // The end-to-end version of the above: run the same restore twice and the playlist must
+    // still reference the tracks both times, not come out empty on the second pass.
+    val source = FakeMusic()
+      .add("a", "one.flac", bytes(1_000, 1L))
+      .add("b", "two.flac", bytes(2_000, 2L))
+    source.playlists = JSONObject().apply { put("mixtape", "a,b") }
+    val file = writeBackup(
+      listOf(BackupSections.plan(BackupFormat.SECTION_MUSIC, BackupPorts.collectMusic(source)))
+    )
+
+    val destination = FakeMusic()
+    restore(file, mapOf(BackupFormat.SECTION_MUSIC to BackupPorts.musicTarget(destination, TempStaging())))
+    val firstPass = destination.lastIdMap.toMap()
+
+    destination.lastIdMap = emptyMap()
+    restore(file, mapOf(BackupFormat.SECTION_MUSIC to BackupPorts.musicTarget(destination, TempStaging())))
+
+    assertEquals("Both tracks must map on the first pass", 2, firstPass.size)
+    assertEquals(
+      "Both must still map when everything is already present",
+      2,
+      destination.lastIdMap.size,
+    )
+    assertEquals(firstPass, destination.lastIdMap)
+    assertEquals("The second pass must add nothing", 2, destination.content.size)
   }
 
   @Test

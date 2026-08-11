@@ -61,8 +61,11 @@ class BackupSectionsTest {
     var hashChecks = 0
 
     private val existingBySize = existing.values.groupBy { it.size.toLong() }
+    // Maps content hash -> the local name, so a duplicate can still be identified.
     private val existingHashes =
-      existing.values.map { BackupContainer.sha256(ByteArrayInputStream(it)) }.toSet()
+      existing.entries.associate { (name, bytes) ->
+        BackupContainer.sha256(ByteArrayInputStream(bytes)) to name
+      }
 
     private val index = object : BackupSections.DuplicateIndex {
       override fun couldCollideAt(size: Long): Boolean {
@@ -70,9 +73,9 @@ class BackupSectionsTest {
         return existingBySize.containsKey(size)
       }
 
-      override fun isDuplicate(sha256: String, size: Long): Boolean {
+      override fun existingIdFor(sha256: String, size: Long): String? {
         hashChecks++
-        return existingHashes.contains(sha256)
+        return existingHashes[sha256]
       }
     }
 

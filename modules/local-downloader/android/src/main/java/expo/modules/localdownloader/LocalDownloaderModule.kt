@@ -2940,9 +2940,22 @@ class LocalDownloaderModule : Module() {
         }
         if (name.isBlank()) continue
         runCatching {
-          val created = soundsStore.createPlaylist(name)
-          val newId = created["id"] as? String ?: return@runCatching
-          soundsStore.setPlaylistSongs(newId, mapped)
+          // Reuse a playlist of the same name rather than making another one. A restore is
+          // re-runnable by design — that is how an interrupted one is finished — so creating
+          // unconditionally left a duplicate of every playlist on the second pass.
+          @Suppress("UNCHECKED_CAST")
+          val existing = (soundsStore.listPlaylists() as List<Map<String, Any?>>)
+            .firstOrNull { (it["name"] as? String)?.trim().equals(name, ignoreCase = true) }
+
+          val playlistId = (existing?.get("id") as? String)
+            ?: (soundsStore.createPlaylist(name)["id"] as? String)
+            ?: return@runCatching
+
+          // Union rather than replace: a playlist the user has added to since the backup
+          // must not lose those tracks to a restore.
+          @Suppress("UNCHECKED_CAST")
+          val current = (existing?.get("songIds") as? List<String>).orEmpty()
+          soundsStore.setPlaylistSongs(playlistId, (current + mapped).distinct())
         }
       }
     }
@@ -3320,7 +3333,10 @@ class LocalDownloaderModule : Module() {
       // A render batch pins the notification the same way the sticky setting does.
       // Without this the service would stop as soon as no download was active, and
       // Android would be free to reclaim the process mid-batch.
-      pinned = stickyNotificationEnabled || presetRenderActive != null,
+      // A backup pins it too. Without this the service only survived when the user
+      // happened to have the sticky notification switched on, so an export or restore
+      // depended on an unrelated setting to avoid being reclaimed.
+      pinned = stickyNotificationEnabled || presetRenderActive != null || backupJobActive != null,
     )
     if (state.shouldRunForeground) {
       DownloadNotificationController.startOrUpdate(context, state)

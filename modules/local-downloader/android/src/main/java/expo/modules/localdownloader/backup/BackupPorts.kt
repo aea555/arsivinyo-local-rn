@@ -222,23 +222,25 @@ object BackupPorts {
     private val bySize: Map<Long, List<T>>,
     private val unknownSizeCandidates: List<T>,
     private val hashOf: (T) -> String,
+    private val idOf: (T) -> String,
   ) : BackupSections.DuplicateIndex {
-    private val computed = mutableMapOf<Long, Set<String>>()
-    private val unknownHashes: Set<String> by lazy {
-      unknownSizeCandidates.mapNotNull { runCatching { hashOf(it) }.getOrNull() }.toSet()
-    }
+    private val computed = mutableMapOf<Long, Map<String, String>>()
+    private val unknownHashes: Map<String, String> by lazy { hashIndex(unknownSizeCandidates) }
+
+    private fun hashIndex(items: List<T>): Map<String, String> =
+      items.mapNotNull { item ->
+        runCatching { hashOf(item) to idOf(item) }.getOrNull()
+      }.toMap()
 
     override fun couldCollideAt(size: Long): Boolean =
       bySize.containsKey(size) || unknownSizeCandidates.isNotEmpty()
 
-    override fun isDuplicate(sha256: String, size: Long): Boolean {
-      if (unknownHashes.contains(sha256)) return true
+    override fun existingIdFor(sha256: String, size: Long): String? {
+      unknownHashes[sha256]?.let { return it }
       // Hash only the stored items that share this exact size, and remember the result so a
       // backup holding many same-sized items does not rehash them for each one.
-      val candidates = bySize[size] ?: return false
-      return computed.getOrPut(size) {
-        candidates.mapNotNull { runCatching { hashOf(it) }.getOrNull() }.toSet()
-      }.contains(sha256)
+      val candidates = bySize[size] ?: return null
+      return computed.getOrPut(size) { hashIndex(candidates) }[sha256]
     }
   }
 
@@ -246,11 +248,12 @@ object BackupPorts {
     records: List<T>,
     sizeOf: (T) -> Long?,
     hashOf: (T) -> String,
+    idOf: (T) -> String,
   ): BackupSections.DuplicateIndex {
     if (records.isEmpty()) return BackupSections.DuplicateIndex.EMPTY
     val known = records.filter { sizeOf(it) != null }.groupBy { sizeOf(it)!! }
     val unknown = records.filter { sizeOf(it) == null }
-    return PortDuplicateIndex(known, unknown, hashOf)
+    return PortDuplicateIndex(known, unknown, hashOf, idOf)
   }
 
   /**
@@ -285,7 +288,7 @@ object BackupPorts {
   fun vaultTarget(port: VaultPort, staging: Staging): BackupSections.RestoreTarget =
     object : BackupSections.RestoreTarget {
       private val existing by lazy {
-        duplicateIndexFor(port.list(), { it.plaintextSize }, { port.hashOf(it) })
+        duplicateIndexFor(port.list(), { it.plaintextSize }, { port.hashOf(it) }, { it.id })
       }
 
       override fun duplicates() = existing
@@ -322,7 +325,7 @@ object BackupPorts {
   fun musicTarget(port: MusicPort, staging: Staging): BackupSections.RestoreTarget =
     object : BackupSections.RestoreTarget {
       private val existing by lazy {
-        duplicateIndexFor(port.list(), { it.sizeBytes }, { port.hashOf(it) })
+        duplicateIndexFor(port.list(), { it.sizeBytes }, { port.hashOf(it) }, { it.id })
       }
 
       /**
@@ -364,6 +367,16 @@ object BackupPorts {
 
       override fun discard(token: Any?) {
         (token as? StagedMedia)?.file?.delete()
+      }
+
+      /**
+       * A track already on the device still has to appear in restored playlists, so its
+       * backup id is mapped onto the local one. Without this, restoring a second time — or
+       * after an interrupted run — rebuilt every playlist empty and then dropped it.
+       */
+      override fun onDuplicate(header: BackupFormat.EntryHeader, existingId: String?) {
+        val songId = header.meta.optString("songId")
+        if (songId.isNotBlank() && existingId != null) restoredIds[songId] = existingId
       }
 
       override fun commit(token: Any?, trailer: BackupFormat.EntryTrailer) {
