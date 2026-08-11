@@ -766,11 +766,6 @@ export default function BackupScreen() {
                                     ]}
                                 />
                             </View>
-                            {job.item ? (
-                                <Text numberOfLines={1} style={[styles.report, { color: colors.textMuted }]}>
-                                    {job.item}
-                                </Text>
-                            ) : null}
                             <Text style={[styles.report, { color: colors.textMuted }]}>
                                 {t('backup.jobKeepsRunning')}
                             </Text>

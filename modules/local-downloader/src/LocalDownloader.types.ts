@@ -652,8 +652,14 @@ export interface LocalBackupJob {
   mode: 'exporting' | 'restoring';
   processed: number;
   total: number;
+  /**
+   * Which section is being handled — a category, never an item name.
+   *
+   * The name of the file in flight is dropped inside the module and never crosses the
+   * bridge. This app holds a private vault, and a filename is the thing it exists to keep
+   * out of sight; a count conveys progress just as well and reveals nothing.
+   */
   section?: string | null;
-  item?: string | null;
   startedAt: number;
 }
 

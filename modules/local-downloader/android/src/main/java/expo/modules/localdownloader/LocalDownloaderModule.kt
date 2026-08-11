@@ -372,6 +372,12 @@ class LocalDownloaderModule : Module() {
       // header, so it opens and lists its sections and only fails once a restore is under
       // way — worse than no file at all.
       runCatching { cleanupInterruptedBackupExport() }
+      // Bring the notification back in line with reality. The service is START_STICKY, so
+      // Android restarts it after a process kill and it can be left showing whatever the
+      // dead process last rendered — a progress bar for work that is long over. Nothing
+      // else corrects that, because every other call site only fires when something
+      // starts or finishes.
+      runCatching { reconcileForegroundNotification() }
       stickyNotificationEnabled = isStickyNotificationEnabledPersisted(context)
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
       cleanupRuntimeCookieTemp()
@@ -3219,14 +3225,21 @@ class LocalDownloaderModule : Module() {
     emitBackupProgress()
   }
 
-  private fun updateBackupJob(sectionId: String, name: String, index: Int, total: Int) {
+  /**
+   * The container reports which item it is handling; the name is deliberately dropped here.
+   *
+   * Only the section and the counts travel onward. This app holds a private vault, and a
+   * filename is exactly the thing it exists to keep out of sight — on the lock screen, on
+   * the screen, or anywhere a shoulder can reach. A count says just as much about progress
+   * and reveals nothing about what is stored.
+   */
+  private fun updateBackupJob(sectionId: String, @Suppress("UNUSED_PARAMETER") name: String, index: Int, total: Int) {
     val job = backupJobActive ?: return
     job.put("processed", index)
     job.put("total", total)
     job.put("section", sectionId)
-    job.put("item", name)
     val fraction = if (total > 0) index.toDouble() / total else 0.0
-    syncForegroundNotification(job.optString("mode"), name, fraction * 100.0)
+    syncForegroundNotification(job.optString("mode"), null, fraction * 100.0)
     emitBackupProgress()
   }
 
@@ -3234,11 +3247,28 @@ class LocalDownloaderModule : Module() {
     backupJobActive = null
     backupJobLastOutcome = outcome.apply { put("finishedAt", System.currentTimeMillis()) }
     clearBackupExportMarker()
-    // Hand the notification back to whatever else is running; the derivation in
-    // backgroundStateMap() decides what that is.
-    syncForegroundNotification(if (activeTaskId != null || queueSize() > 0) "downloading" else "idle", null)
+    // Hand the notification back to whatever else is running, using the same derivation as
+    // startup so the two cannot disagree.
+    reconcileForegroundNotification()
     emitBackgroundStateChanged()
     emitBackupProgress()
+  }
+
+  /**
+   * Force the notification to match the module's actual state.
+   *
+   * Called at startup, where "actual state" is normally "nothing is running". Any work that
+   * genuinely survived is represented in the fields this reads, so a restored download or a
+   * resumed render batch still keeps its notification.
+   */
+  private fun reconcileForegroundNotification() {
+    val phase = when {
+      backupJobActive != null -> backupJobActive?.optString("mode").orEmpty().ifBlank { "idle" }
+      presetRenderActive != null -> "rendering"
+      activeTaskId != null || queueSize() > 0 -> "downloading"
+      else -> "idle"
+    }
+    syncForegroundNotification(phase, null)
   }
 
   private fun emitBackupProgress() {
@@ -3253,7 +3283,6 @@ class LocalDownloaderModule : Module() {
         "processed" to it.optInt("processed", 0),
         "total" to it.optInt("total", 0),
         "section" to it.optString("section").ifBlank { null },
-        "item" to it.optString("item").ifBlank { null },
         "startedAt" to it.optLong("startedAt", 0L),
       )
     },

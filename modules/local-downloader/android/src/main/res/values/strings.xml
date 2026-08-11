@@ -36,4 +36,7 @@
   <string name="ldl_msg_private_disabled">Private mode disabled</string>
   <string name="ldl_msg_audio_enabled">Audio mode enabled</string>
   <string name="ldl_msg_audio_disabled">Audio mode disabled</string>
+  <string name="ldl_title_backup">Arsivinyo backup</string>
+  <string name="ldl_sub_exporting">Writing backup…</string>
+  <string name="ldl_sub_restoring">Restoring backup…</string>
 </resources>

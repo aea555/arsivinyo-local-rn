@@ -104,6 +104,11 @@ internal object DownloadNotificationController {
       "saving" -> context.getString(R.string.ldl_sub_saving)
       "completed" -> context.getString(R.string.ldl_sub_completed)
       "error" -> context.getString(R.string.ldl_sub_error)
+      // A backup deliberately has its own subtitle rather than falling through to
+      // state.message. The message is the item being handled, and this app holds a private
+      // vault — a filename on the lock screen defeats the point of it being private.
+      "exporting" -> context.getString(R.string.ldl_sub_exporting)
+      "restoring" -> context.getString(R.string.ldl_sub_restoring)
       else -> null
     }
     val subtitle = phaseSubtitle
