@@ -19,7 +19,15 @@ import java.security.MessageDigest
  */
 object BackupContainer {
 
-  private const val COPY_BUFFER_BYTES = 64 * 1024
+  /**
+   * Matches the AEAD segment and the chunk frame, so one buffer maps onto one unit of work
+   * everywhere in the pipeline.
+   *
+   * At 64 KB a 12.5 GB vault meant roughly 200,000 read/write round trips per pass, and a
+   * restore makes four passes. The buffers are short-lived and there are only ever a couple
+   * alive at once, so the megabyte is cheaper than the syscalls it removes.
+   */
+  private const val COPY_BUFFER_BYTES = 1024 * 1024
 
   /** A secret plus the slot it unlocks. One entry means one passphrase for the whole file. */
   data class SlotSecret(
@@ -43,6 +51,59 @@ object BackupContainer {
    */
   fun interface ProgressListener {
     fun onItem(sectionId: String, name: String, index: Int, total: Int)
+  }
+
+  /**
+   * Where the time went, so an optimisation targets the part that actually costs something.
+   *
+   * [containerNanos] is time spent on the backup file itself; [payloadNanos] covers the
+   * whole item, so the difference is time spent on the app's own stores. The two swap roles
+   * between directions, which is why they are named by side rather than by direction:
+   *
+   * - export: container = encrypt and write the backup; app = read the library or vault
+   * - restore: container = read and decrypt the backup; app = write into the library
+   *
+   * If the container side dominates, the answer is buffers and cipher throughput. If the
+   * app side dominates, it is I/O, staging and overlap. Guessing between those two is how
+   * optimisation effort gets wasted.
+   */
+  class Stats {
+    class Section {
+      var items: Int = 0
+      var bytes: Long = 0L
+      var payloadNanos: Long = 0L
+      var containerNanos: Long = 0L
+    }
+
+    val sections = linkedMapOf<String, Section>()
+
+    /** Argon2id. A one-off, but worth seeing next to everything else. */
+    var kdfNanos: Long = 0L
+    var totalNanos: Long = 0L
+
+    fun section(id: String): Section = sections.getOrPut(id) { Section() }
+
+    /** A single line per section, safe to log: counts and timings only, never a name. */
+    fun summary(label: String): String = buildString {
+      append("BACKUP_PERF ")
+      append(label)
+      append(" total=").append(totalNanos / 1_000_000).append("ms")
+      append(" kdf=").append(kdfNanos / 1_000_000).append("ms")
+      sections.forEach { (id, stat) ->
+        val payloadMs = stat.payloadNanos / 1_000_000
+        val containerMs = stat.containerNanos / 1_000_000
+        val appMs = payloadMs - containerMs
+        val mb = stat.bytes / (1024.0 * 1024.0)
+        val rate = if (payloadMs > 0) mb / (payloadMs / 1000.0) else 0.0
+        append(" | ").append(id)
+        append(" items=").append(stat.items)
+        append(" MB=").append(String.format("%.1f", mb))
+        append(" payload=").append(payloadMs).append("ms")
+        append(" container=").append(containerMs).append("ms")
+        append(" app=").append(appMs).append("ms")
+        append(" rate=").append(String.format("%.1f", rate)).append("MB/s")
+      }
+    }
   }
 
   /** One item the exporter could not read in full. */
@@ -99,7 +160,9 @@ object BackupContainer {
     createdAt: Long,
     kdf: BackupCrypto.KdfParams = BackupCrypto.KdfParams(),
     progress: ProgressListener? = null,
+    stats: Stats? = null,
   ): List<ExportFailure> {
+    val startedAt = System.nanoTime()
     val failures = mutableListOf<ExportFailure>()
     val totalItems = sections.sumOf { it.itemCount }
     var handled = 0
@@ -112,6 +175,7 @@ object BackupContainer {
 
     val masterKeys = mutableMapOf<String, ByteArray>()
     try {
+      val kdfStartedAt = System.nanoTime()
       val slots = secrets.map { secret ->
         val salt = BackupCrypto.randomSalt()
         val masterKey = BackupCrypto.deriveMasterKey(secret.secret, salt, kdf)
@@ -123,6 +187,7 @@ object BackupContainer {
           secretKind = secret.secretKind,
         )
       }
+      stats?.kdfNanos = System.nanoTime() - kdfStartedAt
 
       val header = BackupFormat.Header(
         formatVersion = BackupFormat.FORMAT_VERSION,
@@ -161,26 +226,47 @@ object BackupContainer {
                 val digest = MessageDigest.getInstance("SHA-256")
                 var written = 0L
                 var failure: Throwable? = null
+                val stat = stats?.section(section.id)
+                var sinkNanos = 0L
+                val itemStartedAt = System.nanoTime()
 
                 BackupFormat.ChunkedOutputStream(encrypted).use { framed ->
+                  // Encryption, framing and the file write happen on their own thread, so
+                  // the collector can read the next chunk of its source meanwhile. The
+                  // digest runs on that thread too, in queue order, so the hash still
+                  // covers the bytes exactly as written.
+                  val parallel = BackupPipeline.ParallelOutputStream(
+                    framed,
+                    bufferSize = COPY_BUFFER_BYTES,
+                    onChunk = { buffer, off, len -> digest.update(buffer, off, len) },
+                  )
                   try {
                     writePayload(object : OutputStream() {
                       override fun write(b: Int) {
-                        framed.write(b)
-                        digest.update(b.toByte())
+                        val at = System.nanoTime()
+                        parallel.write(b)
+                        sinkNanos += System.nanoTime() - at
                         written++
                       }
 
                       override fun write(b: ByteArray, off: Int, len: Int) {
-                        framed.write(b, off, len)
-                        digest.update(b, off, len)
+                        // Now measures how long the producer waits for a free buffer, which
+                        // is what "the container side is the bottleneck" looks like once
+                        // the two halves overlap.
+                        val at = System.nanoTime()
+                        parallel.write(b, off, len)
+                        sinkNanos += System.nanoTime() - at
                         written += len
                       }
 
                       // The payload writer must not be able to end the entry early.
                       override fun close() = Unit
                     })
+                    // Drains the queue. Must happen before the trailer is written, or the
+                    // trailer would land in the middle of the payload.
+                    parallel.close()
                   } catch (error: Throwable) {
+                    runCatching { parallel.close() }
                     // The item's list was a snapshot taken before writing began, so a file
                     // deleted in the meantime shows up here. One unreadable item must not
                     // destroy an otherwise good backup of everything else — but the entry
@@ -188,6 +274,13 @@ object BackupContainer {
                     // dropped. It is closed as incomplete.
                     failure = error
                   }
+                }
+
+                stat?.let {
+                  it.items += 1
+                  it.bytes += written
+                  it.payloadNanos += System.nanoTime() - itemStartedAt
+                  it.containerNanos += sinkNanos
                 }
 
                 BackupFormat.writeEntryTrailer(
@@ -216,6 +309,7 @@ object BackupContainer {
         }
       }
       output.flush()
+      stats?.totalNanos = System.nanoTime() - startedAt
       return failures
     } finally {
       BackupCrypto.wipe(*masterKeys.values.toTypedArray())
@@ -274,8 +368,10 @@ object BackupContainer {
     // Before `visitor` so that stays the last parameter: a callback in the final position
     // is what makes the trailing-lambda form read well at every call site.
     progress: ProgressListener? = null,
+    stats: Stats? = null,
     visitor: EntryVisitor,
   ) {
+    val startedAt = System.nanoTime()
     val totalItems = header.sections
       .filter { sectionsToRestore.contains(it.id) }
       .sumOf { it.itemCount }
@@ -287,6 +383,7 @@ object BackupContainer {
 
     val masterKeys = mutableMapOf<String, ByteArray>()
     try {
+      val kdfStartedAt = System.nanoTime()
       neededSlots.forEach { slotId ->
         val slot = header.slot(slotId)
           ?: throw BackupFormatException("Backup is missing key slot '$slotId'")
@@ -299,6 +396,7 @@ object BackupContainer {
         }
         masterKeys[slotId] = masterKey
       }
+      stats?.kdfNanos = System.nanoTime() - kdfStartedAt
 
       header.sections.forEach { section ->
         val framing = BackupFormat.ChunkedInputStream(input)
@@ -314,10 +412,20 @@ object BackupContainer {
               progress?.onItem(section.id, entryHeader.name, handled, totalItems)
               handled += 1
               val entry = ReadEntry(section.id, entryHeader, decrypted)
+              val stat = stats?.section(section.id)
+              val itemStartedAt = System.nanoTime()
               visitor.visit(entry)
               // Whether the payload was taken or skipped, the entry must be finished so the
               // next header starts where the reader expects it.
               entry.verifiedTrailer()
+              stat?.let {
+                it.items += 1
+                it.bytes += entry.bytesRead
+                it.payloadNanos += System.nanoTime() - itemStartedAt
+                // The source here is the backup file: decrypt plus read. The remainder is
+                // the visitor writing into the library.
+                it.containerNanos += entry.readNanos
+              }
             }
           }
         } finally {
@@ -327,6 +435,7 @@ object BackupContainer {
         framing.skipSection()
       }
     } finally {
+      stats?.totalNanos = System.nanoTime() - startedAt
       BackupCrypto.wipe(*masterKeys.values.toTypedArray())
     }
   }
@@ -378,12 +487,26 @@ object BackupContainer {
   ) : RestoredEntry {
     private val digest = MessageDigest.getInstance("SHA-256")
     private val framing = BackupFormat.ChunkedInputStream(source)
+
+    /**
+     * Decryption of the next chunk runs ahead while the visitor is still writing the
+     * previous one into the library. On a restore the library write is the slower half, so
+     * this is the side that gets hidden.
+     */
+    private val ahead = BackupPipeline.ParallelInputStream(framing, COPY_BUFFER_BYTES)
     private var readBytes = 0L
     private var trailer: BackupFormat.EntryTrailer? = null
 
+    /** Time spent pulling from the backup file: decrypt plus read, no library writes. */
+    var readNanos = 0L
+      private set
+    val bytesRead: Long get() = readBytes
+
     override val payload: InputStream = object : InputStream() {
       override fun read(): Int {
-        val value = framing.read()
+        val at = System.nanoTime()
+        val value = ahead.read()
+        readNanos += System.nanoTime() - at
         if (value >= 0) {
           digest.update(value.toByte())
           readBytes++
@@ -392,7 +515,9 @@ object BackupContainer {
       }
 
       override fun read(b: ByteArray, off: Int, len: Int): Int {
-        val read = framing.read(b, off, len)
+        val at = System.nanoTime()
+        val read = ahead.read(b, off, len)
+        readNanos += System.nanoTime() - at
         if (read > 0) {
           digest.update(b, off, read)
           readBytes += read
@@ -412,6 +537,9 @@ object BackupContainer {
       val buffer = ByteArray(COPY_BUFFER_BYTES)
       while (payload.read(buffer) >= 0) { /* draining */ }
 
+      // The reader thread must be done before anything else touches `source`, or the
+      // trailer would be read from a position the read-ahead is still consuming.
+      ahead.close()
       val read = BackupFormat.readEntryTrailer(source)
       if (read.size != readBytes) {
         throw BackupFormatException(

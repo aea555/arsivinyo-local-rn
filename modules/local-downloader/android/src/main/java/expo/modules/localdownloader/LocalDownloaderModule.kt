@@ -756,6 +756,7 @@ class LocalDownloaderModule : Module() {
       }
 
       beginBackupJob(BACKUP_MODE_EXPORT, uri)
+      val stats = BackupContainer.Stats()
       try {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
         val failures = context.contentResolver.openOutputStream(Uri.parse(uri))?.use { raw ->
@@ -770,10 +771,14 @@ class LocalDownloaderModule : Module() {
               progress = { sectionId, name, index, total ->
                 updateBackupJob(sectionId, name, index, total)
               },
+              stats = stats,
             )
           }
         } ?: throw IllegalStateException("BACKUP_WRITE_FAILED")
 
+        // Counts and timings only — no names. Always logged, so a slow run can be
+        // diagnosed from a single line without asking the user to reproduce anything.
+        Log.i(tag, stats.summary("export"))
         failures.forEach {
           addError("BACKUP_EXPORT_ITEM_FAILED: ${it.sectionId}/${it.name}: ${it.error}")
         }
@@ -796,6 +801,7 @@ class LocalDownloaderModule : Module() {
           "failed" to failures.map {
             mapOf("section" to it.sectionId, "name" to it.name, "error" to it.error)
           },
+          "perf" to backupPerfMap(stats),
         )
       } catch (error: Throwable) {
         // A half-written backup is worse than none — it looks restorable and is not.
@@ -896,6 +902,7 @@ class LocalDownloaderModule : Module() {
       // the job marked active with no matching end, so the foreground notification stays
       // pinned on a phase that finished — which is precisely the symptom this chases.
       beginBackupJob(BACKUP_MODE_RESTORE, null)
+      val stats = BackupContainer.Stats()
       try {
         clearBackupStaging()
         val staging = backupStaging()
@@ -917,6 +924,7 @@ class LocalDownloaderModule : Module() {
             progress = { sectionId, name, index, total ->
               updateBackupJob(sectionId, name, index, total)
             },
+            stats = stats,
           ) { entry ->
             val target = targets[entry.sectionId]
             if (target != null) {
@@ -925,8 +933,10 @@ class LocalDownloaderModule : Module() {
           }
         } ?: throw IllegalStateException("BACKUP_READ_FAILED")
 
+        Log.i(tag, stats.summary("restore"))
         mapOf(
           "success" to true,
+          "perf" to backupPerfMap(stats),
           "settings" to settingsTarget.settings?.toString(),
           // "restored" counts files added to a library and nothing else. Playlists,
           // preferences and cover art are reported as "applied", because a restore that
@@ -3303,6 +3313,23 @@ class LocalDownloaderModule : Module() {
     debug("BACKUP_NOTIF reconcile phase=$phase pinned=$stickyNotificationEnabled")
     syncForegroundNotification(phase, null)
   }
+
+  /** Timings for the result, so the screen can show a rate without another round trip. */
+  private fun backupPerfMap(stats: BackupContainer.Stats): Map<String, Any?> = mapOf(
+    "totalMs" to stats.totalNanos / 1_000_000,
+    "kdfMs" to stats.kdfNanos / 1_000_000,
+    "sections" to stats.sections.map { (id, stat) ->
+      val payloadMs = stat.payloadNanos / 1_000_000
+      mapOf(
+        "id" to id,
+        "items" to stat.items,
+        "bytes" to stat.bytes,
+        "payloadMs" to payloadMs,
+        "containerMs" to stat.containerNanos / 1_000_000,
+        "appMs" to payloadMs - (stat.containerNanos / 1_000_000),
+      )
+    },
+  )
 
   private fun emitBackupProgress() {
     sendEvent("backupProgress", backupJobStateMap())

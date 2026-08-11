@@ -54,12 +54,13 @@ SRC_MAIN="$MODULE/src/main/java/expo/modules/localdownloader"
 SRC_TEST="$MODULE/src/test/java/expo/modules/localdownloader"
 
 # Each entry is "<test class>|<source files...>". Add a line to cover a new suite.
-BACKUP_SOURCES="$SRC_MAIN/backup/BackupFormat.kt $SRC_MAIN/backup/BackupCrypto.kt $SRC_MAIN/backup/BackupContainer.kt $SRC_MAIN/backup/BackupSections.kt $SRC_MAIN/backup/BackupPorts.kt"
+BACKUP_SOURCES="$SRC_MAIN/backup/BackupFormat.kt $SRC_MAIN/backup/BackupCrypto.kt $SRC_MAIN/backup/BackupContainer.kt $SRC_MAIN/backup/BackupSections.kt $SRC_MAIN/backup/BackupPorts.kt $SRC_MAIN/backup/BackupPipeline.kt"
 SUITES=(
   "expo.modules.localdownloader.backup.BackupFormatTest|$BACKUP_SOURCES $SRC_TEST/backup/BackupFormatTest.kt"
   "expo.modules.localdownloader.backup.BackupContainerTest|$SRC_TEST/backup/BackupContainerTest.kt"
   "expo.modules.localdownloader.backup.BackupSectionsTest|$SRC_TEST/backup/BackupSectionsTest.kt"
   "expo.modules.localdownloader.backup.BackupPortsTest|$SRC_TEST/backup/BackupPortsTest.kt"
+  "expo.modules.localdownloader.backup.BackupPipelineTest|$SRC_TEST/backup/BackupPipelineTest.kt"
 )
 
 rm -rf "$WORK_DIR"
