@@ -1,6 +1,7 @@
 export {
   default,
   addBackgroundStateListener,
+  addBackupProgressListener,
   addDownloadProgressListener,
   addPrivateVaultMigrationProgressListener,
   addSoundPresetProgressListener,
@@ -13,6 +14,9 @@ export type {
   LocalBackupCreateInput,
   LocalBackupCreateResult,
   LocalBackupItemOutcome,
+  LocalBackupJob,
+  LocalBackupJobOutcome,
+  LocalBackupJobState,
   LocalBackupItemResult,
   LocalBackupPreview,
   LocalBackupRestoreInput,

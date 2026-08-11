@@ -278,6 +278,78 @@ class BackupContainerTest {
     assertEquals(BackupContainer.sha256(ByteArrayInputStream(payload)), trailer!!.sha256)
   }
 
+  // ------------------------------------------------------------------ progress
+
+  @Test
+  fun writingReportsEveryItemInOrder() {
+    // Drives the notification and the on-screen bar. Without a test this can silently sit
+    // at zero for a 20 GB export and nothing else would fail.
+    val seen = mutableListOf<Triple<String, String, Int>>()
+    var reportedTotal = -1
+
+    ByteArrayOutputStream().also { out ->
+      BackupContainer.write(
+        output = out,
+        secrets = listOf(secret("a strong test passphrase")),
+        sections = listOf(
+          sectionOf(BackupFormat.SECTION_MUSIC, mapOf("a.flac" to bytes(100, 1L), "b.flac" to bytes(100, 2L))),
+          sectionOf(BackupFormat.SECTION_VAULT, mapOf("v.mp4" to bytes(100, 3L))),
+        ),
+        appVersion = "v", appVersionCode = 1, createdAt = 1L, kdf = fastKdf(),
+        progress = { sectionId, name, index, total ->
+          seen.add(Triple(sectionId, name, index))
+          reportedTotal = total
+        },
+      )
+    }
+
+    assertEquals(3, seen.size)
+    assertEquals(3, reportedTotal)
+    // Index must advance monotonically from zero, or the bar jumps around.
+    assertEquals(listOf(0, 1, 2), seen.map { it.third })
+    assertEquals(BackupFormat.SECTION_MUSIC, seen[0].first)
+    assertEquals(BackupFormat.SECTION_VAULT, seen[2].first)
+    assertEquals("v.mp4", seen[2].second)
+  }
+
+  @Test
+  fun restoringReportsOnlyTheSectionsBeingRestored() {
+    // The total must match what is actually going to happen. Counting skipped sections
+    // would leave the bar stranded short of the end.
+    val file = writeBackup(
+      listOf(
+        sectionOf(BackupFormat.SECTION_MUSIC, mapOf("a.flac" to bytes(100, 1L), "b.flac" to bytes(100, 2L))),
+        sectionOf(BackupFormat.SECTION_VAULT, mapOf("v.mp4" to bytes(100, 3L))),
+      )
+    )
+
+    val seen = mutableListOf<String>()
+    var reportedTotal = -1
+    val input = ByteArrayInputStream(file)
+    val header = BackupContainer.peek(input)
+    BackupContainer.read(
+      input,
+      header,
+      listOf(secret("a strong test passphrase")),
+      setOf(BackupFormat.SECTION_MUSIC),
+      progress = { _, name, _, total ->
+        seen.add(name)
+        reportedTotal = total
+      },
+    ) { entry -> entry.payload.readBytes() }
+
+    assertEquals(listOf("a.flac", "b.flac"), seen)
+    assertEquals("The vault section must not be counted", 2, reportedTotal)
+  }
+
+  @Test
+  fun progressIsOptional() {
+    // Every existing call site omits it; passing nothing must not break.
+    val file = writeBackup(listOf(sectionOf(BackupFormat.SECTION_MUSIC, mapOf("a.flac" to bytes(100, 1L)))))
+    val restored = restore(file, listOf(secret("a strong test passphrase")), setOf(BackupFormat.SECTION_MUSIC))
+    assertEquals(1, restored[BackupFormat.SECTION_MUSIC]!!.size)
+  }
+
   // ------------------------------------------------------------------ export failures
 
   @Test

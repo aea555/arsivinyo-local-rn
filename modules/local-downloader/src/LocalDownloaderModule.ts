@@ -5,6 +5,7 @@ import type {
   LocalAudioFormatState,
   LocalAudioPresetDiagnostics,
   LocalBackupCreateInput,
+  LocalBackupJobState,
   LocalBackupCreateResult,
   LocalBackupPreview,
   LocalBackupRestoreInput,
@@ -113,6 +114,7 @@ type LocalDownloaderNativeModule = {
   getSecureRandomBytes(input: { count: number }): Promise<{ bytes: number[] }>;
   createBackup(input: LocalBackupCreateInput): Promise<LocalBackupCreateResult>;
   previewBackup(): Promise<LocalBackupPreview>;
+  getBackupJobState(): Promise<LocalBackupJobState>;
   restoreBackup(input: LocalBackupRestoreInput): Promise<LocalBackupRestoreResult>;
   listSounds(): Promise<LocalSoundsLibrary>;
   importSounds(): Promise<LocalSoundsImportResult>;
@@ -203,6 +205,7 @@ const NativeLocalDownloader: LocalDownloaderNativeModule = Platform.OS === 'andr
       getSecureRandomBytes: async () => unsupported(),
       createBackup: async () => unsupported(),
       previewBackup: async () => unsupported(),
+      getBackupJobState: async () => unsupported(),
       restoreBackup: async () => unsupported(),
       listSounds: async () => unsupported(),
       importSounds: async () => unsupported(),
@@ -266,6 +269,19 @@ export function addYtDlpUpdateProgressListener(listener: (event: LocalYtDlpUpdat
     return { remove: () => undefined };
   }
   return emitter.addListener('ytDlpUpdateProgress', listener);
+}
+
+/**
+ * Backup and restore progress. Emitted on every item and when a job ends, so a screen can
+ * show live movement and can reattach after being closed and reopened.
+ */
+export function addBackupProgressListener(
+  listener: (state: LocalBackupJobState) => void
+): EventSubscription {
+  if (!emitter) {
+    return { remove: () => undefined };
+  }
+  return emitter.addListener('backupProgress', listener);
 }
 
 export function addPrivateVaultMigrationProgressListener(

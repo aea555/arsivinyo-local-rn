@@ -646,3 +646,30 @@ export interface LocalBackupRestoreResult {
   code?: string;
   message?: string;
 }
+
+/** An export or restore currently running. */
+export interface LocalBackupJob {
+  mode: 'exporting' | 'restoring';
+  processed: number;
+  total: number;
+  section?: string | null;
+  item?: string | null;
+  startedAt: number;
+}
+
+export interface LocalBackupJobOutcome {
+  mode: 'exporting' | 'restoring';
+  success: boolean;
+  summary?: string | null;
+  finishedAt: number;
+}
+
+/**
+ * Enough for a screen to reattach to work that started before it was opened, or that
+ * outlived it. The promise from the original call resolves into a component that may no
+ * longer exist, so the module keeps the last outcome too.
+ */
+export interface LocalBackupJobState {
+  active: LocalBackupJob | null;
+  last: LocalBackupJobOutcome | null;
+}

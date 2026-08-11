@@ -14,8 +14,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
+    addBackupProgressListener,
     createBackup,
     generatePassphrase,
+    getBackupJobState,
     previewBackup,
     restoreBackup,
 } from '@/src/api/backup';
@@ -39,7 +41,7 @@ import {
     validatePassphrase,
     validatePassword,
 } from '@/src/features/backup/core';
-import type { LocalBackupPreview } from '@/src/native/localDownloader';
+import type { LocalBackupJob, LocalBackupPreview } from '@/src/native/localDownloader';
 import { copyToClipboard } from '@/src/services/clipboard';
 import { useTheme } from '@/src/theme';
 
@@ -81,6 +83,46 @@ export default function BackupScreen() {
     const [preview, setPreview] = useState<LocalBackupPreview | null>(null);
     const [report, setReport] = useState<string | null>(null);
     const [confirmRestore, setConfirmRestore] = useState(false);
+
+    /**
+     * Progress of a job running in the module, which may have started before this screen
+     * was opened. A backup holds a foreground service, so it outlives the screen; without
+     * this, reopening during a 20 GB export would show an idle form and let the user start
+     * a second one.
+     */
+    const [job, setJob] = useState<LocalBackupJob | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        getBackupJobState()
+            .then((state) => {
+                if (cancelled) return;
+                setJob(state.active);
+                if (!state.active && state.last) {
+                    setStatus(
+                        t(state.last.success ? 'backup.jobFinished' : 'backup.jobFailed', {
+                            summary: state.last.summary ?? '',
+                        }),
+                    );
+                }
+            })
+            .catch(() => undefined);
+
+        const subscription = addBackupProgressListener((state) => {
+            setJob(state.active);
+            if (!state.active && state.last) {
+                setStatus(
+                    t(state.last.success ? 'backup.jobFinished' : 'backup.jobFailed', {
+                        summary: state.last.summary ?? '',
+                    }),
+                );
+            }
+        });
+        return () => {
+            cancelled = true;
+            subscription.remove();
+        };
+    }, [t]);
 
     const toggleSection = useCallback((id: BackupSectionId) => {
         setSections((current) => {
@@ -320,7 +362,11 @@ export default function BackupScreen() {
         excellent: '100%',
     };
 
-    const canAct = secretReady && sections.size > 0 && !busy &&
+    const canAct =
+        secretReady &&
+        sections.size > 0 &&
+        !busy &&
+        job == null &&
         (mode === 'export' || preview?.uri != null);
 
     return (
@@ -701,6 +747,36 @@ export default function BackupScreen() {
                         </View>
                     )}
 
+                    {job && (
+                        <View style={styles.group}>
+                            <Text style={[styles.status, { color: colors.text }]}>
+                                {t(job.mode === 'exporting' ? 'backup.jobExporting' : 'backup.jobRestoring', {
+                                    processed: job.processed,
+                                    total: job.total,
+                                })}
+                            </Text>
+                            <View style={[styles.strengthTrack, { backgroundColor: colors.surfaceHover }]}>
+                                <View
+                                    style={[
+                                        styles.strengthFill,
+                                        {
+                                            backgroundColor: colors.accent,
+                                            width: `${job.total > 0 ? Math.round((job.processed / job.total) * 100) : 0}%`,
+                                        },
+                                    ]}
+                                />
+                            </View>
+                            {job.item ? (
+                                <Text numberOfLines={1} style={[styles.report, { color: colors.textMuted }]}>
+                                    {job.item}
+                                </Text>
+                            ) : null}
+                            <Text style={[styles.report, { color: colors.textMuted }]}>
+                                {t('backup.jobKeepsRunning')}
+                            </Text>
+                        </View>
+                    )}
+
                     {status && (
                         <Text style={[styles.status, { color: colors.text }]}>{status}</Text>
                     )}
@@ -718,7 +794,7 @@ export default function BackupScreen() {
                             { backgroundColor: canAct ? colors.primary : colors.surfaceHover },
                         ]}
                     >
-                        {busy ? (
+                        {busy || job != null ? (
                             <ActivityIndicator size="small" color={colors.primaryText} />
                         ) : (
                             <Text

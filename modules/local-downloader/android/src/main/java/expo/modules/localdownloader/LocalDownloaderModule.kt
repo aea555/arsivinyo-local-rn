@@ -258,6 +258,20 @@ class LocalDownloaderModule : Module() {
   /** renderId of the batch currently rendering, or null. Holds the service foreground. */
   @Volatile
   private var presetRenderActive: String? = null
+
+  /**
+   * The export or restore in flight, if any. Read by the background-state derivation so a
+   * backup pins the foreground service exactly like a download or a render batch does —
+   * without it, Android is free to kill the process partway through a 20 GB job.
+   */
+  private var backupJobActive: JSONObject? = null
+
+  /**
+   * The outcome of the last backup job, kept so a screen that was closed while the job ran
+   * can still show what happened. The promise from the original call resolves into a
+   * component that no longer exists.
+   */
+  private var backupJobLastOutcome: JSONObject? = null
   private val ignoredTaskResults = ConcurrentHashMap.newKeySet<String>()
   private val lastErrors = ArrayDeque<String>()
   private val failureLogLock = Any()
@@ -343,6 +357,7 @@ class LocalDownloaderModule : Module() {
       "ytDlpUpdateProgress",
       "privateVaultMigrationProgress",
       "soundPresetProgress",
+      "backupProgress",
     )
 
     OnCreate {
@@ -353,6 +368,10 @@ class LocalDownloaderModule : Module() {
       audioModeEnabled = isAudioModeEnabledPersisted(context)
       audioFormat = audioFormatPersisted(context)
       resumePresetRenderIfAny()
+      // An export that the system killed leaves a partial document behind. It has a valid
+      // header, so it opens and lists its sections and only fails once a restore is under
+      // way — worse than no file at all.
+      runCatching { cleanupInterruptedBackupExport() }
       stickyNotificationEnabled = isStickyNotificationEnabledPersisted(context)
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
       cleanupRuntimeCookieTemp()
@@ -714,6 +733,7 @@ class LocalDownloaderModule : Module() {
         )
       }
 
+      beginBackupJob(BACKUP_MODE_EXPORT, uri)
       try {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
         val failures = context.contentResolver.openOutputStream(Uri.parse(uri))?.use { raw ->
@@ -725,6 +745,9 @@ class LocalDownloaderModule : Module() {
               appVersion = info.versionName ?: "",
               appVersionCode = info.longVersionCode.toInt(),
               createdAt = System.currentTimeMillis(),
+              progress = { sectionId, name, index, total ->
+                updateBackupJob(sectionId, name, index, total)
+              },
             )
           }
         } ?: throw IllegalStateException("BACKUP_WRITE_FAILED")
@@ -732,6 +755,13 @@ class LocalDownloaderModule : Module() {
         failures.forEach {
           addError("BACKUP_EXPORT_ITEM_FAILED: ${it.sectionId}/${it.name}: ${it.error}")
         }
+        endBackupJob(
+          JSONObject().apply {
+            put("mode", BACKUP_MODE_EXPORT)
+            put("success", true)
+            put("summary", "${sections.sumOf { s -> s.itemCount } - failures.size} items")
+          }
+        )
         mapOf(
           "success" to true,
           "uri" to uri,
@@ -749,6 +779,13 @@ class LocalDownloaderModule : Module() {
         // A half-written backup is worse than none — it looks restorable and is not.
         runCatching { DocumentsContract.deleteDocument(context.contentResolver, Uri.parse(uri)) }
         val message = error.message ?: "BACKUP_WRITE_FAILED"
+        endBackupJob(
+          JSONObject().apply {
+            put("mode", BACKUP_MODE_EXPORT)
+            put("success", false)
+            put("summary", message)
+          }
+        )
         Log.e(tag, "Backup export failed: ${error.javaClass.simpleName}: $message", error)
         addError("BACKUP_EXPORT_FAILED: ${error.javaClass.simpleName}: $message")
         mapOf("success" to false, "code" to "BACKUP_WRITE_FAILED", "message" to message)
@@ -763,6 +800,11 @@ class LocalDownloaderModule : Module() {
      * No secret is involved: the header states what the file holds and what kind of secret
      * each slot expects, which is what the import screen needs before it can ask for one.
      */
+    /** Lets a screen reattach to a job that started before it was opened. */
+    AsyncFunction("getBackupJobState") {
+      backupJobStateMap()
+    }
+
     AsyncFunction("previewBackup") {
       val context = requireNotNull(appContext.reactContext)
       val picked = pickBackupDocument(BackupDocumentActivity.MODE_OPEN, null)
@@ -826,6 +868,7 @@ class LocalDownloaderModule : Module() {
       }
 
       clearBackupStaging()
+      beginBackupJob(BACKUP_MODE_RESTORE, null)
       val staging = backupStaging()
       val settingsTarget = BackupPorts.SettingsTarget()
       val targets = mapOf(
@@ -841,7 +884,15 @@ class LocalDownloaderModule : Module() {
           val stream = BufferedInputStream(raw, PRIVATE_STREAM_BUFFER_BYTES)
           val header = BackupContainer.peek(stream)
           val restorable = wanted.filter { targets.containsKey(it) }.toSet()
-          BackupContainer.read(stream, header, secrets, restorable) { entry ->
+          BackupContainer.read(
+            stream,
+            header,
+            secrets,
+            restorable,
+            progress = { sectionId, name, index, total ->
+              updateBackupJob(sectionId, name, index, total)
+            },
+          ) { entry ->
             val target = targets[entry.sectionId]
             if (target != null) {
               results.add(BackupSections.restoreEntry(entry, target))
@@ -891,6 +942,16 @@ class LocalDownloaderModule : Module() {
           },
         )
       } finally {
+        endBackupJob(
+          JSONObject().apply {
+            put("mode", BACKUP_MODE_RESTORE)
+            put("success", results.none { it.outcome == BackupSections.ItemOutcome.FAILED })
+            put(
+              "summary",
+              "${results.count { it.outcome == BackupSections.ItemOutcome.RESTORED }} added",
+            )
+          }
+        )
         secrets.forEach { BackupCrypto.wipe(it.secret) }
         clearBackupStaging()
       }
@@ -2340,7 +2401,8 @@ class LocalDownloaderModule : Module() {
     // immediately, and only later does the service actually stop. Nothing emitted
     // again afterwards, so the UI latched "downloading" forever. This value is correct
     // at the instant it is read and needs no callback from the service.
-    val hasBackgroundWork = activeTaskId != null || queueSize() > 0 || presetRenderActive != null
+    val hasBackgroundWork =
+      activeTaskId != null || queueSize() > 0 || presetRenderActive != null || backupJobActive != null
     // Derived for the same reason as the flag above. `notificationPhase` is a side
     // effect of whoever last touched the notification, so ordering decides its value:
     // a render batch sets "rendering", then the finishing download's own cleanup sets
@@ -2348,6 +2410,9 @@ class LocalDownloaderModule : Module() {
     // and fell back to calling everything a download. This reports what is actually
     // running, whatever order the calls happened in.
     val workPhase = when {
+      // Ahead of the others: a backup blocks on their data, so if one is running it is the
+      // thing the user is waiting for.
+      backupJobActive != null -> backupJobActive?.optString("mode").orEmpty().ifBlank { "backup" }
       presetRenderActive != null -> "rendering"
       activeTaskId != null -> notificationPhase.takeIf { it != "idle" } ?: "downloading"
       queueSize() > 0 -> "downloading"
@@ -3112,6 +3177,121 @@ class LocalDownloaderModule : Module() {
     lastQuickReason = reason
     lastQuickReasonFallback = reason
     emitBackgroundStateChanged()
+  }
+
+  // ------------------------------------------------------------------ backup job state
+
+  /**
+   * Mark a backup job as running: pin the foreground service and tell any listening screen.
+   *
+   * The pin is the point. Without it the process is an ordinary background candidate, and
+   * Android reclaims it partway through a long export — which for an export is
+   * unrecoverable, because the container is one continuous stream.
+   */
+  private fun beginBackupJob(mode: String, destinationUri: String?) {
+    backupJobActive = JSONObject().apply {
+      put("mode", mode)
+      put("processed", 0)
+      put("total", 0)
+      put("startedAt", System.currentTimeMillis())
+    }
+    backupJobLastOutcome = null
+    if (mode == BACKUP_MODE_EXPORT && destinationUri != null) {
+      // Written before a single byte goes out. If the process dies mid-export this file is
+      // still here on the next launch, and the half-written document it names gets deleted.
+      persistBackupExportMarker(destinationUri)
+    }
+    syncForegroundNotification(mode, null)
+    emitBackgroundStateChanged()
+    emitBackupProgress()
+  }
+
+  private fun updateBackupJob(sectionId: String, name: String, index: Int, total: Int) {
+    val job = backupJobActive ?: return
+    job.put("processed", index)
+    job.put("total", total)
+    job.put("section", sectionId)
+    job.put("item", name)
+    val fraction = if (total > 0) index.toDouble() / total else 0.0
+    syncForegroundNotification(job.optString("mode"), name, fraction * 100.0)
+    emitBackupProgress()
+  }
+
+  private fun endBackupJob(outcome: JSONObject) {
+    backupJobActive = null
+    backupJobLastOutcome = outcome.apply { put("finishedAt", System.currentTimeMillis()) }
+    clearBackupExportMarker()
+    // Hand the notification back to whatever else is running; the derivation in
+    // backgroundStateMap() decides what that is.
+    syncForegroundNotification(if (activeTaskId != null || queueSize() > 0) "downloading" else "idle", null)
+    emitBackgroundStateChanged()
+    emitBackupProgress()
+  }
+
+  private fun emitBackupProgress() {
+    sendEvent("backupProgress", backupJobStateMap())
+  }
+
+  /** The shape both the event and `getBackupJobState` return, so a screen can reattach. */
+  private fun backupJobStateMap(): Map<String, Any?> = mapOf(
+    "active" to backupJobActive?.let {
+      mapOf(
+        "mode" to it.optString("mode"),
+        "processed" to it.optInt("processed", 0),
+        "total" to it.optInt("total", 0),
+        "section" to it.optString("section").ifBlank { null },
+        "item" to it.optString("item").ifBlank { null },
+        "startedAt" to it.optLong("startedAt", 0L),
+      )
+    },
+    "last" to backupJobLastOutcome?.let {
+      mapOf(
+        "mode" to it.optString("mode"),
+        "success" to it.optBoolean("success", false),
+        "summary" to it.optString("summary").ifBlank { null },
+        "finishedAt" to it.optLong("finishedAt", 0L),
+      )
+    },
+  )
+
+  private fun backupExportMarkerFile(): File =
+    File(requireNotNull(appContext.reactContext).filesDir, BACKUP_EXPORT_MARKER_FILENAME)
+
+  private fun persistBackupExportMarker(uri: String) {
+    runCatching { backupExportMarkerFile().writeText(uri) }
+  }
+
+  private fun clearBackupExportMarker() {
+    runCatching { backupExportMarkerFile().delete() }
+  }
+
+  /**
+   * Delete a document left behind by an export that the system killed.
+   *
+   * An interrupted export cannot be resumed — the container is a single stream — and the
+   * partial file is the dangerous kind of broken: it has a valid header, so it opens, lists
+   * its sections, and only fails once a restore is already underway. Removing it is safer
+   * than leaving something that looks like a backup and is not.
+   *
+   * A restore needs no equivalent. It is incremental and deduplicates by content hash, so
+   * running it again simply skips whatever already landed.
+   */
+  private fun cleanupInterruptedBackupExport() {
+    val marker = backupExportMarkerFile()
+    if (!marker.exists()) return
+    val uri = runCatching { marker.readText().trim() }.getOrNull()
+    if (!uri.isNullOrBlank()) {
+      val context = appContext.reactContext
+      if (context != null) {
+        runCatching {
+          DocumentsContract.deleteDocument(context.contentResolver, Uri.parse(uri))
+        }.onFailure {
+          addError("BACKUP_PARTIAL_CLEANUP_FAILED: $uri: ${it.message}")
+        }
+      }
+      addError("BACKUP_EXPORT_INTERRUPTED: removed the partial file at $uri")
+    }
+    clearBackupExportMarker()
   }
 
   private fun emitBackgroundStateChanged() {
@@ -8131,6 +8311,9 @@ class LocalDownloaderModule : Module() {
     // Scratch space for restores. Lives in cacheDir so the OS can reclaim it if a
     // crash strands anything; the importer also clears it either side of a run.
     private const val BACKUP_STAGING_DIRNAME = "backup_staging"
+    private const val BACKUP_EXPORT_MARKER_FILENAME = "backup_export_in_flight.txt"
+    private const val BACKUP_MODE_EXPORT = "exporting"
+    private const val BACKUP_MODE_RESTORE = "restoring"
     private const val PRIVATE_VAULT_FEATURE_FLAG = true
     private const val PRIVATE_STREAM_BUFFER_BYTES = 1024 * 1024
     private const val PRIVATE_LOG_PROGRESS_STEP_BYTES = 25L * 1024L * 1024L

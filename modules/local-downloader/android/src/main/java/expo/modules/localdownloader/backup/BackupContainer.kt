@@ -35,6 +35,16 @@ object BackupContainer {
       31 * (31 * slotId.hashCode() + secret.contentHashCode()) + secretKind.hashCode()
   }
 
+  /**
+   * Reports which item is being handled, so a long job can show movement.
+   *
+   * [index] is zero-based and [total] comes from the section headers, which are advisory —
+   * a collector that miscounts skews the percentage and nothing else.
+   */
+  fun interface ProgressListener {
+    fun onItem(sectionId: String, name: String, index: Int, total: Int)
+  }
+
   /** One item the exporter could not read in full. */
   data class ExportFailure(
     val sectionId: String,
@@ -88,8 +98,11 @@ object BackupContainer {
     appVersionCode: Int,
     createdAt: Long,
     kdf: BackupCrypto.KdfParams = BackupCrypto.KdfParams(),
+    progress: ProgressListener? = null,
   ): List<ExportFailure> {
     val failures = mutableListOf<ExportFailure>()
+    val totalItems = sections.sumOf { it.itemCount }
+    var handled = 0
     require(secrets.isNotEmpty()) { "A backup needs at least one key slot" }
     sections.forEach { section ->
       require(secrets.any { it.slotId == section.keySlot }) {
@@ -139,6 +152,8 @@ object BackupContainer {
                 header: BackupFormat.EntryHeader,
                 writePayload: (OutputStream) -> Unit,
               ) {
+                progress?.onItem(section.id, header.name, handled, totalItems)
+                handled += 1
                 BackupFormat.writeEntryHeader(encrypted, header)
                 // The payload gets its own chunk framing so it is self-delimiting: the
                 // header's size is advisory and a collector that miscounts cannot push the
@@ -256,8 +271,15 @@ object BackupContainer {
     header: BackupFormat.Header,
     secrets: List<SlotSecret>,
     sectionsToRestore: Set<String>,
+    // Before `visitor` so that stays the last parameter: a callback in the final position
+    // is what makes the trailing-lambda form read well at every call site.
+    progress: ProgressListener? = null,
     visitor: EntryVisitor,
   ) {
+    val totalItems = header.sections
+      .filter { sectionsToRestore.contains(it.id) }
+      .sumOf { it.itemCount }
+    var handled = 0
     val neededSlots = header.sections
       .filter { sectionsToRestore.contains(it.id) }
       .map { it.keySlot }
@@ -289,6 +311,8 @@ object BackupContainer {
           BackupCrypto.openSectionDecryptingStream(framing, sectionKey, section.id).use { decrypted ->
             while (true) {
               val entryHeader = BackupFormat.readEntryHeader(decrypted) ?: break
+              progress?.onItem(section.id, entryHeader.name, handled, totalItems)
+              handled += 1
               val entry = ReadEntry(section.id, entryHeader, decrypted)
               visitor.visit(entry)
               // Whether the payload was taken or skipped, the entry must be finished so the

@@ -1,5 +1,6 @@
 import LocalDownloaderModule, {
   addBackgroundStateListener,
+  addBackupProgressListener,
   addDownloadProgressListener,
   addPrivateVaultMigrationProgressListener,
   addSoundPresetProgressListener,
@@ -9,6 +10,7 @@ import LocalDownloaderModule, {
 export * from './LocalDownloader.types';
 export {
   addBackgroundStateListener,
+  addBackupProgressListener,
   addDownloadProgressListener,
   addPrivateVaultMigrationProgressListener,
   addSoundPresetProgressListener,

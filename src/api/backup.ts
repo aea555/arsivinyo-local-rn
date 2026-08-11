@@ -2,7 +2,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
 import LocalDownloaderModule, {
+    addBackupProgressListener,
     type LocalBackupCreateResult,
+    type LocalBackupJobState,
     type LocalBackupPreview,
     type LocalBackupRestoreResult,
     type LocalBackupSecret,
@@ -138,6 +140,19 @@ export async function createBackup(input: {
         : undefined;
     return LocalDownloaderModule.createBackup({ ...input, settings });
 }
+
+/**
+ * The export or restore currently running, plus the outcome of the last one.
+ *
+ * A backup pins a foreground service, so it keeps going while the app is in the background
+ * or the screen is closed. This is how a reopened screen finds out.
+ */
+export async function getBackupJobState(): Promise<LocalBackupJobState> {
+    ensureAndroid();
+    return LocalDownloaderModule.getBackupJobState();
+}
+
+export { addBackupProgressListener };
 
 /** Read a picked backup's plaintext header. No secret needed. */
 export async function previewBackup(): Promise<LocalBackupPreview> {
