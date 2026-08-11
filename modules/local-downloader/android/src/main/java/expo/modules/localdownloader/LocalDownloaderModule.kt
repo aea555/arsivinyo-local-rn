@@ -272,6 +272,19 @@ class LocalDownloaderModule : Module() {
    * component that no longer exists.
    */
   private var backupJobLastOutcome: JSONObject? = null
+
+  /**
+   * When the backup notification was last posted, and at what whole percent.
+   *
+   * Android silently drops notification updates past roughly ten per second. A restore of a
+   * few dozen small items outruns that easily, and the update that gets dropped is the one
+   * that matters: the final "idle" post arriving straight after the burst. The notification
+   * then keeps the last frame that got through — which is why it always looked stuck on the
+   * final item. Progress posts are throttled so the burst never forms; the in-app event is
+   * not, because it does not go through the notification manager.
+   */
+  private var backupNotificationLastPostAt = 0L
+  private var backupNotificationLastPercent = -1
   private val ignoredTaskResults = ConcurrentHashMap.newKeySet<String>()
   private val lastErrors = ArrayDeque<String>()
   private val failureLogLock = Any()
@@ -372,14 +385,17 @@ class LocalDownloaderModule : Module() {
       // header, so it opens and lists its sections and only fails once a restore is under
       // way — worse than no file at all.
       runCatching { cleanupInterruptedBackupExport() }
-      // Bring the notification back in line with reality. The service is START_STICKY, so
-      // Android restarts it after a process kill and it can be left showing whatever the
-      // dead process last rendered — a progress bar for work that is long over. Nothing
-      // else corrects that, because every other call site only fires when something
-      // starts or finishes.
-      runCatching { reconcileForegroundNotification() }
       stickyNotificationEnabled = isStickyNotificationEnabledPersisted(context)
       debug("Module OnCreate started. supportedAbis=${Build.SUPPORTED_ABIS?.joinToString()}")
+      // Bring the notification in line with reality — AFTER every persisted flag it reads
+      // has been loaded. Placed any earlier it saw stickyNotificationEnabled at its
+      // uninitialised default of false, decided nothing should be showing, and cancelled
+      // the user's sticky notification on every launch.
+      //
+      // The service is START_STICKY, so Android restarts it after a process kill and it can
+      // be left showing whatever the dead process last rendered. Nothing else corrects
+      // that, because every other call site fires only when work starts or finishes.
+      runCatching { reconcileForegroundNotification() }
       cleanupRuntimeCookieTemp()
       cleanupPrivatePlaybackCacheInternal()
       cleanupPrivateVaultPartials()
@@ -873,19 +889,22 @@ class LocalDownloaderModule : Module() {
         return@AsyncFunction mapOf("success" to false, "code" to "BACKUP_NO_SECRET")
       }
 
-      clearBackupStaging()
-      beginBackupJob(BACKUP_MODE_RESTORE, null)
-      val staging = backupStaging()
-      val settingsTarget = BackupPorts.SettingsTarget()
-      val targets = mapOf(
-        BackupFormat.SECTION_VAULT to BackupPorts.vaultTarget(backupVaultPort(), staging),
-        BackupFormat.SECTION_MUSIC to BackupPorts.musicTarget(backupMusicPort(), staging),
-        BackupFormat.SECTION_SETTINGS to settingsTarget,
-        BackupFormat.SECTION_COOKIES to BackupPorts.cookieTarget(backupCookiePort()),
-      )
       val results = mutableListOf<BackupSections.ItemResult>()
+      val settingsTarget = BackupPorts.SettingsTarget()
 
+      // Nothing may sit between this and the try. Anything that throws in the gap leaves
+      // the job marked active with no matching end, so the foreground notification stays
+      // pinned on a phase that finished — which is precisely the symptom this chases.
+      beginBackupJob(BACKUP_MODE_RESTORE, null)
       try {
+        clearBackupStaging()
+        val staging = backupStaging()
+        val targets = mapOf(
+          BackupFormat.SECTION_VAULT to BackupPorts.vaultTarget(backupVaultPort(), staging),
+          BackupFormat.SECTION_MUSIC to BackupPorts.musicTarget(backupMusicPort(), staging),
+          BackupFormat.SECTION_SETTINGS to settingsTarget,
+          BackupFormat.SECTION_COOKIES to BackupPorts.cookieTarget(backupCookiePort()),
+        )
         context.contentResolver.openInputStream(Uri.parse(uri))?.use { raw ->
           val stream = BufferedInputStream(raw, PRIVATE_STREAM_BUFFER_BYTES)
           val header = BackupContainer.peek(stream)
@@ -3238,13 +3257,25 @@ class LocalDownloaderModule : Module() {
     job.put("processed", index)
     job.put("total", total)
     job.put("section", sectionId)
-    val fraction = if (total > 0) index.toDouble() / total else 0.0
-    syncForegroundNotification(job.optString("mode"), null, fraction * 100.0)
+    val percent = if (total > 0) ((index * 100) / total) else 0
+    val now = System.currentTimeMillis()
+    val movedEnough = percent != backupNotificationLastPercent
+    val waitedEnough = now - backupNotificationLastPostAt >= BACKUP_NOTIFICATION_MIN_INTERVAL_MS
+    if (movedEnough && waitedEnough) {
+      backupNotificationLastPostAt = now
+      backupNotificationLastPercent = percent
+      syncForegroundNotification(job.optString("mode"), null, percent.toDouble())
+    }
+    // Always emitted: the in-app screen is not rate limited and wants every item.
     emitBackupProgress()
   }
 
   private fun endBackupJob(outcome: JSONObject) {
+    debug("BACKUP_NOTIF endBackupJob mode=${outcome.optString("mode")}")
     backupJobActive = null
+    // Let the final post through unconditionally — it is the one that must not be dropped.
+    backupNotificationLastPostAt = 0L
+    backupNotificationLastPercent = -1
     backupJobLastOutcome = outcome.apply { put("finishedAt", System.currentTimeMillis()) }
     clearBackupExportMarker()
     // Hand the notification back to whatever else is running, using the same derivation as
@@ -3268,6 +3299,8 @@ class LocalDownloaderModule : Module() {
       activeTaskId != null || queueSize() > 0 -> "downloading"
       else -> "idle"
     }
+    // Phase and a flag only — never an item name.
+    debug("BACKUP_NOTIF reconcile phase=$phase pinned=$stickyNotificationEnabled")
     syncForegroundNotification(phase, null)
   }
 
@@ -8357,6 +8390,8 @@ class LocalDownloaderModule : Module() {
     // crash strands anything; the importer also clears it either side of a run.
     private const val BACKUP_STAGING_DIRNAME = "backup_staging"
     private const val BACKUP_EXPORT_MARKER_FILENAME = "backup_export_in_flight.txt"
+    /** Comfortably under Android's notification update limit of roughly ten per second. */
+    private const val BACKUP_NOTIFICATION_MIN_INTERVAL_MS = 500L
     private const val BACKUP_MODE_EXPORT = "exporting"
     private const val BACKUP_MODE_RESTORE = "restoring"
     private const val PRIVATE_VAULT_FEATURE_FLAG = true
