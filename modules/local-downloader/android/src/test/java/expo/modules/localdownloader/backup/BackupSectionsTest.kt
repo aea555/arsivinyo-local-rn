@@ -285,6 +285,53 @@ class BackupSectionsTest {
     assertEquals(setOf("keep.flac"), mediaOnly.stored.keys)
   }
 
+  @Test
+  fun anIncompleteEntryIsRefusedAndNeverReachesTheStore() {
+    // Its size and hash verify — only the flag says it is half a file. If the target were
+    // allowed to keep it, a restore would silently install truncated media.
+    val partial = bytes(6_000, 21L)
+    val file = ByteArrayOutputStream().also { out ->
+      BackupContainer.write(
+        output = out,
+        secrets = listOf(secret()),
+        sections = listOf(
+          BackupContainer.PlannedSection(
+            id = BackupFormat.SECTION_MUSIC,
+            itemCount = 2,
+            plaintextBytes = 0L,
+            writeEntries = { sink ->
+              sink.add(BackupFormat.EntryHeader("cut.flac", 999L, BackupSections.KIND_MEDIA)) { stream ->
+                stream.write(partial)
+                throw IllegalStateException("source vanished")
+              }
+              sink.addStream(
+                BackupFormat.EntryHeader("intact.flac", 500L, BackupSections.KIND_MEDIA),
+                ByteArrayInputStream(bytes(500, 22L)),
+              )
+            },
+          )
+        ),
+        appVersion = "v", appVersionCode = 1, createdAt = 1L, kdf = fastKdf(),
+      )
+    }.toByteArray()
+
+    val store = FakeStore()
+    val results = restoreInto(file, store, setOf(BackupFormat.SECTION_MUSIC))
+
+    assertEquals(BackupSections.ItemOutcome.FAILED, results.first { it.name == "cut.flac" }.outcome)
+    assertTrue(
+      "The truncated item must be discarded, not committed",
+      !store.committed.contains("cut.flac"),
+    )
+    assertTrue("It must be undone", store.discarded.contains("cut.flac"))
+
+    // And the healthy entry after it still restores.
+    assertEquals(
+      BackupSections.ItemOutcome.RESTORED,
+      results.first { it.name == "intact.flac" }.outcome,
+    )
+  }
+
   // ------------------------------------------------------------------ partial failure
 
   @Test

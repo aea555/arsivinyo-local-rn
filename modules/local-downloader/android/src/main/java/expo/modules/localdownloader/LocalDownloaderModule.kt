@@ -716,7 +716,7 @@ class LocalDownloaderModule : Module() {
 
       try {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
-        context.contentResolver.openOutputStream(Uri.parse(uri))?.use { raw ->
+        val failures = context.contentResolver.openOutputStream(Uri.parse(uri))?.use { raw ->
           BufferedOutputStream(raw, PRIVATE_STREAM_BUFFER_BYTES).use { out ->
             BackupContainer.write(
               output = out,
@@ -729,11 +729,20 @@ class LocalDownloaderModule : Module() {
           }
         } ?: throw IllegalStateException("BACKUP_WRITE_FAILED")
 
+        failures.forEach {
+          addError("BACKUP_EXPORT_ITEM_FAILED: ${it.sectionId}/${it.name}: ${it.error}")
+        }
         mapOf(
           "success" to true,
           "uri" to uri,
           "sections" to sections.map {
             mapOf("id" to it.id, "itemCount" to it.itemCount, "plaintextBytes" to it.plaintextBytes)
+          },
+          // Items whose source vanished or became unreadable while the backup was being
+          // written. The file is still valid; these entries are marked and a restore skips
+          // them rather than writing truncated content.
+          "failed" to failures.map {
+            mapOf("section" to it.sectionId, "name" to it.name, "error" to it.error)
           },
         )
       } catch (error: Throwable) {

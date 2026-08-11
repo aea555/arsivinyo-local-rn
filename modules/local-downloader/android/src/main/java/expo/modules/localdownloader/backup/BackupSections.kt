@@ -226,6 +226,19 @@ object BackupSections {
       token = target.store(header, entry.payload)
       val trailer = entry.verifiedTrailer()
 
+      // The exporter could not read this item in full. Its size and hash describe the
+      // truncated bytes and so verify perfectly — only this flag distinguishes half a
+      // video from a whole one, so the item is dropped rather than stored.
+      if (!trailer.complete) {
+        target.discard(token)
+        return ItemResult(
+          entry.sectionId,
+          header.name,
+          ItemOutcome.FAILED,
+          "incomplete in the backup",
+        )
+      }
+
       // The size that mattered is the real one from the trailer, not the advisory header
       // value — but the cheap filter above could only use the header. Re-check against the
       // trailer so a wrong advisory size cannot let a duplicate through.

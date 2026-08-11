@@ -439,6 +439,19 @@ object BackupFormat {
   data class EntryTrailer(
     val size: Long,
     val sha256: String,
+    /**
+     * False when the exporter could not read the whole item — the source file was deleted
+     * or became unreadable partway through.
+     *
+     * This flag is why a failed item cannot simply be left out: by the time a payload
+     * fails, its header is already written, so the entry must still be closed. The size and
+     * hash below describe what was actually written, so they would *verify* against a
+     * truncated file and a restore would store half a video believing it intact. The reader
+     * checks this flag and refuses the item.
+     *
+     * Absent in a trailer means complete, so files written before this existed still read.
+     */
+    val complete: Boolean = true,
   )
 
   fun writeEntryHeader(output: OutputStream, entry: EntryHeader) {
@@ -484,6 +497,8 @@ object BackupFormat {
     val json = JSONObject().apply {
       put("size", trailer.size)
       put("sha256", trailer.sha256)
+      // Only written when false, so a normal backup carries no extra bytes per entry.
+      if (!trailer.complete) put("incomplete", true)
     }.toString().toByteArray(Charsets.UTF_8)
     writeU32(output, json.size.toLong())
     output.write(json)
@@ -501,6 +516,7 @@ object BackupFormat {
         if (it < 0L) throw BackupFormatException("Backup entry trailer has no size")
       },
       sha256 = json.optString("sha256"),
+      complete = !json.optBoolean("incomplete", false),
     )
   }
 

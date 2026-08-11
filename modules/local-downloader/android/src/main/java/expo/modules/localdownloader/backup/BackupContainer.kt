@@ -35,6 +35,13 @@ object BackupContainer {
       31 * (31 * slotId.hashCode() + secret.contentHashCode()) + secretKind.hashCode()
   }
 
+  /** One item the exporter could not read in full. */
+  data class ExportFailure(
+    val sectionId: String,
+    val name: String,
+    val error: String,
+  )
+
   /** Where a collector pushes the items of one section. */
   interface EntrySink {
     /**
@@ -81,7 +88,8 @@ object BackupContainer {
     appVersionCode: Int,
     createdAt: Long,
     kdf: BackupCrypto.KdfParams = BackupCrypto.KdfParams(),
-  ) {
+  ): List<ExportFailure> {
+    val failures = mutableListOf<ExportFailure>()
     require(secrets.isNotEmpty()) { "A backup needs at least one key slot" }
     sections.forEach { section ->
       require(secrets.any { it.slotId == section.keySlot }) {
@@ -137,28 +145,53 @@ object BackupContainer {
                 // reader out of step.
                 val digest = MessageDigest.getInstance("SHA-256")
                 var written = 0L
+                var failure: Throwable? = null
+
                 BackupFormat.ChunkedOutputStream(encrypted).use { framed ->
-                  writePayload(object : OutputStream() {
-                    override fun write(b: Int) {
-                      framed.write(b)
-                      digest.update(b.toByte())
-                      written++
-                    }
+                  try {
+                    writePayload(object : OutputStream() {
+                      override fun write(b: Int) {
+                        framed.write(b)
+                        digest.update(b.toByte())
+                        written++
+                      }
 
-                    override fun write(b: ByteArray, off: Int, len: Int) {
-                      framed.write(b, off, len)
-                      digest.update(b, off, len)
-                      written += len
-                    }
+                      override fun write(b: ByteArray, off: Int, len: Int) {
+                        framed.write(b, off, len)
+                        digest.update(b, off, len)
+                        written += len
+                      }
 
-                    // The payload writer must not be able to end the entry early.
-                    override fun close() = Unit
-                  })
+                      // The payload writer must not be able to end the entry early.
+                      override fun close() = Unit
+                    })
+                  } catch (error: Throwable) {
+                    // The item's list was a snapshot taken before writing began, so a file
+                    // deleted in the meantime shows up here. One unreadable item must not
+                    // destroy an otherwise good backup of everything else — but the entry
+                    // header is already written, so the entry has to be closed rather than
+                    // dropped. It is closed as incomplete.
+                    failure = error
+                  }
                 }
+
                 BackupFormat.writeEntryTrailer(
                   encrypted,
-                  BackupFormat.EntryTrailer(written, digest.digest().toHex()),
+                  BackupFormat.EntryTrailer(
+                    size = written,
+                    sha256 = digest.digest().toHex(),
+                    complete = failure == null,
+                  ),
                 )
+                failure?.let {
+                  failures.add(
+                    ExportFailure(
+                      sectionId = section.id,
+                      name = header.name,
+                      error = it.message ?: it::class.java.simpleName,
+                    )
+                  )
+                }
               }
             })
             BackupFormat.writeSectionTerminator(encrypted)
@@ -168,6 +201,7 @@ object BackupContainer {
         }
       }
       output.flush()
+      return failures
     } finally {
       BackupCrypto.wipe(*masterKeys.values.toTypedArray())
     }

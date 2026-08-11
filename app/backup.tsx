@@ -221,7 +221,17 @@ export default function BackupScreen() {
                 return;
             }
             const total = (result.sections ?? []).reduce((sum, s) => sum + s.itemCount, 0);
-            setStatus(t('backup.exportDone', { count: total }));
+            const failed = result.failed ?? [];
+            setStatus(t('backup.exportDone', { count: total - failed.length }));
+            // Not a silent partial success: an item that could not be read is named, so the
+            // user knows the backup is missing it before they rely on the file.
+            if (failed.length > 0) {
+                setReport(
+                    t('backup.exportSkipped', { count: failed.length }) +
+                        '\n' +
+                        failed.map((f) => f.name).join(', '),
+                );
+            }
         } catch (error) {
             setStatus(t('backup.exportFailed', { message: (error as Error).message }));
         } finally {

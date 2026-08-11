@@ -278,6 +278,133 @@ class BackupContainerTest {
     assertEquals(BackupContainer.sha256(ByteArrayInputStream(payload)), trailer!!.sha256)
   }
 
+  // ------------------------------------------------------------------ export failures
+
+  @Test
+  fun oneUnreadableItemDoesNotDestroyTheWholeBackup() {
+    // The list of items is a snapshot taken before writing starts, so a file deleted while a
+    // 20 GB export runs shows up as a read failure partway through. Losing the entire backup
+    // to that would be the worst possible outcome.
+    val good = bytes(50_000, 1L)
+    val alsoGood = bytes(30_000, 2L)
+    val file = ByteArrayOutputStream().also { out ->
+      val failures = BackupContainer.write(
+        output = out,
+        secrets = listOf(secret("a strong test passphrase")),
+        sections = listOf(
+          BackupContainer.PlannedSection(
+            id = BackupFormat.SECTION_MUSIC,
+            itemCount = 3,
+            plaintextBytes = 0L,
+            writeEntries = { sink ->
+              sink.addStream(
+                BackupFormat.EntryHeader("first.flac", good.size.toLong(), "audio"),
+                ByteArrayInputStream(good),
+              )
+              sink.add(BackupFormat.EntryHeader("deleted.flac", 99_999L, "audio")) { stream ->
+                stream.write(bytes(4_000, 3L)) // some bytes land...
+                throw java.io.FileNotFoundException("source file was deleted")
+              }
+              sink.addStream(
+                BackupFormat.EntryHeader("third.flac", alsoGood.size.toLong(), "audio"),
+                ByteArrayInputStream(alsoGood),
+              )
+            },
+          )
+        ),
+        appVersion = "v", appVersionCode = 1, createdAt = 1L, kdf = fastKdf(),
+      )
+
+      assertEquals(1, failures.size)
+      assertEquals("deleted.flac", failures.single().name)
+      assertEquals(BackupFormat.SECTION_MUSIC, failures.single().sectionId)
+      assertTrue(failures.single().error.contains("deleted"))
+    }.toByteArray()
+
+    // The two good items must still restore, and the failed one must not.
+    val restored = restore(
+      file,
+      listOf(secret("a strong test passphrase")),
+      setOf(BackupFormat.SECTION_MUSIC),
+    )
+    assertArrayEquals(good, restored[BackupFormat.SECTION_MUSIC]!!["first.flac"])
+    assertArrayEquals(alsoGood, restored[BackupFormat.SECTION_MUSIC]!!["third.flac"])
+  }
+
+  @Test
+  fun aTruncatedItemIsMarkedIncompleteRatherThanLookingIntact() {
+    // The trap this closes: the trailer records the size and hash of what was *written*, so
+    // a half-copied video verifies perfectly against its own hash. Without the flag a
+    // restore would store half a file believing it sound.
+    val partial = bytes(4_000, 7L)
+    val file = ByteArrayOutputStream().also { out ->
+      BackupContainer.write(
+        output = out,
+        secrets = listOf(secret("a strong test passphrase")),
+        sections = listOf(
+          BackupContainer.PlannedSection(
+            id = BackupFormat.SECTION_VAULT,
+            itemCount = 1,
+            plaintextBytes = 0L,
+            writeEntries = { sink ->
+              sink.add(BackupFormat.EntryHeader("cut-short.mp4", 999_999L, "video")) { stream ->
+                stream.write(partial)
+                throw IllegalStateException("read failed")
+              }
+            },
+          )
+        ),
+        appVersion = "v", appVersionCode = 1, createdAt = 1L, kdf = fastKdf(),
+      )
+    }.toByteArray()
+
+    var trailer: BackupFormat.EntryTrailer? = null
+    val input = ByteArrayInputStream(file)
+    val header = BackupContainer.peek(input)
+    BackupContainer.read(
+      input, header, listOf(secret("a strong test passphrase")), setOf(BackupFormat.SECTION_VAULT)
+    ) { entry -> trailer = entry.verifiedTrailer() }
+
+    // Size and hash are internally consistent — that is exactly the problem.
+    assertEquals(partial.size.toLong(), trailer!!.size)
+    assertEquals(BackupContainer.sha256(ByteArrayInputStream(partial)), trailer!!.sha256)
+    // Only the flag reveals it.
+    assertEquals(false, trailer!!.complete)
+  }
+
+  @Test
+  fun aCompleteEntryIsNotMarkedIncomplete() {
+    // Guards the inverse: if everything were flagged incomplete, restores would silently
+    // stop working while every other test still passed.
+    val payload = bytes(10_000, 8L)
+    val file = ByteArrayOutputStream().also { out ->
+      BackupContainer.write(
+        output = out,
+        secrets = listOf(secret("a strong test passphrase")),
+        sections = listOf(
+          BackupContainer.PlannedSection(
+            id = BackupFormat.SECTION_MUSIC,
+            itemCount = 1,
+            plaintextBytes = 0L,
+            writeEntries = { sink ->
+              sink.addStream(
+                BackupFormat.EntryHeader("fine.flac", payload.size.toLong(), "audio"),
+                ByteArrayInputStream(payload),
+              )
+            },
+          )
+        ),
+        appVersion = "v", appVersionCode = 1, createdAt = 1L, kdf = fastKdf(),
+      )
+    }.toByteArray()
+
+    val input = ByteArrayInputStream(file)
+    val header = BackupContainer.peek(input)
+    BackupContainer.read(
+      input, header, listOf(secret("a strong test passphrase")), setOf(BackupFormat.SECTION_MUSIC)
+    ) { entry -> assertEquals(true, entry.verifiedTrailer().complete) }
+  }
+
   // ------------------------------------------------------------------ selective restore
 
   @Test

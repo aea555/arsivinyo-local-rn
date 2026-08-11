@@ -579,6 +579,12 @@ export interface LocalBackupCreateResult {
   success: boolean;
   uri?: string;
   sections?: LocalBackupSectionSummary[];
+  /**
+   * Items whose source became unreadable while the backup was written — deleted partway
+   * through, most likely. The file is still valid and holds everything else; these entries
+   * are marked incomplete so a restore refuses them rather than writing truncated content.
+   */
+  failed?: { section: LocalBackupSectionId; name: string; error: string }[];
   code?: string;
   message?: string;
 }

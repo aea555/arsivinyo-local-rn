@@ -595,6 +595,7 @@
         "working": "Çalışıyor…",
         "cancelled": "İptal edildi.",
         "exportDone": "Yedek yazıldı. {{count}} öğe dahil edildi.",
+        "exportSkipped": "{{count}} öğe okunamadı ve yedeğe dahil edilmedi:",
         "exportFailed": "Yedek yazılamadı. {{message}}",
         "previewFailed": "Bu dosya okunamadı. {{message}}",
         "wrongSecret": "Bu dosya için doğru gizli anahtar değil.",

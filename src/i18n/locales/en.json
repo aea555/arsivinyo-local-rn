@@ -595,6 +595,7 @@
         "working": "Working…",
         "cancelled": "Cancelled.",
         "exportDone": "Backup written. {{count}} items included.",
+        "exportSkipped": "{{count}} item(s) could not be read and are not in the backup:",
         "exportFailed": "Could not write the backup. {{message}}",
         "previewFailed": "Could not read that file. {{message}}",
         "wrongSecret": "That is not the right secret for this file.",
