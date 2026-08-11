@@ -176,6 +176,9 @@ class BackupPortsTest {
       BackupPorts.CookieRecord(it.first, it.second, defaults.contains(it))
     }
 
+    override fun exists(platform: String, profileName: String) =
+      jars.containsKey(platform to profileName)
+
     override fun readPlaintext(record: BackupPorts.CookieRecord) =
       jars.getValue(record.platform to record.profileName)
 
@@ -576,6 +579,109 @@ class BackupPortsTest {
     assertEquals("sessionid=xyz", String(destination.jars.getValue("instagram" to "main")))
     assertTrue(destination.defaults.contains("youtube" to "main"))
     assertTrue("A non-default profile must not become the default", !destination.defaults.contains("youtube" to "alt"))
+  }
+
+  @Test
+  fun anExistingCookieProfileIsNeverOverwritten() {
+    // The failure this prevents: you back up, later sign in again on the device, then
+    // restore. Writing the backup's stale jar over the live one would silently replace a
+    // working session with a dead one.
+    val source = FakeCookies().add("youtube", "main", "SID=old-session-from-the-backup")
+
+    val file = writeBackup(
+      listOf(BackupSections.plan(BackupFormat.SECTION_COOKIES, BackupPorts.collectCookies(source)))
+    )
+
+    val destination = FakeCookies().add("youtube", "main", "SID=the-current-live-session")
+    val results = restore(
+      file,
+      mapOf(BackupFormat.SECTION_COOKIES to BackupPorts.cookieTarget(destination)),
+    )
+
+    assertEquals(
+      BackupSections.ItemOutcome.SKIPPED_EXISTS,
+      results.single().outcome,
+    )
+    assertEquals(
+      "The live session must survive",
+      "SID=the-current-live-session",
+      String(destination.jars.getValue("youtube" to "main")),
+    )
+  }
+
+  @Test
+  fun aCookieProfileMissingOnThisDeviceIsRestored() {
+    // The rule is "never clobber", not "never restore" — the fresh-device case must work.
+    val source = FakeCookies()
+      .add("youtube", "main", "SID=abc")
+      .add("instagram", "main", "sessionid=xyz")
+    val file = writeBackup(
+      listOf(BackupSections.plan(BackupFormat.SECTION_COOKIES, BackupPorts.collectCookies(source)))
+    )
+
+    val destination = FakeCookies().add("youtube", "main", "SID=already-signed-in")
+    val results = restore(
+      file,
+      mapOf(BackupFormat.SECTION_COOKIES to BackupPorts.cookieTarget(destination)),
+    )
+
+    assertEquals(
+      BackupSections.ItemOutcome.SKIPPED_EXISTS,
+      results.first { it.name.contains("youtube") }.outcome,
+    )
+    assertEquals(
+      BackupSections.ItemOutcome.RESTORED,
+      results.first { it.name.contains("instagram") }.outcome,
+    )
+    assertEquals("sessionid=xyz", String(destination.jars.getValue("instagram" to "main")))
+  }
+
+  @Test
+  fun restoringAnUnchangedBackupReportsNothingAdded() {
+    // The bug this pins: a restore that changed nothing reported dozens of records added,
+    // because cover art, playlists and preferences were all counted as files.
+    val vault = FakeVault().add("v1", "holiday.mp4", bytes(120_000, 1L))
+    val music = FakeMusic()
+      .add("s1", "one.flac", bytes(80_000, 3L), bytes(1_000, 4L))
+      .add("s2", "two.flac", bytes(90_000, 5L), bytes(1_100, 6L))
+    music.autoPresets = JSONObject().apply { put("presetIds", "nightcore") }
+    val cookies = FakeCookies().add("youtube", "main", "SID=abc")
+    val settings = JSONObject().apply { put("@arsivinyo_theme", "midnight") }
+
+    val file = writeBackup(
+      listOf(
+        BackupSections.plan(BackupFormat.SECTION_VAULT, BackupPorts.collectVault(vault)),
+        BackupSections.plan(BackupFormat.SECTION_MUSIC, BackupPorts.collectMusic(music)),
+        BackupSections.plan(BackupFormat.SECTION_SETTINGS, BackupPorts.collectSettings(settings)),
+        BackupSections.plan(BackupFormat.SECTION_COOKIES, BackupPorts.collectCookies(cookies)),
+      )
+    )
+
+    // Restore straight back into the very stores it came from — nothing has changed.
+    val results = restore(
+      file,
+      mapOf(
+        BackupFormat.SECTION_VAULT to BackupPorts.vaultTarget(vault, TempStaging()),
+        BackupFormat.SECTION_MUSIC to BackupPorts.musicTarget(music, TempStaging()),
+        BackupFormat.SECTION_SETTINGS to BackupPorts.SettingsTarget(),
+        BackupFormat.SECTION_COOKIES to BackupPorts.cookieTarget(cookies),
+      ),
+    )
+
+    val added = results.count { it.outcome == BackupSections.ItemOutcome.RESTORED }
+    assertEquals("A no-op restore must add nothing: ${results.filter { it.outcome == BackupSections.ItemOutcome.RESTORED }}", 0, added)
+
+    // The media must be recognised by content, not merely left alone by accident.
+    assertEquals(
+      3,
+      results.count { it.outcome == BackupSections.ItemOutcome.SKIPPED_DUPLICATE },
+    )
+    assertEquals(
+      1,
+      results.count { it.outcome == BackupSections.ItemOutcome.SKIPPED_EXISTS },
+    )
+    // Artwork, playlists, the preset config and the preferences: written, but not records.
+    assertTrue(results.any { it.outcome == BackupSections.ItemOutcome.APPLIED })
   }
 
   @Test

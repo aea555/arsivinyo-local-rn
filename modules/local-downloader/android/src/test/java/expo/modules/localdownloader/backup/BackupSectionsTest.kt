@@ -272,8 +272,9 @@ class BackupSectionsTest {
     )
 
     val mediaOnly = object : FakeStore() {
-      override fun wants(header: BackupFormat.EntryHeader) =
-        header.kind == BackupSections.KIND_MEDIA
+      override fun screen(header: BackupFormat.EntryHeader) =
+        if (header.kind == BackupSections.KIND_MEDIA) null
+        else BackupSections.ItemOutcome.SKIPPED_UNWANTED
     }
     val results = restoreInto(file, mediaOnly, setOf(BackupFormat.SECTION_MUSIC))
 

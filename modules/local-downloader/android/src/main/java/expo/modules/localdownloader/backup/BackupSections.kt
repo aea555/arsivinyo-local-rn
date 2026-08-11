@@ -129,8 +129,31 @@ object BackupSections {
     }
   }
 
-  /** What a restore did with one item, for the report shown at the end. */
-  enum class ItemOutcome { RESTORED, SKIPPED_DUPLICATE, SKIPPED_UNWANTED, FAILED }
+  /**
+   * What a restore did with one item.
+   *
+   * [RESTORED] is deliberately narrow: it means a file was added to a library. Playlists,
+   * preferences and cover art are [APPLIED] instead, because counting them as records
+   * added made a restore that changed nothing report dozens of additions.
+   */
+  enum class ItemOutcome {
+    /** A file was added. */
+    RESTORED,
+
+    /** Metadata was written — playlists, preferences, the auto-apply config, cover art. */
+    APPLIED,
+
+    /** The same content is already stored, identified by hash. */
+    SKIPPED_DUPLICATE,
+
+    /** Something with this identity already exists and was left alone. */
+    SKIPPED_EXISTS,
+
+    /** The target does not handle this kind of entry. */
+    SKIPPED_UNWANTED,
+
+    FAILED,
+  }
 
   data class ItemResult(
     val sectionId: String,
@@ -148,10 +171,21 @@ object BackupSections {
     fun duplicates(): DuplicateIndex = DuplicateIndex.EMPTY
 
     /**
-     * @return false to skip the item entirely without reading its payload — used for kinds
-     * a target does not handle.
+     * Decide an entry's fate before its payload is read.
+     *
+     * @return null to proceed, or the outcome to record when skipping. Returning an outcome
+     * rather than a boolean lets a target say *why* it declined — "already exists" and "not
+     * my kind of entry" read very differently in a restore report.
      */
-    fun wants(header: BackupFormat.EntryHeader): Boolean = true
+    fun screen(header: BackupFormat.EntryHeader): ItemOutcome? = null
+
+    /**
+     * True when this entry is metadata rather than a stored file.
+     *
+     * Kept separate from [store] so the report cannot claim to have added files it did not:
+     * cover art belongs to another entry, and a blob is a settings write.
+     */
+    fun isBookkeeping(header: BackupFormat.EntryHeader): Boolean = false
 
     /**
      * Consume [payload] and store it. Called only once the item is known to be wanted.
@@ -180,8 +214,8 @@ object BackupSections {
    */
   fun restoreEntry(entry: BackupContainer.RestoredEntry, target: RestoreTarget): ItemResult {
     val header = entry.header
-    if (!target.wants(header)) {
-      return ItemResult(entry.sectionId, header.name, ItemOutcome.SKIPPED_UNWANTED)
+    target.screen(header)?.let { skipped ->
+      return ItemResult(entry.sectionId, header.name, skipped)
     }
 
     val duplicates = target.duplicates()
@@ -203,7 +237,11 @@ object BackupSections {
       }
 
       target.commit(token, trailer)
-      return ItemResult(entry.sectionId, header.name, ItemOutcome.RESTORED)
+      return ItemResult(
+        entry.sectionId,
+        header.name,
+        if (target.isBookkeeping(header)) ItemOutcome.APPLIED else ItemOutcome.RESTORED,
+      )
     } catch (e: Exception) {
       // One unreadable item should not abandon the rest of the restore; the caller reports
       // what landed and what did not.

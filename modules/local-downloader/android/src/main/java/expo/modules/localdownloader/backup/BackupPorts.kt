@@ -110,6 +110,17 @@ object BackupPorts {
   interface CookiePort {
     fun list(): List<CookieRecord>
 
+    /**
+     * Whether a profile with this identity is already stored.
+     *
+     * Cookie profiles are deduplicated by *name*, not by content hash, unlike every other
+     * item. A profile is a user-assigned identity — "youtube/main" — so a hash comparison
+     * would let a stale backup overwrite a session that has since been signed in again,
+     * silently replacing a working login with a dead one. Files are the opposite case:
+     * their names collide meaninglessly, so those are compared by content.
+     */
+    fun exists(platform: String, profileName: String): Boolean
+
     /** The decrypted cookie jar. Re-encrypted under this device's key on restore. */
     fun readPlaintext(record: CookieRecord): ByteArray
 
@@ -279,8 +290,12 @@ object BackupPorts {
 
       override fun duplicates() = existing
 
-      override fun wants(header: BackupFormat.EntryHeader) =
-        header.kind == BackupSections.KIND_MEDIA
+      override fun screen(header: BackupFormat.EntryHeader) =
+        if (header.kind == BackupSections.KIND_MEDIA) {
+          null
+        } else {
+          BackupSections.ItemOutcome.SKIPPED_UNWANTED
+        }
 
       override fun store(header: BackupFormat.EntryHeader, payload: InputStream): Any? =
         stage(staging, header, payload)
@@ -322,6 +337,11 @@ object BackupPorts {
 
       override fun duplicates() = existing
 
+      // Cover art belongs to a track, and a blob is a settings write. Neither is a file
+      // added to the library, so neither should be counted as one.
+      override fun isBookkeeping(header: BackupFormat.EntryHeader) =
+        header.kind == BackupSections.KIND_THUMBNAIL || header.kind == BackupSections.KIND_BLOB
+
       override fun store(header: BackupFormat.EntryHeader, payload: InputStream): Any? =
         when (header.kind) {
           BackupSections.KIND_THUMBNAIL -> {
@@ -362,8 +382,21 @@ object BackupPorts {
 
   fun cookieTarget(port: CookiePort): BackupSections.RestoreTarget =
     object : BackupSections.RestoreTarget {
-      override fun wants(header: BackupFormat.EntryHeader) =
-        header.kind == BackupSections.KIND_COOKIE_PROFILE
+      override fun screen(header: BackupFormat.EntryHeader): BackupSections.ItemOutcome? {
+        if (header.kind != BackupSections.KIND_COOKIE_PROFILE) {
+          return BackupSections.ItemOutcome.SKIPPED_UNWANTED
+        }
+        // Restoring is additive everywhere else in the app; cookies must be no different.
+        // Overwriting here would replace a session the user is currently signed in to with
+        // whatever was captured when the backup was made.
+        val platform = header.meta.optString("platform")
+        val profile = header.meta.optString("profileName")
+        return if (port.exists(platform, profile)) {
+          BackupSections.ItemOutcome.SKIPPED_EXISTS
+        } else {
+          null
+        }
+      }
 
       override fun store(header: BackupFormat.EntryHeader, payload: InputStream): Any? {
         port.restore(
@@ -385,9 +418,16 @@ object BackupPorts {
     var settings: JSONObject? = null
       private set
 
-    override fun wants(header: BackupFormat.EntryHeader) =
-      header.kind == BackupSections.KIND_BLOB &&
+    override fun screen(header: BackupFormat.EntryHeader) =
+      if (header.kind == BackupSections.KIND_BLOB &&
         header.meta.optString("blobId") == BackupSections.BLOB_APP_SETTINGS
+      ) {
+        null
+      } else {
+        BackupSections.ItemOutcome.SKIPPED_UNWANTED
+      }
+
+    override fun isBookkeeping(header: BackupFormat.EntryHeader) = true
 
     override fun store(header: BackupFormat.EntryHeader, payload: InputStream): Any? {
       settings = JSONObject(String(payload.readBytes(), Charsets.UTF_8))

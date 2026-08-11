@@ -275,13 +275,19 @@ export default function BackupScreen() {
                 return;
             }
             setStatus(t('backup.restoreDone'));
-            setReport(
+            // "Already here" merges duplicates-by-content with cookie profiles left
+            // alone; from the user's side both mean "nothing was replaced".
+            const lines = [
                 t('backup.restoreReport', {
                     restored: result.restored ?? 0,
-                    duplicates: result.skippedDuplicates ?? 0,
+                    skipped: (result.skippedDuplicates ?? 0) + (result.skippedExisting ?? 0),
                     failed: result.failed ?? 0,
                 }),
-            );
+            ];
+            if ((result.applied ?? 0) > 0) {
+                lines.push(t('backup.restoreReportApplied'));
+            }
+            setReport(lines.join('\n'));
         } catch (error) {
             setStatus(t('backup.restoreFailed', { message: (error as Error).message }));
         } finally {

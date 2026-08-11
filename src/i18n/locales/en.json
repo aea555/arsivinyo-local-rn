@@ -600,7 +600,8 @@
         "wrongSecret": "That is not the right secret for this file.",
         "restoreDone": "Restore finished.",
         "restoreFailed": "Could not finish the restore. {{message}}",
-        "restoreReport": "{{restored}} added · {{duplicates}} already here · {{failed}} failed",
+        "restoreReport": "{{restored}} added · {{skipped}} already here · {{failed}} failed",
+        "restoreReportApplied": "Playlists, cover art and preferences were applied.",
         "confirmRestoreTitle": "Restore from this backup?",
         "confirmRestoreMessage": "Items you already have are skipped. Anything new is added to your library."
     }

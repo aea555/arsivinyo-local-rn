@@ -843,9 +843,15 @@ class LocalDownloaderModule : Module() {
         mapOf(
           "success" to true,
           "settings" to settingsTarget.settings?.toString(),
+          // "restored" counts files added to a library and nothing else. Playlists,
+          // preferences and cover art are reported as "applied", because a restore that
+          // changed nothing used to claim it had added dozens of records.
           "restored" to results.count { it.outcome == BackupSections.ItemOutcome.RESTORED },
+          "applied" to results.count { it.outcome == BackupSections.ItemOutcome.APPLIED },
           "skippedDuplicates" to
             results.count { it.outcome == BackupSections.ItemOutcome.SKIPPED_DUPLICATE },
+          "skippedExisting" to
+            results.count { it.outcome == BackupSections.ItemOutcome.SKIPPED_EXISTS },
           "failed" to results.count { it.outcome == BackupSections.ItemOutcome.FAILED },
           "items" to results.map {
             mapOf(
@@ -2891,6 +2897,12 @@ class LocalDownloaderModule : Module() {
           )
         }
         .orEmpty()
+    }
+
+    override fun exists(platform: String, profileName: String): Boolean {
+      val normalized = platform.trim().lowercase()
+      if (!SUPPORTED_PLATFORMS.contains(normalized) || profileName.isBlank()) return false
+      return File(secureCookiePlatformDir(normalized, create = false), "$profileName.enc").exists()
     }
 
     override fun readPlaintext(record: BackupPorts.CookieRecord): ByteArray {

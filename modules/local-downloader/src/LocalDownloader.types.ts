@@ -600,8 +600,14 @@ export interface LocalBackupPreview {
 }
 
 export type LocalBackupItemOutcome =
+  /** A file was added to a library. */
   | 'RESTORED'
+  /** Metadata was written — playlists, preferences, the auto-apply config, cover art. */
+  | 'APPLIED'
+  /** The same content is already stored, identified by hash. */
   | 'SKIPPED_DUPLICATE'
+  /** Something with this identity already exists and was left alone (cookie profiles). */
+  | 'SKIPPED_EXISTS'
   | 'SKIPPED_UNWANTED'
   | 'FAILED';
 
@@ -622,8 +628,13 @@ export interface LocalBackupRestoreResult {
   success: boolean;
   /** Returned for the TS layer to write back into AsyncStorage. */
   settings?: string | null;
+  /** Files added to a library. Deliberately excludes playlists, art and preferences. */
   restored?: number;
+  /** Metadata written: playlists, cover art, the preset config, preferences. */
+  applied?: number;
   skippedDuplicates?: number;
+  /** Cookie profiles left alone because one of that name is already signed in. */
+  skippedExisting?: number;
   failed?: number;
   items?: LocalBackupItemResult[];
   code?: string;

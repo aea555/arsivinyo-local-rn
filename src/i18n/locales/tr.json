@@ -600,7 +600,8 @@
         "wrongSecret": "Bu dosya için doğru gizli anahtar değil.",
         "restoreDone": "Geri yükleme bitti.",
         "restoreFailed": "Geri yükleme tamamlanamadı. {{message}}",
-        "restoreReport": "{{restored}} eklendi · {{duplicates}} zaten vardı · {{failed}} başarısız",
+        "restoreReport": "{{restored}} eklendi · {{skipped}} zaten vardı · {{failed}} başarısız",
+        "restoreReportApplied": "Çalma listeleri, kapak görselleri ve tercihler uygulandı.",
         "confirmRestoreTitle": "Bu yedekten geri yüklensin mi?",
         "confirmRestoreMessage": "Zaten sahip olduğun öğeler atlanır. Yeni olan her şey kitaplığına eklenir."
     }
