@@ -4,6 +4,46 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+## [2.5.0-beta.1] — Encrypted whole-app backup and restore
+
+Export the vault, the music library, the preferences and the cookie profiles into one
+encrypted `.avsbck` file, and restore them on any device. `versionCode` → `20500`.
+
+### Added
+- **Whole-app backup and restore.** A single `.avsbck` container holds four independent
+  sections — private vault, music library, preferences, cookie profiles — each encrypted
+  separately and each selectable on both export and import. The file goes wherever the
+  system file picker points; nothing is uploaded anywhere.
+- **Argon2id for the key, AES-GCM for the content.** A backup can sit on storage for years,
+  which is the threat model where an attacker gets unlimited offline guesses, so the key
+  derivation is memory-hard: every guess costs an attacker the same 64 MB it costs the
+  device. The content uses the same streaming cipher that already protects the vault, in
+  1 MB segments, so a multi-gigabyte video is never held in memory.
+- **Password or passphrase.** A password needs 14 characters and no particular symbols —
+  length protects far better than character classes, and `Password1!` satisfies every
+  classic rule while being trivially guessable. A passphrase is 4 to 12 words with a
+  separator of your choosing, and can be generated from a 256-word list at exactly 8 bits
+  per word using the platform's cryptographic random source.
+- **The import describes a file before asking for anything.** The header is plaintext, so
+  the screen can show what a backup holds and which kind of secret it wants. Item names and
+  metadata live inside the encrypted region, so a backup reveals roughly how much it holds
+  and nothing about what.
+- **Duplicates are skipped by content, not by name.** Restoring twice is safe, and an
+  interrupted restore is finished by simply running it again.
+- **A backup keeps running in the background.** It holds the foreground service like a
+  download does, and the screen reattaches to a job that started before it was opened.
+
+### Changed
+- An export overlaps reading with encrypting instead of doing them in turn, which cut a
+  13 GB export from 79.8 s to 47.6 s on the reference device.
+
+### Notes
+- Restoring never overwrites: a cookie profile already on the device is left alone, so a
+  restore cannot replace a session you have signed into since the backup was made.
+- Vault videos and cookie profiles are re-encrypted for the backup rather than copied. Their
+  stored form is bound to the device keystore and would be unreadable anywhere else —
+  including on the same phone after reinstalling.
+
 ## [2.4.0-beta.1] — Audio presets (native C++ DSP)
 
 Apply Slowed + Reverb, Nightcore or Bass Boost to any track, and download audio losslessly. `versionCode` → `20400`.

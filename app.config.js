@@ -3,7 +3,7 @@ export default ({ config }) => {
     ...config,
     name: "Arsivinyo Local",
     slug: "arsivinyo-local-rn",
-    version: "2.4.0-beta.1",
+    version: "2.5.0-beta.1",
     orientation: "portrait",
     icon: "./assets/images/play_store_512.png",
     scheme: "arsivinyo-local-rn",
@@ -19,7 +19,7 @@ export default ({ config }) => {
       },
     },
     android: {
-      versionCode: 20400,
+      versionCode: 20500,
       adaptiveIcon: {
         backgroundColor: "#000000",
         foregroundImage: "./assets/images/ic_launcher_foreground.png",
