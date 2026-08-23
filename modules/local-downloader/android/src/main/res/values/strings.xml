@@ -6,6 +6,7 @@
   <string name="ldl_channel_description">Shows download progress and controls</string>
 
   <string name="ldl_title_downloading">Downloading media</string>
+  <string name="ldl_title_downloading_many">Downloading %1$d items</string>
   <string name="ldl_title_queued">Queued downloads</string>
   <string name="ldl_title_idle">Arsivinyo Downloader</string>
 
@@ -18,7 +19,7 @@
   <string name="ldl_sub_queue_tap">Tap to queue from clipboard</string>
   <string name="ldl_sub_download_tap">Tap to download from clipboard</string>
 
-  <string name="ldl_queue_label">Queue: %1$d/%2$d</string>
+  <string name="ldl_queue_label">Waiting: %1$d</string>
   <string name="ldl_mode_private">Mode: Private</string>
   <string name="ldl_mode_public">Mode: Public</string>
 

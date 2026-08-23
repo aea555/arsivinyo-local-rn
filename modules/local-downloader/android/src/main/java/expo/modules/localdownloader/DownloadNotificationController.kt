@@ -21,9 +21,15 @@ internal data class BackgroundNotificationState(
   val privateModeEnabled: Boolean,
   val audioModeEnabled: Boolean = false,
   val pinned: Boolean = false,
+  /**
+   * How many downloads are running. A foreground service may post only one notification,
+   * so when this is above one the notification reports the set — the count in the title
+   * and their combined progress — rather than picking one download to represent them all.
+   */
+  val activeCount: Int = if (activeTaskId.isNullOrBlank()) 0 else 1,
 ) {
   val hasWork: Boolean
-    get() = !activeTaskId.isNullOrBlank() || queueSize > 0
+    get() = activeCount > 0 || queueSize > 0
 
   val shouldRunForeground: Boolean
     get() = hasWork || pinned
@@ -47,7 +53,7 @@ internal object DownloadNotificationController {
   private const val EXTRA_PRIVATE_MODE_ENABLED = "extra_private_mode_enabled"
   private const val EXTRA_AUDIO_MODE_ENABLED = "extra_audio_mode_enabled"
   private const val EXTRA_PINNED = "extra_pinned"
-  private const val QUEUE_MAX = 3
+  private const val EXTRA_ACTIVE_COUNT = "extra_active_count"
 
   fun startOrUpdate(context: Context, state: BackgroundNotificationState) {
     ensureChannel(context)
@@ -61,6 +67,7 @@ internal object DownloadNotificationController {
       putExtra(EXTRA_PRIVATE_MODE_ENABLED, state.privateModeEnabled)
       putExtra(EXTRA_AUDIO_MODE_ENABLED, state.audioModeEnabled)
       putExtra(EXTRA_PINNED, state.pinned)
+      putExtra(EXTRA_ACTIVE_COUNT, state.activeCount)
     }
     ContextCompat.startForegroundService(context, intent)
   }
@@ -82,14 +89,18 @@ internal object DownloadNotificationController {
       privateModeEnabled = intent?.getBooleanExtra(EXTRA_PRIVATE_MODE_ENABLED, false) ?: false,
       audioModeEnabled = intent?.getBooleanExtra(EXTRA_AUDIO_MODE_ENABLED, false) ?: false,
       pinned = intent?.getBooleanExtra(EXTRA_PINNED, false) ?: false,
+      activeCount = intent?.getIntExtra(EXTRA_ACTIVE_COUNT, 0) ?: 0,
     )
   }
 
   fun buildNotification(context: Context, state: BackgroundNotificationState): Notification {
     ensureChannel(context)
 
-    val hasActiveTask = !state.activeTaskId.isNullOrBlank()
+    val hasActiveTask = state.activeCount > 0
     val title = when {
+      // Several at once gets its own title: "Downloading" beside a bar that is the mean
+      // of three unrelated downloads would read as one download stalling and jumping.
+      state.activeCount > 1 -> context.getString(R.string.ldl_title_downloading_many, state.activeCount)
       hasActiveTask -> context.getString(R.string.ldl_title_downloading)
       state.queueSize > 0 -> context.getString(R.string.ldl_title_queued)
       else -> context.getString(R.string.ldl_title_idle)
@@ -114,7 +125,9 @@ internal object DownloadNotificationController {
     val subtitle = phaseSubtitle
       ?: state.message?.takeIf { it.isNotBlank() }
       ?: if (state.queueSize > 0) context.getString(R.string.ldl_sub_queue_tap) else context.getString(R.string.ldl_sub_download_tap)
-    val queueLabel = context.getString(R.string.ldl_queue_label, state.queueSize, QUEUE_MAX)
+    // How many are waiting, with no "of N": the limit is a runaway guard set far above
+    // anything reachable by hand, so counting against it told the user nothing.
+    val queueLabel = context.getString(R.string.ldl_queue_label, state.queueSize)
     val modeLabel = if (state.privateModeEnabled) context.getString(R.string.ldl_mode_private) else context.getString(R.string.ldl_mode_public)
     val privateLabel = if (state.privateModeEnabled) context.getString(R.string.ldl_private_on) else context.getString(R.string.ldl_private_off)
     val audioLabel = if (state.audioModeEnabled) context.getString(R.string.ldl_audio_on) else context.getString(R.string.ldl_audio_off)

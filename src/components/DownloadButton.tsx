@@ -43,7 +43,11 @@ export const DownloadButton: React.FC<DownloadButtonProps> = ({
     }, [scale]);
 
     const handlePress = useCallback(() => {
-        if (disabled || state !== 'idle') return;
+        // Only `disabled` decides. The button used to refuse any press while its state
+        // was not idle, which meant it also refused to start a second download once
+        // downloads could run at the same time. Whether another one is welcome is the
+        // parent's call, not this component's.
+        if (disabled) return;
 
         // Pulse animation on press
         scale.value = withSequence(
@@ -53,7 +57,7 @@ export const DownloadButton: React.FC<DownloadButtonProps> = ({
         );
 
         onPress();
-    }, [disabled, state, onPress, scale]);
+    }, [disabled, onPress, scale]);
 
     const animatedStyle = useAnimatedStyle(() => ({
         transform: [{ scale: scale.value }],

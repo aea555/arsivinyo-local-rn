@@ -25,6 +25,7 @@ class AudioPresetRenderer(
 ) {
 
   data class Request(
+    /** Empty when rendering from [source] and the original was never filed. */
     val songId: String,
     val presetId: String,
     val paramsSpec: String,
@@ -34,6 +35,32 @@ class AudioPresetRenderer(
     val ffprobePath: String,
     val progressFilePath: String? = null,
     val cancelFlagPath: String? = null,
+    /**
+     * A plain file to render from, when the caller already has one.
+     *
+     * The auto-apply flow passes the file the download just produced. Without this the
+     * renderer would copy the identical bytes back out of MediaStore, which is the
+     * slowest path available — the caller's copy is the same audio and is already
+     * sitting on app-private storage.
+     */
+    val source: StagedSource? = null,
+  )
+
+  /**
+   * A caller-owned source file, with the metadata that would otherwise be read from the
+   * library entry.
+   *
+   * The renderer never deletes this: several jobs in a batch share it, and the caller may
+   * still need it to file the original if a render fails.
+   */
+  data class StagedSource(
+    val path: String,
+    val title: String,
+    val artist: String?,
+    /** Passed explicitly — inferring it from a file name is what picks the wrong tier. */
+    val outputFormat: String,
+    /** Cover art to attach to the render, since a rendered file has no embedded image. */
+    val thumbnailPath: String? = null,
   )
 
   /**
@@ -41,34 +68,49 @@ class AudioPresetRenderer(
    * main thread. Throws [IllegalStateException] with a diagnosable message on failure.
    */
   fun render(request: Request): Map<String, Any?> {
-    val song = soundsStore.findSong(request.songId)
-      ?: throw IllegalStateException(ERR_SOURCE_NOT_FOUND)
+    val provided = request.source?.takeIf { File(it.path).let { f -> f.isFile && f.length() > 0L } }
 
-    val fileName = song["fileName"] as? String ?: throw IllegalStateException(ERR_SOURCE_NOT_FOUND)
-    val contentUri = (song["contentUri"] as? String)?.takeUnless { it.isBlank() }
-      ?: throw IllegalStateException(ERR_SOURCE_NOT_FOUND)
-    val title = (song["title"] as? String)?.takeUnless { it.isBlank() } ?: fileNameStem(fileName)
-    val artist = (song["artist"] as? String)?.takeUnless { it.isBlank() }
+    val title: String
+    val artist: String?
+    val outputFormat: String
+    val input: File
+    // Only a copy this method made itself may be deleted at the end.
+    val ownedInput: File?
 
-    val sourceExtension = extensionOf(fileName)
-    val outputFormat = outputFormatFor(sourceExtension)
-
-    val workDir = workDir()
-    val staged = File(workDir, "src_${UUID.randomUUID()}.${sourceExtension.ifBlank { "audio" }}")
-    val rendered = File(workDir, "out_${UUID.randomUUID()}.$outputFormat")
-
-    try {
+    if (provided != null) {
+      title = provided.title
+      artist = provided.artist
+      outputFormat = provided.outputFormat
+      input = File(provided.path)
+      ownedInput = null
+    } else {
+      val song = soundsStore.findSong(request.songId)
+        ?: throw IllegalStateException(ERR_SOURCE_NOT_FOUND)
+      val fileName = song["fileName"] as? String ?: throw IllegalStateException(ERR_SOURCE_NOT_FOUND)
+      val contentUri = (song["contentUri"] as? String)?.takeUnless { it.isBlank() }
+        ?: throw IllegalStateException(ERR_SOURCE_NOT_FOUND)
+      title = (song["title"] as? String)?.takeUnless { it.isBlank() } ?: fileNameStem(fileName)
+      artist = (song["artist"] as? String)?.takeUnless { it.isBlank() }
+      val sourceExtension = extensionOf(fileName)
+      outputFormat = outputFormatFor(sourceExtension)
       // ffmpeg cannot open a content:// URI, and the library's files are reachable only
       // through the content resolver under the MediaStore owner model. Staging a copy
       // into app-private cache is the predictable way across it. Passing a
       // ParcelFileDescriptor as /proc/self/fd/N would avoid the copy but depends on the
       // descriptor surviving fork/exec, which is not something to rely on.
+      val staged = File(workDir(), "src_${UUID.randomUUID()}.${sourceExtension.ifBlank { "audio" }}")
       stageSource(Uri.parse(contentUri), staged)
+      input = staged
+      ownedInput = staged
+    }
 
+    val rendered = File(workDir(), "out_${UUID.randomUUID()}.$outputFormat")
+
+    try {
       val error = AudioPresets.applyPreset(
         ffmpegPath = request.ffmpegPath,
         ffprobePath = request.ffprobePath,
-        inputPath = staged.absolutePath,
+        inputPath = input.absolutePath,
         outputPath = rendered.absolutePath,
         paramsSpec = request.paramsSpec,
         outputFormat = outputFormat,
@@ -78,7 +120,7 @@ class AudioPresetRenderer(
         cancelFlagPath = request.cancelFlagPath,
       )
       if (error != null) {
-        Log.w(TAG, "render failed for ${request.songId}: $error")
+        Log.w(TAG, "render failed for preset ${request.presetId}: $error")
         throw IllegalStateException(error)
       }
       if (!rendered.exists() || rendered.length() <= 0L) {
@@ -89,12 +131,14 @@ class AudioPresetRenderer(
       return soundsStore.registerProcessedSound(
         sourceFilePath = rendered.absolutePath,
         displayName = displayName,
-        sourceSongId = request.songId,
+        sourceSongId = request.songId.takeUnless { it.isBlank() },
         presetId = request.presetId,
+        fallbackThumbPath = provided?.thumbnailPath,
+        fallbackArtist = artist,
       )
     } finally {
       // Both temporaries are large; leaving either behind would quietly fill the cache.
-      runCatching { staged.delete() }
+      runCatching { ownedInput?.delete() }
       runCatching { rendered.delete() }
     }
   }
@@ -134,7 +178,9 @@ class AudioPresetRenderer(
   companion object {
     private const val TAG = "AudioPresetRenderer"
     private const val WORK_DIRNAME = "audio_preset_work"
-    private const val STREAM_BUFFER = 1 shl 16
+    /** 1 MB. See the note on `SoundsStore.STREAM_BUFFER`: reads through the content
+     *  resolver pay per syscall, so a small buffer is expensive here. */
+    private const val STREAM_BUFFER = 1 shl 20
 
     const val ERR_SOURCE_NOT_FOUND = "PRESET_SOURCE_NOT_FOUND"
     const val ERR_SOURCE_UNREADABLE = "PRESET_SOURCE_UNREADABLE"

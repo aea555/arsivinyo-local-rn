@@ -4,6 +4,68 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+## [2.6.0-beta.1] — Concurrent downloads, and an audio save that finishes
+
+Downloads no longer run one at a time, and saving a long audio track no longer takes
+hours. `versionCode` → `20600`.
+
+### Added
+- **Downloads run at the same time.** A download used to hold the whole pipeline from the
+  first network byte to the last write, so the CPU was idle through a ten-minute transfer
+  and the network was idle through a five-minute transcode. Each stage now takes a permit
+  from its own gate and gives it back before asking for the next, which lets one download
+  be written to disk while others are still arriving. Waiting downloads are admitted
+  shortest-first, so a three-minute song shared during a long download does not sit behind
+  it, with aging so a long one cannot be starved indefinitely.
+- **A Kotlin typecheck that needs no Gradle** — `npm run typecheck:kotlin`. The existing
+  test script can only compile sources with no Android dependency; this covers the rest by
+  putting `android.jar` and the already-extracted AAR classes on the compiler classpath.
+
+### Changed
+- **The queue limit is gone.** Sharing a fourth link was refused with "queue is full",
+  because a hard-coded three bounded a list of URL strings that had nothing to do with how
+  much the app could handle. There is no separate waiting list any more: a share becomes a
+  download immediately and waits at a scheduler gate. What remains is a runaway guard far
+  above anything reachable by hand.
+- The notification reports how many downloads are running and their combined progress,
+  rather than picking one to represent them all, and its stop button stops all of them.
+- The home screen tracks each download separately, with its own progress bar, rate and
+  cancel button, instead of one set of fields that two downloads would fight over.
+- **Five downloads work at once instead of three.** Each FFmpeg process is single-threaded,
+  so this is also how many of the phone's eight cores a batch of long transcodes can put to
+  work; at three, a queue of four took two passes to clear while five cores sat idle.
+- **An M4A download asks for a source that is already AAC**, so yt-dlp copies the stream
+  into the container instead of re-encoding it. The bundled FFmpeg encodes FLAC at about
+  143x realtime but AAC at only 23x, so an eight-hour track cost roughly 21 minutes of
+  transcoding where a remux costs seconds. It also stops a needless quality loss: the
+  previous selection took YouTube's Opus stream and re-encoded it to AAC, a second
+  generation of lossy compression to arrive at a similar bitrate.
+
+### Fixed
+- **Saving a long audio track took hours.** The download was copied into the music library,
+  the local copy deleted, and the preset renderer then copied the identical bytes back out
+  of the library to get a file FFmpeg could open — every one of those crossings going
+  through MediaProvider's FUSE layer, which charges per write syscall. Renders now read the
+  downloaded file directly, and when *keep original* is off the original is never filed at
+  all, since it only existed to be deleted afterwards. A track that could not be rendered
+  is still filed, so a failed render never costs the audio.
+- The copy into the music library uses a 1 MB buffer, matching the vault. At the previous
+  64 KB a one-gigabyte track cost about 17,000 round trips into MediaProvider instead of
+  about 1,100.
+- The music library's lock no longer covers the file copy, only the index write. A save
+  used to freeze every other library operation — including plain reads — for its whole
+  duration.
+- Progress is reported for every download. The watcher checked whether its task was *the*
+  active one, which at most one download could be, so the others showed no progress at all.
+- Two downloads can no longer be attributed each other's diagnostics. The Python worker
+  kept them in one module-level dictionary that every result payload was built from, so a
+  second download could overwrite the first's URL and attempt trace, and starting one wiped
+  the other's trace mid-flight.
+- Orphaned staged downloads are swept at startup. These are whole media files, so one left
+  behind by a process death was gigabytes.
+- The APK no longer carries the x86_64 FFmpeg binaries. They exist for the opt-in emulator
+  build and were being packaged into every phone build, which cost 14.4 MB of a 94 MB APK.
+
 ## [2.5.0-beta.1] — Encrypted whole-app backup and restore
 
 Export the vault, the music library, the preferences and the cookie profiles into one

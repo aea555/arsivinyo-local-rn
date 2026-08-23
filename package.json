@@ -1,7 +1,7 @@
 {
   "name": "arsivinyo-local-rn",
   "main": "index.js",
-  "version": "2.5.0-beta.1",
+  "version": "2.6.0-beta.1",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "start": "expo start",
@@ -12,6 +12,7 @@
     "lint": "expo lint",
     "test:python": "python3 -m unittest modules/local-downloader/tests/test_local_downloader.py",
     "test:kotlin": "bash ./scripts/run-kotlin-tests.sh",
+    "typecheck:kotlin": "bash ./scripts/typecheck-kotlin.sh",
     "test:dsp": "bash ./scripts/test-audio-presets.sh",
     "test:dsp:sanitize": "bash ./scripts/test-audio-presets.sh --sanitize",
     "test:presets": "node --test src/features/audioPresets/*.test.ts",

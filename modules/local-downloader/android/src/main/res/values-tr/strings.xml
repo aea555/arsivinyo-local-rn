@@ -4,6 +4,7 @@
   <string name="ldl_channel_description">İndirme ilerlemesini ve kontrolleri gösterir</string>
 
   <string name="ldl_title_downloading">Medya indiriliyor</string>
+  <string name="ldl_title_downloading_many">%1$d öğe indiriliyor</string>
   <string name="ldl_title_queued">Sıradaki indirmeler</string>
   <string name="ldl_title_idle">Arsivinyo İndirici</string>
 
@@ -16,7 +17,7 @@
   <string name="ldl_sub_queue_tap">Panodan sıraya almak için dokunun</string>
   <string name="ldl_sub_download_tap">Panodan indirmek için dokunun</string>
 
-  <string name="ldl_queue_label">Sıra: %1$d/%2$d</string>
+  <string name="ldl_queue_label">Bekleyen: %1$d</string>
   <string name="ldl_mode_private">Mod: Gizli</string>
   <string name="ldl_mode_public">Mod: Genel</string>
 

@@ -359,7 +359,7 @@
         "IMPERSONATION_DEPENDENCY_MISSING": "Impersonation bağımlılığı eksik (curl-cffi).",
         "BACKGROUND_PERMISSION_REQUIRED": "Arka planda indirme için bildirim izni gerekiyor.",
         "NO_CLIPBOARD_URL": "Panoda geçerli URL bulunamadı.",
-        "DOWNLOAD_QUEUE_FULL": "Arka plan kuyruğu dolu (maks 3).",
+        "DOWNLOAD_QUEUE_FULL": "Zaten çok fazla indirme sırada.",
         "BACKGROUND_SERVICE_START_FAILED": "Arka plan indirme servisi başlatılamadı.",
         "QUICK_DOWNLOAD_REJECTED": "Hızlı indirme reddedildi.",
         "INVALID_QUICK_URL": "Girilen hızlı indirme bağlantısı geçersiz.",

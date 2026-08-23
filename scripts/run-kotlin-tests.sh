@@ -48,14 +48,18 @@ JUNIT="$(find_jar "junit-4.13.2.jar")"
 HAMCREST="$(find_jar "hamcrest-core-1.3.jar")"
 
 COMPILER_CP="$KOTLIN_COMPILER:$KOTLIN_DAEMON:$TROVE:$KOTLIN_STDLIB:$COROUTINES:$ANNOTATIONS"
-TEST_CP="$KOTLIN_STDLIB:$TINK:$BOUNCY_CASTLE:$JSON:$JUNIT:$HAMCREST"
+# Coroutines is on the test classpath as well as the compiler's: the download scheduler
+# is built on them, so its suite needs them at run time too.
+TEST_CP="$KOTLIN_STDLIB:$COROUTINES:$TINK:$BOUNCY_CASTLE:$JSON:$JUNIT:$HAMCREST"
 
 SRC_MAIN="$MODULE/src/main/java/expo/modules/localdownloader"
 SRC_TEST="$MODULE/src/test/java/expo/modules/localdownloader"
 
 # Each entry is "<test class>|<source files...>". Add a line to cover a new suite.
 BACKUP_SOURCES="$SRC_MAIN/backup/BackupFormat.kt $SRC_MAIN/backup/BackupCrypto.kt $SRC_MAIN/backup/BackupContainer.kt $SRC_MAIN/backup/BackupSections.kt $SRC_MAIN/backup/BackupPorts.kt $SRC_MAIN/backup/BackupPipeline.kt"
+SCHEDULER_SOURCES="$SRC_MAIN/scheduler/PriorityGate.kt $SRC_MAIN/scheduler/DownloadStages.kt"
 SUITES=(
+  "expo.modules.localdownloader.scheduler.PriorityGateTest|$SCHEDULER_SOURCES $SRC_TEST/scheduler/PriorityGateTest.kt"
   "expo.modules.localdownloader.backup.BackupFormatTest|$BACKUP_SOURCES $SRC_TEST/backup/BackupFormatTest.kt"
   "expo.modules.localdownloader.backup.BackupContainerTest|$SRC_TEST/backup/BackupContainerTest.kt"
   "expo.modules.localdownloader.backup.BackupSectionsTest|$SRC_TEST/backup/BackupSectionsTest.kt"

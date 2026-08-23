@@ -37,7 +37,11 @@ import expo.modules.localdownloader.vault.VaultMigrator
 import expo.modules.localdownloader.vault.VaultThumbnailResource
 import expo.modules.localdownloader.vault.VaultVideoResource
 import expo.modules.localdownloader.vault.VaultVideoSession
+import expo.modules.localdownloader.scheduler.DownloadStages
+import expo.modules.localdownloader.scheduler.PriorityGate
+import expo.modules.localdownloader.scheduler.withPermit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -199,12 +203,6 @@ data class PendingQuickRequest(
   val createdAtMs: Long
 )
 
-data class QueuedQuickDownload(
-  val url: String,
-  val visibility: String,
-  val enqueuedAtMs: Long = System.currentTimeMillis()
-)
-
 data class PrivateVideoEntry(
   val id: String,
   val title: String,
@@ -301,16 +299,25 @@ class LocalDownloaderModule : Module() {
   @Volatile private var activeMigrationCancel: VaultMigrator.CancelToken? = null
   @Volatile private var lastMigrationProgress: VaultMigrator.Progress? = null
   private val ytDlpUpdateLock = Any()
-  private val queuedQuickDownloads = ArrayDeque<QueuedQuickDownload>()
   private val recentQuickUrls = LinkedHashMap<String, Long>()
   private val tag = "LocalDownloader"
   private val debugLoggingEnabled = BuildConfig.DEBUG
 
-  @Volatile
-  private var activeTaskId: String? = null
+  /**
+   * Downloads that are running right now, keyed by task id.
+   *
+   * This used to be three separate fields — `activeTaskId`, `activeJob`, `activeTaskUrl`
+   * — which encoded the assumption that exactly one download exists. Being separate
+   * fields they could also disagree with one another. Everything that used to ask "is
+   * *the* download this one?" now asks this table instead.
+   */
+  private val activeDownloads = ConcurrentHashMap<String, ActiveDownload>()
 
-  @Volatile
-  private var activeJob: Job? = null
+  /**
+   * The gates that decide how many downloads may be in each stage at once. See
+   * [DownloadStages]; this is the whole of the scheduler's configuration.
+   */
+  private val stages = DownloadStages()
 
   @Volatile
   private var cachedFfmpegInfo: FfmpegInfo? = null
@@ -326,9 +333,6 @@ class LocalDownloaderModule : Module() {
 
   @Volatile
   private var notificationPhase: String = "idle"
-
-  @Volatile
-  private var activeTaskUrl: String? = null
 
   @Volatile
   private var privateModeEnabled: Boolean = false
@@ -380,6 +384,10 @@ class LocalDownloaderModule : Module() {
       privateModeEnabled = isPrivateModeEnabledPersisted(context)
       audioModeEnabled = isAudioModeEnabledPersisted(context)
       audioFormat = audioFormatPersisted(context)
+      // Before the resume, not after: a finished batch deletes the persisted queue, and
+      // the queue is what says which staged file is still needed. Sweeping afterwards
+      // would race a resumed batch and delete the audio out from under it.
+      runCatching { cleanupOrphanedStaging() }
       resumePresetRenderIfAny()
       // An export that the system killed leaves a partial document behind. It has a valid
       // header, so it opens and lists its sections and only fails once a restore is under
@@ -468,7 +476,10 @@ class LocalDownloaderModule : Module() {
     }
 
     AsyncFunction("cancelTask") { taskId: String ->
-      if (activeTaskId != taskId || activeJob == null) {
+      // Used to refuse anything that was not the single active download, which left a
+      // waiting download with no way to be cancelled at all. A download waiting at a gate
+      // is a live task, and cancelling its job also removes it from the gate's waiters.
+      if (!isTaskLive(taskId)) {
         return@AsyncFunction mapOf("success" to false)
       }
 
@@ -1792,7 +1803,7 @@ class LocalDownloaderModule : Module() {
             "profileName" to it.profileName
           )
         },
-        "activeTaskId" to activeTaskId,
+        "activeTaskIds" to activeDownloads.keys.toList(),
         "serviceRunning" to DownloadForegroundService.isRunning,
         "queuedDownloadCount" to queueSize(),
         "lastBackgroundServiceError" to lastBackgroundServiceError,
@@ -1857,7 +1868,10 @@ class LocalDownloaderModule : Module() {
     // Refusing the download here made the app's primary function depend on a permission it
     // does not need, and left no way to decline notifications and still use the app.
 
-    if (activeJob?.isActive == true) {
+    // No longer a "one at a time" gate — several downloads run together and the stage
+    // gates decide how many may be in each phase. What is still refused is the same URL
+    // twice at once, which is a mistake rather than a request.
+    if (activeDownloads.values.any { it.url == url && it.job.isActive }) {
       throw IllegalStateException("DOWNLOAD_ALREADY_IN_PROGRESS")
     }
 
@@ -1876,12 +1890,10 @@ class LocalDownloaderModule : Module() {
     val progressFile = createProgressFile(taskId)
     val effectivePlatform = cookiePlatform ?: detectCookiePlatform(url)
 
-    activeTaskId = taskId
-    activeTaskUrl = url
     syncForegroundNotification("starting", "Preparing download")
     emitBackgroundStateChanged()
 
-    activeJob = scope.launch {
+    val job = scope.launch(start = CoroutineStart.LAZY) {
       var runtimeCookiePath: String? = null
       var progressWatcher: Job? = null
       runCatching {
@@ -1895,41 +1907,47 @@ class LocalDownloaderModule : Module() {
 
         val ffmpegInfo = getOrResolveFfmpegInfo(forceRefresh = true)
         debug("Task[$taskId] ffmpeg info before preflight: ${summarizeFfmpegInfo(ffmpegInfo)}")
-        var preflightResult = callPythonPreflight(
-          PreflightPythonInput(
-            url = url,
-            cookiesDir = cookiesDir.absolutePath,
-            cookieProfile = cookieProfile,
-            maxFileSizeMb = maxFileSizeMb,
-            ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
-            cookieFilePath = effectiveCookiePath,
-            forceNoCookie = false,
-            mergeCapable = ffmpegInfo.mergeCapable,
-            userAgent = DEFAULT_HTTP_USER_AGENT,
-            debugLogging = debugLoggingEnabled,
-          )
-        )
-        debug("Task[$taskId] preflight result=$preflightResult")
-
-        if (!preflightResult.optBoolean("success", false) && shouldRetryWithoutCookies(preflightResult, effectiveCookiePath, effectivePlatform)) {
-          addError("COOKIE_RETRY_PREFLIGHT: task=$taskId")
-          cleanupRuntimeCookieTemp(taskId)
-          effectiveCookiePath = null
-          preflightResult = callPythonPreflight(
+        // Resolving a URL is short and CPU-bound Python, so it gets a narrow gate of its
+        // own rather than sharing the one that guards the transfer. It also produces the
+        // size estimate the transfer gate orders by.
+        var preflightResult = stages.preflight.withPermit(PriorityGate.UNKNOWN_PRIORITY) {
+          var attempt = callPythonPreflight(
             PreflightPythonInput(
               url = url,
-              cookiesDir = disabledCookiesDir.absolutePath,
-              cookieProfile = null,
+              cookiesDir = cookiesDir.absolutePath,
+              cookieProfile = cookieProfile,
               maxFileSizeMb = maxFileSizeMb,
               ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
-              cookieFilePath = null,
-              forceNoCookie = true,
+              cookieFilePath = effectiveCookiePath,
+              forceNoCookie = false,
               mergeCapable = ffmpegInfo.mergeCapable,
               userAgent = DEFAULT_HTTP_USER_AGENT,
               debugLogging = debugLoggingEnabled,
             )
           )
-          debug("Task[$taskId] preflight retry(no-cookie) result=$preflightResult")
+          debug("Task[$taskId] preflight result=$attempt")
+
+          if (!attempt.optBoolean("success", false) && shouldRetryWithoutCookies(attempt, effectiveCookiePath, effectivePlatform)) {
+            addError("COOKIE_RETRY_PREFLIGHT: task=$taskId")
+            cleanupRuntimeCookieTemp(taskId)
+            effectiveCookiePath = null
+            attempt = callPythonPreflight(
+              PreflightPythonInput(
+                url = url,
+                cookiesDir = disabledCookiesDir.absolutePath,
+                cookieProfile = null,
+                maxFileSizeMb = maxFileSizeMb,
+                ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
+                cookieFilePath = null,
+                forceNoCookie = true,
+                mergeCapable = ffmpegInfo.mergeCapable,
+                userAgent = DEFAULT_HTTP_USER_AGENT,
+                debugLogging = debugLoggingEnabled,
+              )
+            )
+            debug("Task[$taskId] preflight retry(no-cookie) result=$attempt")
+          }
+          attempt
         }
         preflightResult = normalizeRuntimeError(preflightResult, ffmpegInfo)
         applyRuntimeDiagnostics(taskId, preflightResult, "preflight")
@@ -1991,53 +2009,35 @@ class LocalDownloaderModule : Module() {
           return@runCatching
         }
 
-        tasks[taskId]?.progressPercent = 0.0
-        emitProgress(taskId, "PROGRESS", "downloading", "Downloading media", 0.0)
-        updateStatus(taskId, "PROGRESS", null, null, null, null, null)
-        progressWatcher = launch {
-          observeProgressFile(taskId, progressFile)
-        }
-
-        var result = callPythonDownload(
-          DownloadPythonInput(
-            url = url,
-            outputDir = outputDir.absolutePath,
-            cookiesDir = cookiesDir.absolutePath,
-            cookieProfile = cookieProfile,
-            maxFileSizeMb = maxFileSizeMb,
-            cancelFlagPath = cancelFlag.absolutePath,
-            progressFilePath = progressFile.absolutePath,
-            ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
-            cookieFilePath = effectiveCookiePath,
-            forceNoCookie = false,
-            mergeCapable = ffmpegInfo.mergeCapable,
-            audioOnly = audioOnly,
-            audioFormat = audioFormat,
-            userAgent = DEFAULT_HTTP_USER_AGENT,
-            debugLogging = debugLoggingEnabled,
-          )
-        )
-        debug("Task[$taskId] download result=$result")
-
-        if (!result.optBoolean("success", false) && shouldRetryWithoutCookies(result, effectiveCookiePath, effectivePlatform)) {
-          addError("COOKIE_RETRY_DOWNLOAD: task=$taskId")
-          emitProgress(taskId, "PROGRESS", "downloading", "Retrying without cookies")
-          cleanupRuntimeCookieTemp(taskId)
-          effectiveCookiePath = null
-          clearProgressFile(progressFile)
+        // Everything from here to the end of the Python call is one gate: yt-dlp runs its
+        // FFmpeg postprocessors at the end of the same call that fetches the bytes, so a
+        // transfer and the transcode that follows it cannot be gated separately without
+        // taking the postprocessing away from yt-dlp.
+        //
+        // Ordered by the size estimate the preflight just produced. Size is a proxy for
+        // how long the job will take — transfer scales with it, and so does the transcode
+        // for a given format — so a short share is admitted ahead of a long download that
+        // is already waiting.
+        var result = stages.fetch.withPermit(costOf(estimatedSizeMb)) {
           tasks[taskId]?.progressPercent = 0.0
-          result = callPythonDownload(
+          emitProgress(taskId, "PROGRESS", "downloading", "Downloading media", 0.0)
+          updateStatus(taskId, "PROGRESS", null, null, null, null, null)
+          progressWatcher = launch {
+            observeProgressFile(taskId, progressFile)
+          }
+
+          var attempt = callPythonDownload(
             DownloadPythonInput(
               url = url,
               outputDir = outputDir.absolutePath,
-              cookiesDir = disabledCookiesDir.absolutePath,
-              cookieProfile = null,
+              cookiesDir = cookiesDir.absolutePath,
+              cookieProfile = cookieProfile,
               maxFileSizeMb = maxFileSizeMb,
               cancelFlagPath = cancelFlag.absolutePath,
               progressFilePath = progressFile.absolutePath,
               ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
-              cookieFilePath = null,
-              forceNoCookie = true,
+              cookieFilePath = effectiveCookiePath,
+              forceNoCookie = false,
               mergeCapable = ffmpegInfo.mergeCapable,
               audioOnly = audioOnly,
               audioFormat = audioFormat,
@@ -2045,10 +2045,40 @@ class LocalDownloaderModule : Module() {
               debugLogging = debugLoggingEnabled,
             )
           )
-          debug("Task[$taskId] download retry(no-cookie) result=$result")
+          debug("Task[$taskId] download result=$attempt")
+
+          if (!attempt.optBoolean("success", false) && shouldRetryWithoutCookies(attempt, effectiveCookiePath, effectivePlatform)) {
+            addError("COOKIE_RETRY_DOWNLOAD: task=$taskId")
+            emitProgress(taskId, "PROGRESS", "downloading", "Retrying without cookies")
+            cleanupRuntimeCookieTemp(taskId)
+            effectiveCookiePath = null
+            clearProgressFile(progressFile)
+            tasks[taskId]?.progressPercent = 0.0
+            attempt = callPythonDownload(
+              DownloadPythonInput(
+                url = url,
+                outputDir = outputDir.absolutePath,
+                cookiesDir = disabledCookiesDir.absolutePath,
+                cookieProfile = null,
+                maxFileSizeMb = maxFileSizeMb,
+                cancelFlagPath = cancelFlag.absolutePath,
+                progressFilePath = progressFile.absolutePath,
+                ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location,
+                cookieFilePath = null,
+                forceNoCookie = true,
+                mergeCapable = ffmpegInfo.mergeCapable,
+                audioOnly = audioOnly,
+                audioFormat = audioFormat,
+                userAgent = DEFAULT_HTTP_USER_AGENT,
+                debugLogging = debugLoggingEnabled,
+              )
+            )
+            debug("Task[$taskId] download retry(no-cookie) result=$attempt")
+          }
+          progressWatcher?.cancel()
+          progressWatcher = null
+          attempt
         }
-        progressWatcher?.cancel()
-        progressWatcher = null
         result = normalizeRuntimeError(result, ffmpegInfo)
         applyRuntimeDiagnostics(taskId, result, "download")
 
@@ -2076,69 +2106,114 @@ class LocalDownloaderModule : Module() {
           var finalFilePath = filePath
           var privateVideoId: String? = null
           var finalIsPrivate = false
-          if (filename != null && filePath != null && audioOnly) {
-            emitProgress(taskId, "PROGRESS", "saving", "Saving to music library", 99.0)
-            val thumbnailPath = result.optString("thumbnail_path").ifBlank { null }
-            runCatching {
-              val sound = soundsStore.registerDownloadedSound(
-                sourceFilePath = filePath,
-                displayName = filename,
-                sourceUrl = url,
-                thumbnailPath = thumbnailPath,
-              )
-              finalFilePath = null
-              runCatching { File(filePath).delete() }
-              thumbnailPath?.let { runCatching { File(it).delete() } }
-              debug("Task[$taskId] audio saved to music library id=${sound["id"]}")
-              // Auto-applied presets run only once the download itself is safely in the
-              // library, so a render failure can never cost the downloaded audio.
-              (sound["id"] as? String)?.let { newSongId ->
-                runCatching { applyAutoPresetsTo(newSongId) }
-                  .onFailure { addError("AUTO_PRESET_START_FAILED: ${it.message}") }
+          // Writing the result out is its own gate, so one download can be landing on
+          // disk while others are still being fetched. It is also the point where the
+          // vault and the music library differ: the vault writes a plain file in
+          // app-private storage, the library writes through MediaProvider.
+          stages.store.withPermit(costOf(sizeMb)) {
+            if (filename != null && filePath != null && audioOnly) {
+              emitProgress(taskId, "PROGRESS", "saving", "Saving to music library", 99.0)
+              val thumbnailPath = result.optString("thumbnail_path").ifBlank { null }
+              runCatching {
+                val plan = readAutoPresetPlan()
+                if (plan == null) {
+                  // Nothing to render: file it and drop the download, as before.
+                  soundsStore.registerDownloadedSound(
+                    sourceFilePath = filePath,
+                    displayName = filename,
+                    sourceUrl = url,
+                    thumbnailPath = thumbnailPath,
+                  )
+                  finalFilePath = null
+                  runCatching { File(filePath).delete() }
+                  thumbnailPath?.let { runCatching { File(it).delete() } }
+                  debug("Task[$taskId] audio saved to music library")
+                } else {
+                  // Presets are configured, so the renders need this audio as a plain file.
+                  // Keep it instead of filing it and copying it straight back out of the
+                  // library, which is the same bytes across the slowest boundary twice.
+                  val stagedFile = moveIntoStaging(File(filePath), "audio")
+                    ?: throw IllegalStateException("AUDIO_STAGING_FAILED")
+                  val stagedThumb = thumbnailPath?.let { moveIntoStaging(File(it), "cover")?.absolutePath }
+                  finalFilePath = null
+
+                  var filedId: String? = null
+                  if (plan.keepOriginal) {
+                    filedId = soundsStore.registerDownloadedSound(
+                      sourceFilePath = stagedFile.absolutePath,
+                      displayName = filename,
+                      sourceUrl = url,
+                      thumbnailPath = stagedThumb,
+                    )["id"] as? String
+                    debug("Task[$taskId] audio saved to music library")
+                  }
+
+                  val staged = StagedOriginal(
+                    path = stagedFile.absolutePath,
+                    displayName = filename,
+                    title = filename.substringBeforeLast('.'),
+                    artist = null,
+                    // The download already produced the configured tier, and a render
+                    // should not drop from lossless to lossy.
+                    outputFormat = audioFormat,
+                    thumbnailPath = stagedThumb,
+                    sourceUrl = url,
+                    // Only the un-filed original has no other copy to fall back on.
+                    registerOnFailure = !plan.keepOriginal,
+                  )
+                  runCatching { startAutoPresetBatch(plan, filedId, staged) }
+                    .onFailure { startError ->
+                      addError("AUTO_PRESET_START_FAILED: ${startError.message}")
+                      // The batch never began, so nothing will hand the audio back. File it
+                      // now rather than leave it stranded in staging.
+                      if (staged.registerOnFailure) registerStagedOriginal(staged)
+                      discardStaged(staged)
+                    }
+                }
+              }.onFailure { saveError ->
+                val saveMessage = saveError.message ?: "SOUNDS_SAVE_FAILED"
+                updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "SOUNDS_SAVE_FAILED", saveMessage)
+                emitProgress(taskId, "FAILURE", "error", saveMessage)
+                addError("SOUNDS_SAVE_FAILED: task=$taskId message=$saveMessage")
+                return@runCatching
               }
-            }.onFailure { saveError ->
-              val saveMessage = saveError.message ?: "SOUNDS_SAVE_FAILED"
-              updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "SOUNDS_SAVE_FAILED", saveMessage)
-              emitProgress(taskId, "FAILURE", "error", saveMessage)
-              addError("SOUNDS_SAVE_FAILED: task=$taskId message=$saveMessage")
-              return@runCatching
-            }
-          } else if (filename != null && filePath != null && visibility == "private") {
-            emitProgress(taskId, "PROGRESS", "saving", "Saving to private vault", 99.0)
-            runCatching {
-              val privateEntry = importFileToPrivateVault(
-                sourceFilePath = filePath,
-                filename = filename,
-                sourceUrl = url,
-                mimeType = guessMimeType(filename)
-              )
-              privateVideoId = privateEntry.id
-              finalIsPrivate = true
-              finalFilePath = null
-              runCatching { File(filePath).delete() }
-            }.onFailure { privateError ->
-              val privateMessage = privateError.message ?: "PRIVATE_STORAGE_WRITE_FAILED"
-              updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "PRIVATE_STORAGE_WRITE_FAILED", privateMessage)
-              emitProgress(taskId, "FAILURE", "error", privateMessage)
-              addError("PRIVATE_STORAGE_WRITE_FAILED: task=$taskId message=$privateMessage")
-              return@runCatching
-            }
-          } else if (source != "manual" && filename != null && filePath != null) {
-            emitProgress(taskId, "PROGRESS", "saving", "Saving to gallery", 99.0)
-            runCatching {
-              val saveResult = saveToMediaStoreInternal(
-                filePath = filePath,
-                filename = filename,
-                mimeType = guessMimeType(filename),
-                dateTakenMs = System.currentTimeMillis(),
-              )
-              debug("Task[$taskId] background save success uri=${saveResult["uri"]}")
-            }.onFailure { saveError ->
-              val saveMessage = "Failed to save media to gallery: ${saveError.message ?: "unknown error"}"
-              updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "INTERNAL_ERROR", saveMessage)
-              emitProgress(taskId, "FAILURE", "error", saveMessage)
-              addError("BACKGROUND_SAVE_FAILED: task=$taskId message=$saveMessage")
-              return@runCatching
+            } else if (filename != null && filePath != null && visibility == "private") {
+              emitProgress(taskId, "PROGRESS", "saving", "Saving to private vault", 99.0)
+              runCatching {
+                val privateEntry = importFileToPrivateVault(
+                  sourceFilePath = filePath,
+                  filename = filename,
+                  sourceUrl = url,
+                  mimeType = guessMimeType(filename)
+                )
+                privateVideoId = privateEntry.id
+                finalIsPrivate = true
+                finalFilePath = null
+                runCatching { File(filePath).delete() }
+              }.onFailure { privateError ->
+                val privateMessage = privateError.message ?: "PRIVATE_STORAGE_WRITE_FAILED"
+                updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "PRIVATE_STORAGE_WRITE_FAILED", privateMessage)
+                emitProgress(taskId, "FAILURE", "error", privateMessage)
+                addError("PRIVATE_STORAGE_WRITE_FAILED: task=$taskId message=$privateMessage")
+                return@runCatching
+              }
+            } else if (source != "manual" && filename != null && filePath != null) {
+              emitProgress(taskId, "PROGRESS", "saving", "Saving to gallery", 99.0)
+              runCatching {
+                val saveResult = saveToMediaStoreInternal(
+                  filePath = filePath,
+                  filename = filename,
+                  mimeType = guessMimeType(filename),
+                  dateTakenMs = System.currentTimeMillis(),
+                )
+                debug("Task[$taskId] background save success uri=${saveResult["uri"]}")
+              }.onFailure { saveError ->
+                val saveMessage = "Failed to save media to gallery: ${saveError.message ?: "unknown error"}"
+                updateStatus(taskId, "FAILURE", filename, filePath, sizeMb, "INTERNAL_ERROR", saveMessage)
+                emitProgress(taskId, "FAILURE", "error", saveMessage)
+                addError("BACKGROUND_SAVE_FAILED: task=$taskId message=$saveMessage")
+                return@runCatching
+              }
             }
           }
 
@@ -2192,6 +2267,11 @@ class LocalDownloaderModule : Module() {
       onTaskFinished(taskId)
     }
 
+    // Registered before it is allowed to run: the body asks the table whether its own
+    // task is still live, and a job that started first would not find itself there.
+    activeDownloads[taskId] = ActiveDownload(taskId, url, job)
+    job.start()
+
     return mapOf(
       "taskId" to taskId,
       "estimatedSizeMb" to task.estimatedSizeMb
@@ -2199,16 +2279,45 @@ class LocalDownloaderModule : Module() {
   }
 
   private fun onTaskFinished(taskId: String) {
-    if (activeTaskId == taskId) {
-      activeTaskId = null
-      activeJob = null
-      activeTaskUrl = null
-    }
-    val startedNext = startNextQueuedDownloadIfAny()
-    if (!startedNext) {
+    activeDownloads.remove(taskId)
+    // Nothing to drain: every accepted download already exists as a job waiting at a
+    // gate, and releasing this job's permit is what wakes the next one.
+    if (!hasLiveDownloads()) {
       syncForegroundNotification("idle", "Ready for quick downloads")
     }
     emitBackgroundStateChanged()
+  }
+
+  /** A download that has been started and has not finished. */
+  private class ActiveDownload(val taskId: String, val url: String, val job: Job)
+
+  /**
+   * The scheduler's ordering key for a job, from the size the preflight estimated.
+   *
+   * Size rather than duration because that is what the preflight actually reports, and it
+   * is a fair proxy for cost: the transfer scales with it, and so does the transcode for a
+   * given output format. Lower sorts first, so a small share overtakes a large download
+   * that is already waiting.
+   */
+  private fun costOf(estimatedSizeMb: Double?): Long =
+    estimatedSizeMb?.takeIf { it > 0.0 }?.toLong() ?: PriorityGate.UNKNOWN_PRIORITY
+
+  private fun hasLiveDownloads(): Boolean =
+    activeDownloads.values.any { it.job.isActive } || queueSize() > 0
+
+  private fun activeDownloadCount(): Int = activeDownloads.size
+
+  /** True while this task is one the module is still running. */
+  private fun isTaskLive(taskId: String): Boolean = activeDownloads.containsKey(taskId)
+
+  /**
+   * Combined progress across everything in flight, for the single notification a
+   * foreground service is allowed to post.
+   */
+  private fun aggregateProgressPercent(): Double? {
+    val values = activeDownloads.keys.mapNotNull { tasks[it]?.progressPercent }
+    if (values.isEmpty()) return null
+    return values.sum() / values.size
   }
 
   private fun consumePendingQuickRequests() {
@@ -2233,35 +2342,6 @@ class LocalDownloaderModule : Module() {
     }
   }
 
-  private fun startNextQueuedDownloadIfAny(): Boolean {
-    if (activeJob?.isActive == true) {
-      return false
-    }
-
-    val next = synchronized(queueLock) {
-      if (queuedQuickDownloads.isEmpty()) null else queuedQuickDownloads.removeFirst()
-    } ?: return false
-
-    emitBackgroundStateChanged()
-    // Re-read Audio mode at drain time (it may have been toggled since enqueue).
-    val queuedAudioOnly = audioModeEnabled
-    return runCatching {
-      startDownloadInternal(
-        url = next.url,
-        cookiePlatform = detectCookiePlatform(next.url),
-        cookieProfile = null,
-        maxFileSizeMb = DEFAULT_MAX_FILE_SIZE_MB,
-        visibility = if (queuedAudioOnly) "public" else next.visibility,
-        source = "queued",
-        audioOnly = queuedAudioOnly,
-      )
-      true
-    }.getOrElse {
-      addError("QUICK_QUEUE_START_FAILED: ${it.message}")
-      false
-    }
-  }
-
   private fun startQuickDownloadFromClipboard(): Map<String, Any?> {
     val context = requireNotNull(appContext.reactContext)
     // No notification-permission gate: see startDownloadInternal.
@@ -2274,7 +2354,7 @@ class LocalDownloaderModule : Module() {
   }
 
   private fun startQuickDownloadWithUrl(rawUrl: String, captureMode: String, visibilityOverride: String? = null): Map<String, Any?> {
-    val context = requireNotNull(appContext.reactContext)
+    requireNotNull(appContext.reactContext)
     // No notification-permission gate: see startDownloadInternal.
     val normalizedUrl = normalizeClipboardUrl(rawUrl)
       ?: run {
@@ -2285,22 +2365,9 @@ class LocalDownloaderModule : Module() {
     val audioOnly = audioModeEnabled
     val selectedVisibility = if (audioOnly) "public" else normalizeVisibility(visibilityOverride, defaultPrivate = privateModeEnabled)
 
-    if (activeJob?.isActive == true) {
-      val queueResult = enqueueQuickUrl(normalizedUrl, selectedVisibility)
-      if (!queueResult.accepted) {
-        return mapOf("accepted" to false, "reason" to queueResult.reason)
-      }
-      syncForegroundNotification("downloading", "Queued (${queueResult.queueSize}/$MAX_QUEUED_DOWNLOADS)")
-      emitBackgroundStateChanged()
-      reportQuickActionReason(null)
-      return mapOf(
-        "accepted" to true,
-        "queueSize" to queueResult.queueSize,
-        "queueMax" to MAX_QUEUED_DOWNLOADS,
-        "resolvedUrl" to normalizedUrl,
-        "visibility" to selectedVisibility,
-        "captureMode" to captureMode
-      )
+    val admission = admitQuickUrl(normalizedUrl)
+    if (!admission.accepted) {
+      return mapOf("accepted" to false, "reason" to admission.reason)
     }
 
     return runCatching {
@@ -2317,7 +2384,7 @@ class LocalDownloaderModule : Module() {
       mapOf(
         "accepted" to true,
         "taskId" to result["taskId"],
-        "queueSize" to 0,
+        "queueSize" to queueSize(),
         "queueMax" to MAX_QUEUED_DOWNLOADS,
         "resolvedUrl" to normalizedUrl,
         "visibility" to selectedVisibility,
@@ -2343,25 +2410,35 @@ class LocalDownloaderModule : Module() {
   private data class QueueAttemptResult(
     val accepted: Boolean,
     val reason: String? = null,
-    val queueSize: Int = 0
   )
 
-  private fun enqueueQuickUrl(url: String, visibility: String): QueueAttemptResult {
+  /**
+   * Decide whether a shared URL is worth starting.
+   *
+   * There is no separate waiting list any more. A share becomes a download immediately
+   * and parks at the first stage gate, which is where the scheduler decides the order —
+   * keeping a second queue outside the scheduler would have split that decision across
+   * two places, and it is what used to reject a fourth shared link.
+   *
+   * What is still refused is a repeat of something already running or just handled, which
+   * is a double tap rather than a request, and an absurd number of live downloads, which
+   * would mean a share-sheet loop rather than a person.
+   */
+  private fun admitQuickUrl(url: String): QueueAttemptResult {
     synchronized(queueLock) {
       val now = System.currentTimeMillis()
       pruneRecentQuickUrls(now)
-      val isDuplicate = url == activeTaskUrl || queuedQuickDownloads.any { it.url == url } || recentQuickUrls.containsKey(url)
+      val isDuplicate = activeDownloads.values.any { it.url == url } || recentQuickUrls.containsKey(url)
       if (isDuplicate) {
         reportQuickActionReason("QUICK_DOWNLOAD_REJECTED")
         return QueueAttemptResult(accepted = false, reason = "QUICK_DOWNLOAD_REJECTED")
       }
-      if (queuedQuickDownloads.size >= MAX_QUEUED_DOWNLOADS) {
+      if (activeDownloads.size >= MAX_QUEUED_DOWNLOADS) {
         reportQuickActionReason("QUEUE_FULL")
         return QueueAttemptResult(accepted = false, reason = "QUEUE_FULL")
       }
-      queuedQuickDownloads.addLast(QueuedQuickDownload(url = url, visibility = visibility))
       recentQuickUrls[url] = now
-      return QueueAttemptResult(accepted = true, queueSize = queuedQuickDownloads.size)
+      return QueueAttemptResult(accepted = true)
     }
   }
 
@@ -2425,7 +2502,13 @@ class LocalDownloaderModule : Module() {
     return !granted || ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.POST_NOTIFICATIONS)
   }
 
-  private fun queueSize(): Int = synchronized(queueLock) { queuedQuickDownloads.size }
+  /**
+   * Downloads that have been accepted but are still waiting at a gate.
+   *
+   * Reported rather than stored: the scheduler's waiter lists are the queue now, so this
+   * cannot drift from what is actually waiting the way a second list would.
+   */
+  private fun queueSize(): Int = stages.preflight.queued + stages.fetch.queued
 
   private fun backgroundStateMap(): Map<String, Any?> {
     val context = appContext.reactContext
@@ -2437,7 +2520,7 @@ class LocalDownloaderModule : Module() {
     // again afterwards, so the UI latched "downloading" forever. This value is correct
     // at the instant it is read and needs no callback from the service.
     val hasBackgroundWork =
-      activeTaskId != null || queueSize() > 0 || presetRenderActive != null || backupJobActive != null
+      hasLiveDownloads() || presetRenderActive != null || backupJobActive != null
     // Derived for the same reason as the flag above. `notificationPhase` is a side
     // effect of whoever last touched the notification, so ordering decides its value:
     // a render batch sets "rendering", then the finishing download's own cleanup sets
@@ -2449,16 +2532,16 @@ class LocalDownloaderModule : Module() {
       // thing the user is waiting for.
       backupJobActive != null -> backupJobActive?.optString("mode").orEmpty().ifBlank { "backup" }
       presetRenderActive != null -> "rendering"
-      activeTaskId != null -> notificationPhase.takeIf { it != "idle" } ?: "downloading"
+      activeDownloadCount() > 0 -> notificationPhase.takeIf { it != "idle" } ?: "downloading"
       queueSize() > 0 -> "downloading"
       else -> "idle"
     }
     return mapOf(
       "serviceRunning" to hasBackgroundWork,
-      "activeTaskId" to activeTaskId,
+      "activeTaskIds" to activeDownloads.keys.toList(),
       "queueSize" to queueSize(),
       "maxQueueSize" to MAX_QUEUED_DOWNLOADS,
-      "queuedUrls" to synchronized(queueLock) { queuedQuickDownloads.map { it.url } },
+      "queuedUrls" to emptyList<String>(),
       "lastQuickReason" to lastQuickReason,
       "notificationPhase" to workPhase,
       "stickyNotificationEnabled" to stickyNotificationEnabled,
@@ -2478,7 +2561,7 @@ class LocalDownloaderModule : Module() {
     persistStickyNotificationEnabled(context, enabled)
     if (enabled) {
       syncForegroundNotification("idle", "Sticky notification enabled")
-    } else if (activeTaskId == null && queueSize() == 0) {
+    } else if (!hasLiveDownloads()) {
       DownloadNotificationController.stop(context)
     } else {
       syncForegroundNotification(notificationPhase, "Sticky notification disabled")
@@ -2562,6 +2645,123 @@ class LocalDownloaderModule : Module() {
     put("titleSuffix", job.titleSuffix)
   }
 
+  /**
+   * The downloaded audio a batch renders from, held on disk for the batch's lifetime.
+   *
+   * Before this existed, a download was copied into the music library, its local copy was
+   * deleted, and the renderer then copied the identical bytes back out of the library to
+   * get a plain file ffmpeg could open. Keeping the download instead removes that round
+   * trip, and every byte of it crossed MediaProvider's FUSE boundary twice.
+   *
+   * [registerOnFailure] is what preserves "a render failure never costs the audio". When
+   * the user asked to keep only the preset versions the original is never filed at all,
+   * so if the batch does not finish cleanly this file is filed rather than discarded.
+   */
+  private data class StagedOriginal(
+    val path: String,
+    val displayName: String,
+    val title: String,
+    val artist: String?,
+    val outputFormat: String,
+    val thumbnailPath: String?,
+    val sourceUrl: String?,
+    val registerOnFailure: Boolean,
+  )
+
+  private fun stagedOriginalToJson(staged: StagedOriginal): JSONObject = JSONObject().apply {
+    put("path", staged.path)
+    put("displayName", staged.displayName)
+    put("title", staged.title)
+    put("artist", staged.artist ?: JSONObject.NULL)
+    put("outputFormat", staged.outputFormat)
+    put("thumbnailPath", staged.thumbnailPath ?: JSONObject.NULL)
+    put("sourceUrl", staged.sourceUrl ?: JSONObject.NULL)
+    put("registerOnFailure", staged.registerOnFailure)
+  }
+
+  private fun stagedOriginalFromJson(obj: JSONObject?): StagedOriginal? {
+    if (obj == null) return null
+    val path = obj.optString("path").ifBlank { return null }
+    return StagedOriginal(
+      path = path,
+      displayName = obj.optString("displayName").ifBlank { File(path).name },
+      title = obj.optString("title").ifBlank { File(path).nameWithoutExtension },
+      artist = obj.optString("artist").ifBlank { null },
+      outputFormat = obj.optString("outputFormat").ifBlank { DEFAULT_AUDIO_FORMAT },
+      thumbnailPath = obj.optString("thumbnailPath").ifBlank { null },
+      sourceUrl = obj.optString("sourceUrl").ifBlank { null },
+      registerOnFailure = obj.optBoolean("registerOnFailure", false),
+    )
+  }
+
+  private fun audioStagingDir(): File? {
+    val context = appContext.reactContext ?: return null
+    return File(context.filesDir, AUDIO_STAGING_DIRNAME).apply { mkdirs() }
+  }
+
+  /**
+   * Move a finished download into staging. A rename, because `cacheDir` and `filesDir`
+   * are on the same filesystem — copying a multi-gigabyte file here would undo the point
+   * of the change. Falls back to a copy if the rename is refused.
+   */
+  private fun moveIntoStaging(source: File, prefix: String): File? {
+    val dir = audioStagingDir() ?: return null
+    val target = File(dir, "${prefix}_${UUID.randomUUID()}.${source.extension.ifBlank { "bin" }}")
+    if (source.renameTo(target)) return target
+    return runCatching {
+      source.copyTo(target, overwrite = true)
+      source.delete()
+      target
+    }.getOrNull()
+  }
+
+  private fun discardStaged(staged: StagedOriginal?) {
+    if (staged == null) return
+    runCatching { File(staged.path).delete() }
+    staged.thumbnailPath?.let { runCatching { File(it).delete() } }
+  }
+
+  /**
+   * File a staged original into the music library. Used when a batch could not produce
+   * the preset versions the download was going to be replaced by.
+   */
+  private fun registerStagedOriginal(staged: StagedOriginal) {
+    val file = File(staged.path)
+    if (!file.isFile || file.length() <= 0L) return
+    runCatching {
+      soundsStore.registerDownloadedSound(
+        sourceFilePath = staged.path,
+        displayName = staged.displayName,
+        sourceUrl = staged.sourceUrl,
+        thumbnailPath = staged.thumbnailPath,
+      )
+      debug("Filed the staged original after an incomplete preset batch")
+    }.onFailure { addError("PRESET_ORIGINAL_RECOVERY_FAILED: ${it.message}") }
+  }
+
+  /**
+   * Delete staged files that no live batch refers to.
+   *
+   * These are whole downloads, so an orphan left by a process death is gigabytes. Runs at
+   * module start, once the persisted queue has been read.
+   */
+  private fun cleanupOrphanedStaging() {
+    val dir = audioStagingDir() ?: return
+    val keep = HashSet<String>()
+    stagedOriginalFromJson(readPersistedPresetQueue()?.optJSONObject("stagedOriginal"))?.let {
+      keep.add(File(it.path).name)
+      it.thumbnailPath?.let { thumb -> keep.add(File(thumb).name) }
+    }
+    runCatching {
+      dir.listFiles()?.forEach { file ->
+        if (file.name !in keep) {
+          val bytes = file.length()
+          if (file.delete()) debug("Removed an orphaned staged file ($bytes bytes)")
+        }
+      }
+    }.onFailure { Log.w(tag, "cleanupOrphanedStaging failed: ${it.message}") }
+  }
+
   /** Apply one preset across a selection of tracks. */
   private fun startPresetRender(
     songIds: List<String>,
@@ -2570,7 +2770,7 @@ class LocalDownloaderModule : Module() {
     titleSuffix: String,
   ): Map<String, Any?> {
     val jobs = songIds.map { PresetJob(it, presetId, paramsSpec, titleSuffix) }
-    return startPresetJobs(jobs, deleteSourceWhenDone = null)
+    return startPresetJobs(jobs, deleteSourceWhenDone = null, staged = null)
   }
 
   /**
@@ -2581,14 +2781,20 @@ class LocalDownloaderModule : Module() {
    * held for the duration, which stops Android reclaiming the process when the task is
    * swiped away (the service is declared stopWithTask false).
    *
-   * [deleteSourceWhenDone] removes that track once every job succeeds. It exists for the
-   * auto-apply download flow, where the user may want only the preset versions and not
-   * the track they were derived from.
+   * [deleteSourceWhenDone] removes that track once every job succeeds. It applies to a
+   * batch whose source was filed in the library — which now only happens for a batch
+   * persisted by an older build, since the auto-apply flow renders from [staged] instead.
+   *
+   * [staged] is the downloaded file the auto-apply flow renders from; see [StagedOriginal].
    */
-  private fun startPresetJobs(jobs: List<PresetJob>, deleteSourceWhenDone: String?): Map<String, Any?> {
+  private fun startPresetJobs(
+    jobs: List<PresetJob>,
+    deleteSourceWhenDone: String?,
+    staged: StagedOriginal?,
+  ): Map<String, Any?> {
     val renderId = "preset_${UUID.randomUUID()}"
-    persistPresetQueue(renderId, jobs, jobs.size, 0, 0, deleteSourceWhenDone)
-    runPresetBatch(renderId, jobs, jobs.size, 0, 0, deleteSourceWhenDone)
+    persistPresetQueue(renderId, jobs, jobs.size, 0, 0, deleteSourceWhenDone, staged)
+    runPresetBatch(renderId, jobs, jobs.size, 0, 0, deleteSourceWhenDone, staged)
     return mapOf("renderId" to renderId, "total" to jobs.size)
   }
 
@@ -2603,6 +2809,7 @@ class LocalDownloaderModule : Module() {
     completedSoFar: Int,
     failedSoFar: Int,
     deleteSourceWhenDone: String?,
+    staged: StagedOriginal?,
   ) {
     val context = requireNotNull(appContext.reactContext)
 
@@ -2636,19 +2843,32 @@ class LocalDownloaderModule : Module() {
           val watcher = launch { watchPresetProgress(renderId, job.songId, index, total, progressFile) }
 
           val ffmpegInfo = getOrResolveFfmpegInfo()
-          val outcome = runCatching {
-            renderer.render(
-              AudioPresetRenderer.Request(
-                songId = job.songId,
-                presetId = job.presetId,
-                paramsSpec = job.paramsSpec,
-                titleSuffix = job.titleSuffix,
-                ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location.orEmpty(),
-                ffprobePath = ffmpegInfo.ffprobePath.orEmpty(),
-                progressFilePath = progressFile.absolutePath,
-                cancelFlagPath = cancelFlag.absolutePath,
+          // Renders take a permit of their own so several batches cannot all decode and
+          // encode at once. Derived work, so it yields to the downloads that produced it.
+          val outcome = stages.render.withPermit(PriorityGate.UNKNOWN_PRIORITY) {
+            runCatching {
+              renderer.render(
+                AudioPresetRenderer.Request(
+                  songId = job.songId,
+                  presetId = job.presetId,
+                  paramsSpec = job.paramsSpec,
+                  titleSuffix = job.titleSuffix,
+                  ffmpegPath = ffmpegInfo.path ?: ffmpegInfo.location.orEmpty(),
+                  ffprobePath = ffmpegInfo.ffprobePath.orEmpty(),
+                  progressFilePath = progressFile.absolutePath,
+                  cancelFlagPath = cancelFlag.absolutePath,
+                  source = staged?.let {
+                    AudioPresetRenderer.StagedSource(
+                      path = it.path,
+                      title = it.title,
+                      artist = it.artist,
+                      outputFormat = it.outputFormat,
+                      thumbnailPath = it.thumbnailPath,
+                    )
+                  },
+                )
               )
-            )
+            }
           }
           watcher.cancel()
           runCatching { progressFile.delete() }
@@ -2666,16 +2886,24 @@ class LocalDownloaderModule : Module() {
 
           // Rewrite AFTER each job: if the process dies now, the finished render is
           // already in the library and must not be produced a second time on resume.
-          persistPresetQueue(renderId, remaining.toList(), total, completed, failed, deleteSourceWhenDone)
+          persistPresetQueue(renderId, remaining.toList(), total, completed, failed, deleteSourceWhenDone, staged)
           syncForegroundNotification("rendering", null)
         }
 
         val cancelled = cancelFlag.exists()
+        val clean = !cancelled && failed == 0
         // Only discard the source if every render actually succeeded. Dropping it after
         // a partial failure would destroy the only copy of the audio.
-        if (!cancelled && failed == 0 && deleteSourceWhenDone != null) {
+        if (clean && deleteSourceWhenDone != null) {
           runCatching { soundsStore.deleteSounds(listOf(deleteSourceWhenDone)) }
             .onFailure { addError("PRESET_SOURCE_CLEANUP_FAILED: ${it.message}") }
+        }
+        if (staged != null) {
+          // The staged download is the only copy of the audio when the original was
+          // never filed. A batch that did not finish cleanly must hand it back rather
+          // than delete it, or the download is lost.
+          if (!clean && staged.registerOnFailure) registerStagedOriginal(staged)
+          discardStaged(staged)
         }
 
         emitPresetProgress(
@@ -2718,7 +2946,10 @@ class LocalDownloaderModule : Module() {
     }
     val jobs = ArrayList<PresetJob>(jobsArray.length())
     for (i in 0 until jobsArray.length()) jobs.add(presetJobFromJson(jobsArray.getJSONObject(i)))
-    debug("Resuming interrupted preset batch: ${jobs.size} job(s) left")
+    // Absent for a batch persisted before staging existed; those resume on the old path,
+    // resolving their source through the library entry the renderer falls back to.
+    val staged = stagedOriginalFromJson(queue.optJSONObject("stagedOriginal"))
+    debug("Resuming interrupted preset batch: ${jobs.size} job(s) left, staged=${staged != null}")
     runPresetBatch(
       renderId = queue.optString("renderId").ifBlank { "preset_${UUID.randomUUID()}" },
       pending = jobs,
@@ -2726,6 +2957,7 @@ class LocalDownloaderModule : Module() {
       completedSoFar = queue.optInt("completed", 0),
       failedSoFar = queue.optInt("failed", 0),
       deleteSourceWhenDone = queue.optString("deleteSourceWhenDone").ifBlank { null },
+      staged = staged,
     )
   }
 
@@ -2741,6 +2973,7 @@ class LocalDownloaderModule : Module() {
     completed: Int,
     failed: Int,
     deleteSourceWhenDone: String?,
+    staged: StagedOriginal?,
   ) {
     val file = presetQueueFile() ?: return
     runCatching {
@@ -2751,6 +2984,7 @@ class LocalDownloaderModule : Module() {
         put("completed", completed)
         put("failed", failed)
         put("deleteSourceWhenDone", deleteSourceWhenDone ?: JSONObject.NULL)
+        put("stagedOriginal", staged?.let { stagedOriginalToJson(it) } ?: JSONObject.NULL)
       }
       val tmp = File(file.parentFile, file.name + ".tmp")
       tmp.writeText(payload.toString(), Charsets.UTF_8)
@@ -3117,40 +3351,52 @@ class LocalDownloaderModule : Module() {
     return runCatching { JSONObject(raw) }.getOrNull()
   }
 
-  /**
-   * Queue the configured presets against a freshly downloaded track.
-   *
-   * Called after the download is already in the library, so a failure here costs the
-   * preset versions but never the download itself.
-   */
-  private fun applyAutoPresetsTo(songId: String) {
-    val config = readAutoPresetConfig() ?: return
-    val presets = config.optJSONArray("presets") ?: return
-    if (presets.length() == 0) return
+  /** What the auto-apply configuration asks for, resolved before a download is filed. */
+  private data class AutoPresetPlan(
+    val presets: List<JSONObject>,
+    val keepOriginal: Boolean,
+  )
 
-    val jobs = ArrayList<PresetJob>(presets.length())
+  /**
+   * Read the auto-apply configuration, or null when nothing is configured.
+   *
+   * Resolved *before* the download is filed, because whether the original is filed at all
+   * now depends on the answer.
+   */
+  private fun readAutoPresetPlan(): AutoPresetPlan? {
+    val config = readAutoPresetConfig() ?: return null
+    val presets = config.optJSONArray("presets") ?: return null
+    val entries = ArrayList<JSONObject>(presets.length())
     for (i in 0 until presets.length()) {
       val entry = presets.optJSONObject(i) ?: continue
       // Plain `if` rather than `ifBlank { continue }`: jumping out of an inline lambda
       // needs Kotlin 2.2 and this project builds with 2.1.
-      val presetId = entry.optString("id")
-      if (presetId.isBlank()) continue
-      jobs.add(
-        PresetJob(
-          songId = songId,
-          presetId = presetId,
-          paramsSpec = entry.optString("paramsSpec"),
-          titleSuffix = entry.optString("titleSuffix"),
-        )
+      if (entry.optString("id").isBlank()) continue
+      entries.add(entry)
+    }
+    if (entries.isEmpty()) return null
+    return AutoPresetPlan(entries, config.optBoolean("keepOriginal", true))
+  }
+
+  /**
+   * Queue the configured presets against a freshly downloaded track.
+   *
+   * [songId] is the library entry when the original was filed, and null when it was not —
+   * the renders then read from [staged] and nothing about the original is in the library.
+   */
+  private fun startAutoPresetBatch(plan: AutoPresetPlan, songId: String?, staged: StagedOriginal) {
+    val jobs = plan.presets.map { entry ->
+      PresetJob(
+        songId = songId.orEmpty(),
+        presetId = entry.optString("id"),
+        paramsSpec = entry.optString("paramsSpec"),
+        titleSuffix = entry.optString("titleSuffix"),
       )
     }
-    if (jobs.isEmpty()) return
-
-    // When the original is not wanted it still has to exist first: it is the source
-    // every render reads from. It is removed only once they all succeed.
-    val keepOriginal = config.optBoolean("keepOriginal", true)
-    debug("Auto-applying ${jobs.size} preset(s) to $songId (keepOriginal=$keepOriginal)")
-    startPresetJobs(jobs, deleteSourceWhenDone = if (keepOriginal) null else songId)
+    debug("Auto-applying ${jobs.size} preset(s) (keepOriginal=${plan.keepOriginal}, filed=${songId != null})")
+    // deleteSourceWhenDone stays null: with the original never filed there is no library
+    // entry to remove, and when it is filed the user asked to keep it.
+    startPresetJobs(jobs, deleteSourceWhenDone = null, staged = staged)
   }
 
   /** Poll the native progress file and forward it as events until cancelled. */
@@ -3306,7 +3552,7 @@ class LocalDownloaderModule : Module() {
     val phase = when {
       backupJobActive != null -> backupJobActive?.optString("mode").orEmpty().ifBlank { "idle" }
       presetRenderActive != null -> "rendering"
-      activeTaskId != null || queueSize() > 0 -> "downloading"
+      hasLiveDownloads() -> "downloading"
       else -> "idle"
     }
     // Phase and a flag only — never an item name.
@@ -3409,10 +3655,14 @@ class LocalDownloaderModule : Module() {
     // batch — could be reclaimed mid-work. The service already reports its own start
     // failures, so an unexpected refusal surfaces rather than passing silently.
     notificationPhase = phase
-    val currentTask = activeTaskId
-    val progress = explicitProgress ?: currentTask?.let { tasks[it]?.progressPercent }
+    // A foreground service owns exactly one notification, so with several downloads
+    // running it reports the set rather than picking one: the count, and their combined
+    // progress. Showing a single task's bar would have made it jump between downloads.
+    val running = activeDownloadCount()
+    val progress = explicitProgress ?: aggregateProgressPercent()
     val state = BackgroundNotificationState(
-      activeTaskId = currentTask,
+      activeTaskId = activeDownloads.keys.firstOrNull(),
+      activeCount = running,
       phase = phase,
       message = message,
       progressPercent = progress,
@@ -3435,13 +3685,18 @@ class LocalDownloaderModule : Module() {
   }
 
   private fun stopForegroundNotificationIfIdle() {
-    if (activeTaskId == null && queueSize() == 0) {
+    if (!hasLiveDownloads()) {
       appContext.reactContext?.let { DownloadNotificationController.stop(it) }
     }
   }
 
   private fun cancelFromNotificationAction() {
-    val taskId = activeTaskId ?: return
+    // The notification has one stop button and may now represent several downloads, so it
+    // stops all of them — picking one to cancel would be a guess at which the user meant.
+    activeDownloads.keys.toList().forEach { cancelDownloadTask(it) }
+  }
+
+  private fun cancelDownloadTask(taskId: String) {
     markCancelRequested(taskId)
     ignoredTaskResults.add(taskId)
     if (!isTerminalStatus(tasks[taskId]?.status)) {
@@ -3456,7 +3711,7 @@ class LocalDownloaderModule : Module() {
     if (result["accepted"] == true) {
       val queueSize = (result["queueSize"] as? Number)?.toInt()
       if (queueSize != null && queueSize > 0) {
-        syncForegroundNotification("downloading", "Queued ($queueSize/$MAX_QUEUED_DOWNLOADS)")
+        syncForegroundNotification("downloading", null)
       } else {
         syncForegroundNotification("starting", "Quick download started")
       }
@@ -3500,8 +3755,10 @@ class LocalDownloaderModule : Module() {
         "speedBytesPerSec" to eventSpeedBytesPerSec
       )
     )
-    if (taskId == activeTaskId) {
-      syncForegroundNotification(normalizedState, message, progressPercent)
+    // Any live download may drive the notification. Gating this on a single "active"
+    // task silently dropped every other download's progress.
+    if (isTaskLive(taskId)) {
+      syncForegroundNotification(normalizedState, message)
     }
   }
 
@@ -3724,7 +3981,7 @@ class LocalDownloaderModule : Module() {
     }
 
     try {
-      if (activeJob?.isActive == true || activeTaskId != null) {
+      if (hasLiveDownloads()) {
         return mapOf(
           "status" to "blocked",
           "success" to false,
@@ -3855,7 +4112,7 @@ class LocalDownloaderModule : Module() {
       "updateRunning" to ytDlpUpdateRunning,
       "storageReady" to ((root.exists() || root.mkdirs()) && (versionsDir.exists() || versionsDir.mkdirs())),
       "overridePath" to bootstrap?.optString("overridePath")?.takeIf { it.isNotBlank() && it != "null" },
-      "activeTaskId" to activeTaskId
+      "activeTaskIds" to activeDownloads.keys.toList()
     )
   }
 
@@ -8005,7 +8262,10 @@ class LocalDownloaderModule : Module() {
     var lastProgressState: String? = null
     var lastSpeedBucket = -1
     while (currentCoroutineContext().isActive) {
-      if (activeTaskId != taskId || shouldIgnoreTaskResult(taskId) || isTerminalStatus(tasks[taskId]?.status)) {
+      // "still mine to watch", not "am I the one active download". Under concurrency the
+      // latter was true for at most one watcher, so every other download reported no
+      // progress at all for its entire life.
+      if (!isTaskLive(taskId) || shouldIgnoreTaskResult(taskId) || isTerminalStatus(tasks[taskId]?.status)) {
         return
       }
 
@@ -8405,6 +8665,15 @@ class LocalDownloaderModule : Module() {
     private const val PRESET_CANCEL_DIRNAME = "audio_preset_cancel_flags"
     private const val PRESET_QUEUE_FILENAME = "audio_preset_queue.json"
     private const val PRESET_PROGRESS_DIRNAME = "audio_preset_progress"
+
+    /**
+     * Where a downloaded audio file waits while presets are applied to it.
+     *
+     * Under `filesDir`, not the cache: a preset batch survives process death and resumes
+     * from a persisted queue, and the OS may evict the cache in between. A batch that
+     * came back to find its source gone would fail every job.
+     */
+    private const val AUDIO_STAGING_DIRNAME = "audio_staging"
     private const val PRESET_PROGRESS_POLL_MS = 400L
     private const val PREF_STICKY_NOTIFICATION_ENABLED = "sticky_notification_enabled"
     private const val PRIVATE_VAULT_DIRNAME = "private_vault"
@@ -8464,7 +8733,17 @@ class LocalDownloaderModule : Module() {
     private const val DOWNLOAD_PROGRESS_POLL_MS = 400L
     private const val DEFAULT_COOKIE_PROFILE_FILENAME = ".default_profile"
     private const val REQUEST_CODE_NOTIFICATIONS = 4491
-    private const val MAX_QUEUED_DOWNLOADS = 3
+    /**
+     * The runaway guard on how many downloads may exist at once.
+     *
+     * Not a capacity limit: the stage gates decide how much actually runs, and a download
+     * over the limit simply waits at one. This only stops a share-sheet or clipboard loop
+     * from creating jobs without bound, and sits far above anything a person would start
+     * by hand. It replaced a limit of three, which rejected a fourth shared link for no
+     * reason the user could act on.
+     */
+    internal const val MAX_QUEUED_DOWNLOADS = DownloadStages.MAX_QUEUED
+
     private const val MAX_PENDING_QUICK_REQUESTS = MAX_QUEUED_DOWNLOADS
     private const val MAX_ERROR_LOGS = 20
     private const val MAX_DOWNLOAD_FAILURE_LOGS = 50

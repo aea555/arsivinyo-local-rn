@@ -7,6 +7,7 @@ import os
 import random
 import re
 import subprocess
+import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -202,34 +203,121 @@ STATIC_MEDIA_MARKERS = (
 )
 SPEED_PER_SEC_PATTERN = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[kmg]?i?b)\s*/\s*s", flags=re.IGNORECASE)
 
-_RUNTIME_DIAGNOSTICS: Dict[str, Any] = {
-    "normalizedUrlLast": None,
-    "attemptTrace": [],
-    "lastExtractorKey": None,
-    "lastRawYtDlpError": None,
-    "lastCookieCheck": None,
-    "platformStrategyLast": None,
-    "ytDlpVersionAgeDays": None,
-    "impersonationRuntimeAvailable": None,
-    "impersonationEnabled": False,
-    "impersonationBackend": "none",
-    "impersonationRequiredByExtractorLast": None,
-    "impersonationAttemptedTargetsLast": [],
-    "impersonationResolvedTargetLast": None,
-    "impersonationWheelVersion": None,
-    "impersonationBuildAbiCoverage": IMP_ABI_COVERAGE,
-    "impersonationBootstrapError": None,
-    "redditShareResolutionLast": None,
-    "progressWritesLast": 0,
-    "youtubeChunkProfileLast": None,
-    "formatSelectorLast": None,
-    "toolOutputLast": None,
-    "preflightBudgetSec": None,
-    "preflightElapsedMs": None,
-    "preflightAttemptLimit": None,
-    "staticMediaCandidateCount": None,
-    "knownExtractorLast": None,
-}
+# Diagnostics that describe the process rather than any one download: whether the
+# impersonation backend loaded, which wheel it came from, how old yt-dlp is. These are
+# shared, because they are the same answer for every caller.
+_PROCESS_DIAG_KEYS = frozenset(
+    {
+        "ytDlpVersionAgeDays",
+        "impersonationRuntimeAvailable",
+        "impersonationEnabled",
+        "impersonationBackend",
+        "impersonationWheelVersion",
+        "impersonationBuildAbiCoverage",
+        "impersonationBootstrapError",
+    }
+)
+
+
+def _new_call_diagnostics() -> Dict[str, Any]:
+    """Per-download diagnostic state, reset at the start of every entry point."""
+    return {
+        "normalizedUrlLast": None,
+        "attemptTrace": [],
+        "lastExtractorKey": None,
+        "lastRawYtDlpError": None,
+        "lastCookieCheck": None,
+        "platformStrategyLast": None,
+        "impersonationRequiredByExtractorLast": None,
+        "impersonationAttemptedTargetsLast": [],
+        "impersonationResolvedTargetLast": None,
+        "redditShareResolutionLast": None,
+        "progressWritesLast": 0,
+        "youtubeChunkProfileLast": None,
+        "formatSelectorLast": None,
+        "toolOutputLast": None,
+        "preflightBudgetSec": None,
+        "preflightElapsedMs": None,
+        "preflightAttemptLimit": None,
+        "staticMediaCandidateCount": None,
+        "knownExtractorLast": None,
+    }
+
+
+class _RuntimeDiagnostics:
+    """A dict-shaped view over diagnostics that keeps concurrent downloads apart.
+
+    Every value here used to live in one module-level dict, and ``_result`` folds several
+    of them into the payload returned to Kotlin. With one download at a time that was
+    safe. With several, the last writer would win and a download could return another
+    download's normalized url, attempt trace or tool output, which Kotlin then records
+    against the wrong task. Worse, starting a second download reset the trace of the first.
+
+    So per-download values are held per thread — Chaquopy calls arrive on the calling Java
+    thread, so a thread is a download. Process-wide values stay shared, and a thread that
+    never ran a download (the diagnostics screen asking ``get_runtime_diagnostics``) reads
+    the most recently started one, which is what that screen has always shown.
+
+    It deliberately keeps a mapping's interface so the ~60 existing call sites need no
+    change.
+    """
+
+    def __init__(self) -> None:
+        self._process: Dict[str, Any] = {
+            "ytDlpVersionAgeDays": None,
+            "impersonationRuntimeAvailable": None,
+            "impersonationEnabled": False,
+            "impersonationBackend": "none",
+            "impersonationWheelVersion": None,
+            "impersonationBuildAbiCoverage": IMP_ABI_COVERAGE,
+            "impersonationBootstrapError": None,
+        }
+        self._local = threading.local()
+        self._last: Dict[str, Any] = _new_call_diagnostics()
+        self._lock = threading.Lock()
+
+    def begin_call(self) -> None:
+        """Give the calling thread a fresh set, and make it the one the screen reports."""
+        fresh = _new_call_diagnostics()
+        self._local.data = fresh
+        with self._lock:
+            self._last = fresh
+
+    def _call_scope(self, for_write: bool) -> Dict[str, Any]:
+        current = getattr(self._local, "data", None)
+        if current is not None:
+            return current
+        if for_write:
+            current = _new_call_diagnostics()
+            self._local.data = current
+            with self._lock:
+                self._last = current
+            return current
+        # No download on this thread: report the newest one rather than nothing.
+        with self._lock:
+            return self._last
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in _PROCESS_DIAG_KEYS:
+            return self._process.get(key, default)
+        return self._call_scope(for_write=False).get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.get(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key in _PROCESS_DIAG_KEYS:
+            self._process[key] = value
+        else:
+            self._call_scope(for_write=True)[key] = value
+
+    def setdefault(self, key: str, default: Any) -> Any:
+        if key in _PROCESS_DIAG_KEYS:
+            return self._process.setdefault(key, default)
+        return self._call_scope(for_write=True).setdefault(key, default)
+
+
+_RUNTIME_DIAGNOSTICS = _RuntimeDiagnostics()
 _IMPERSONATION_RUNTIME_AVAILABLE: Optional[bool] = None
 _KNOWN_EXTRACTOR_CACHE: Dict[str, Optional[str]] = {}
 
@@ -247,21 +335,13 @@ def _redact_text(value: str) -> str:
     return TOKEN_REDACTION_PATTERN.sub(r"\1=<redacted>", redacted)
 
 
-def _reset_attempt_trace() -> None:
-    _RUNTIME_DIAGNOSTICS["attemptTrace"] = []
-    _RUNTIME_DIAGNOSTICS["impersonationAttemptedTargetsLast"] = []
-    _RUNTIME_DIAGNOSTICS["impersonationResolvedTargetLast"] = None
-    _RUNTIME_DIAGNOSTICS["impersonationRequiredByExtractorLast"] = None
-    _RUNTIME_DIAGNOSTICS["redditShareResolutionLast"] = None
-    _RUNTIME_DIAGNOSTICS["progressWritesLast"] = 0
-    _RUNTIME_DIAGNOSTICS["youtubeChunkProfileLast"] = None
-    _RUNTIME_DIAGNOSTICS["formatSelectorLast"] = None
-    _RUNTIME_DIAGNOSTICS["toolOutputLast"] = None
-    _RUNTIME_DIAGNOSTICS["preflightBudgetSec"] = None
-    _RUNTIME_DIAGNOSTICS["preflightElapsedMs"] = None
-    _RUNTIME_DIAGNOSTICS["preflightAttemptLimit"] = None
-    _RUNTIME_DIAGNOSTICS["staticMediaCandidateCount"] = None
-    _RUNTIME_DIAGNOSTICS["knownExtractorLast"] = None
+def _begin_call_diagnostics() -> None:
+    """Start a download's diagnostics from scratch, isolated from any other in flight.
+
+    Called first thing in every entry point. It used to clear a shared dict key by key,
+    which meant a second download wiped the first one's trace mid-flight.
+    """
+    _RUNTIME_DIAGNOSTICS.begin_call()
 
 
 def _push_attempt_trace(entry: Dict[str, Any]) -> None:
@@ -2324,11 +2404,13 @@ def _apply_audio_postprocessing(
     """
     resolved = _normalize_audio_format(audio_format)
 
-    opts["format"] = "bestaudio/best"
     opts.pop("merge_output_format", None)
     opts["writethumbnail"] = True
 
     if resolved == AUDIO_FORMAT_FLAC:
+        # Any source will do: the output is lossless whatever arrives, so take the best
+        # stream available rather than constraining the codec.
+        opts["format"] = "bestaudio/best"
         extract: Dict[str, Any] = {"key": "FFmpegExtractAudio", "preferredcodec": "flac"}
         # `preferredquality` is a bitrate/VBR knob and is meaningless for a lossless
         # codec, so it is omitted rather than set to a value yt-dlp would ignore.
@@ -2340,6 +2422,20 @@ def _apply_audio_postprocessing(
             "extractaudio": ["-sample_fmt", "s16", "-dither_method", "triangular"],
         }
     else:
+        # Ask for a source that is already AAC. yt-dlp's FFmpegExtractAudioPP stream-copies
+        # when the file's codec is `aac` and the target is `m4a`, so this turns a full
+        # re-encode into a remux. That matters far more than it sounds: measured on the
+        # maintainer's device, the bundled FFmpeg encodes FLAC at about 143x realtime but
+        # AAC at only 23x, so an eight-hour track cost roughly 21 minutes of transcoding.
+        # A remux costs seconds.
+        #
+        # It also stops a pointless quality loss. Left alone, `bestaudio` picks YouTube's
+        # Opus stream, which then has to be decoded and re-encoded to AAC — a second
+        # generation of lossy compression to end up at a similar bitrate.
+        #
+        # Falls back to any audio stream when no AAC one exists, which re-encodes exactly
+        # as before rather than failing.
+        opts["format"] = "bestaudio[acodec^=mp4a]/bestaudio/best"
         extract = {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "256"}
         opts.pop("postprocessor_args", None)
 
@@ -2605,7 +2701,7 @@ def preflight(
     debug_logging: bool = False,
 ) -> str:
     try:
-        _reset_attempt_trace()
+        _begin_call_diagnostics()
         _debug_log(
             debug_logging,
             f"preflight start url={url} ffmpeg_path={ffmpeg_path} cookie_file={'yes' if cookie_file else 'no'} "
@@ -2791,7 +2887,7 @@ def run_download(
     debug_logging: bool = False,
 ) -> str:
     try:
-        _reset_attempt_trace()
+        _begin_call_diagnostics()
         _debug_log(
             debug_logging,
             f"download start url={url} output_dir={output_dir} ffmpeg_path={ffmpeg_path} "

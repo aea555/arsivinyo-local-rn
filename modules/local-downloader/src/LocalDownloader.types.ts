@@ -117,9 +117,16 @@ export interface LocalDownloadStartResult {
 export interface LocalBackgroundState {
   stickyNotificationEnabled?: boolean;
   serviceRunning: boolean;
-  activeTaskId: string | null;
+  /** Every download running right now. Several run concurrently. */
+  activeTaskIds: string[];
+  /** Downloads that have started but are still waiting at a scheduler gate. */
   queueSize: number;
-  maxQueueSize?: number;
+  /**
+   * Always empty. Waiting downloads are real tasks now, reachable through
+   * `activeTaskIds`, rather than urls held in a list outside the scheduler.
+   *
+   * @deprecated
+   */
   queuedUrls: string[];
   lastQuickReason?: string | null;
   notificationPhase?: string;
@@ -281,7 +288,8 @@ export interface LocalYtDlpUpdateStatus {
   updateRunning?: boolean;
   storageReady?: boolean;
   overridePath?: string | null;
-  activeTaskId?: string | null;
+  /** Downloads running right now; an update is refused while any exist. */
+  activeTaskIds?: string[];
 }
 
 export interface LocalYtDlpUpdateCheckResult extends LocalYtDlpUpdateStatus {
@@ -532,7 +540,7 @@ export interface LocalDiagnostics {
     matchedDomain?: string | null;
     profileName?: string | null;
   } | null;
-  activeTaskId: string | null;
+  activeTaskIds: string[];
   lastErrors: string[];
 }
 

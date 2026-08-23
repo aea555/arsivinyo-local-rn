@@ -560,7 +560,10 @@ export default function SettingsScreen() {
     return t('settings.ytDlpUpdateHint', { version: active, source });
   }, [t, ytDlpUpdateProgress, ytDlpUpdateStatus, ytDlpUpdating]);
 
-  const ytDlpUpdateDisabled = ytDlpUpdating || Boolean(ytDlpUpdateStatus?.activeTaskId) || ytDlpUpdateStatus?.storageReady === false;
+  const ytDlpUpdateDisabled =
+    ytDlpUpdating ||
+    (ytDlpUpdateStatus?.activeTaskIds?.length ?? 0) > 0 ||
+    ytDlpUpdateStatus?.storageReady === false;
 
   useEffect(() => {
     if (!vaultMigrationVisible) return;
@@ -627,7 +630,7 @@ export default function SettingsScreen() {
 
   const handleYtDlpUpdate = useCallback(async () => {
     if (ytDlpUpdateDisabled) {
-      if (ytDlpUpdateStatus?.activeTaskId) {
+      if ((ytDlpUpdateStatus?.activeTaskIds?.length ?? 0) > 0) {
         showError(t('settings.ytDlpUpdateDownloadActive'));
       }
       return;
@@ -653,7 +656,7 @@ export default function SettingsScreen() {
     } finally {
       setYtDlpUpdating(false);
     }
-  }, [refreshYtDlpUpdateStatus, showError, showSuccess, t, ytDlpUpdateDisabled, ytDlpUpdateStatus?.activeTaskId]);
+  }, [refreshYtDlpUpdateStatus, showError, showSuccess, t, ytDlpUpdateDisabled, ytDlpUpdateStatus?.activeTaskIds]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>

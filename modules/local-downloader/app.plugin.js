@@ -56,6 +56,10 @@ const TAGS = {
     begin: '// @generated begin local-downloader-abi-filter-config',
     end: '// @generated end local-downloader-abi-filter-config',
   },
+  assetAbiFilterConfig: {
+    begin: '// @generated begin local-downloader-asset-abi-filter-config',
+    end: '// @generated end local-downloader-asset-abi-filter-config',
+  },
 };
 
 function escapeRegex(value) {
@@ -177,12 +181,24 @@ function addAppGradleChanges(contents) {
 
   const abiFilterBlock = `${TAGS.abiFilterConfig.begin}\nandroid {\n    defaultConfig {\n        ndk {\n            def localDownloaderAbis = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString().split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n            abiFilters(*localDownloaderAbis)\n        }\n    }\n}\n${TAGS.abiFilterConfig.end}`;
 
+  // The bundled ffmpeg/ffprobe fallback ships one pair of executables per ABI as assets,
+  // roughly 33 MB uncompressed each. They are only read when the jniLibs copy will not
+  // load, so a pair for an ABI this build cannot run on is dead weight in every APK —
+  // an arm64 phone build was carrying the whole x86_64 pair. Reads the same Gradle
+  // property as the abiFilters above, so opting an ABI in with LOCAL_DOWNLOADER_ABIS
+  // brings its assets back and the two cannot drift.
+  //
+  // Applied at the app rather than in the library module: assets are merged from the
+  // library and packaged here, so this is where leaving them out actually takes effect.
+  const assetAbiFilterBlock = `${TAGS.assetAbiFilterConfig.begin}\nandroid {\n    androidResources {\n        def shippedAbis = (findProperty("reactNativeArchitectures") ?: "${DEFAULT_REACT_NATIVE_ARCHITECTURES}").toString().split(",").collect { it.trim() }.findAll { !it.isEmpty() }\n        def ffmpegAssetsDir = file("../../modules/local-downloader/android/src/main/assets/ffmpeg")\n        def bundledAbis = ffmpegAssetsDir.exists() ? (ffmpegAssetsDir.listFiles() ?: []).findAll { it.directory }.collect { it.name } : []\n        bundledAbis.findAll { !shippedAbis.contains(it) }.each { unusedAbi ->\n            println("[local-downloader] Leaving ffmpeg assets for unused ABI out of the package: " + unusedAbi)\n            ignoreAssetsPatterns.add("!" + unusedAbi)\n        }\n    }\n}\n${TAGS.assetAbiFilterConfig.end}`;
+
   next = stripTaggedBlock(next, TAGS.pythonConfig);
   next = stripTaggedBlock(next, TAGS.sourceSetConfig);
   next = stripTaggedBlock(next, TAGS.abiFilterConfig);
+  next = stripTaggedBlock(next, TAGS.assetAbiFilterConfig);
   next = stripTaggedBlock(next, TAGS.packagingConfig);
 
-  next = `${next.trimEnd()}\n\n${pythonBlock}\n\n${sourceSetBlock}\n\n${abiFilterBlock}\n\n${packagingBlock}\n`;
+  next = `${next.trimEnd()}\n\n${pythonBlock}\n\n${sourceSetBlock}\n\n${abiFilterBlock}\n\n${assetAbiFilterBlock}\n\n${packagingBlock}\n`;
 
   return next;
 }

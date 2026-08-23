@@ -72,7 +72,7 @@ type DiagnosticsState = {
     matchedDomain?: string | null;
     profileName?: string | null;
   } | null;
-  activeTaskId: string | null;
+  activeTaskIds: string[];
   lastErrors: string[];
   cookieCounts: Record<string, number>;
 };
@@ -130,7 +130,7 @@ const initialState: DiagnosticsState = {
   cookieLegacyPlaintextCount: 0,
   cookieMigrationStatus: 'not_needed',
   customDomainMatchLast: null,
-  activeTaskId: null,
+  activeTaskIds: [],
   lastErrors: [],
   cookieCounts: {},
 };
@@ -207,7 +207,7 @@ export default function DiagnosticsScreen() {
       cookieLegacyPlaintextCount: diag.cookieLegacyPlaintextCount,
       cookieMigrationStatus: diag.cookieMigrationStatus,
       customDomainMatchLast: diag.customDomainMatchLast ?? null,
-      activeTaskId: diag.activeTaskId,
+      activeTaskIds: diag.activeTaskIds ?? [],
       lastErrors: diag.lastErrors,
       cookieCounts: Object.fromEntries(cookieCounts),
     });
@@ -320,7 +320,9 @@ export default function DiagnosticsScreen() {
               ? `${state.customDomainMatchLast.urlHost} -> ${state.customDomainMatchLast.matchedDomain ?? 'none'} (${state.customDomainMatchLast.profileName ?? 'none'})`
               : 'none'}
           </Text>
-          <Text style={[styles.row, { color: colors.textMuted }]}>Active task: {state.activeTaskId ?? 'none'}</Text>
+          <Text style={[styles.row, { color: colors.textMuted }]}>
+            Active downloads: {state.activeTaskIds.length > 0 ? state.activeTaskIds.length : 'none'}
+          </Text>
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.surface }]}> 

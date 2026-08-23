@@ -257,6 +257,27 @@ class LocalDownloaderUnitTests(unittest.TestCase):
         self.assertEqual(opts["postprocessors"][0]["preferredquality"], "256")
         # The FLAC-only sample-format args must not leak into the lossy branch.
         self.assertNotIn("postprocessor_args", opts)
+        # Ask for a source that is already AAC so yt-dlp stream-copies it into M4A
+        # instead of re-encoding. On the maintainer's device the bundled FFmpeg encodes
+        # AAC at only ~23x realtime, so an eight-hour track cost about 21 minutes of
+        # transcoding; a remux costs seconds. It also avoids re-encoding Opus to AAC,
+        # which is a second generation of loss for no gain.
+        self.assertEqual(opts["format"], "bestaudio[acodec^=mp4a]/bestaudio/best")
+
+    def test_apply_audio_postprocessing_flac_takes_any_source(self):
+        # The mirror of the M4A case: the FLAC output is lossless whatever arrives, so
+        # constraining the source codec there would only reject the best stream.
+        opts = {}
+        ld._apply_audio_postprocessing(opts, "flac")
+        self.assertEqual(opts["format"], "bestaudio/best")
+
+    def test_apply_audio_postprocessing_format_switches_with_target(self):
+        # A reused opts dict must not keep the previous target's source preference.
+        opts = {}
+        ld._apply_audio_postprocessing(opts, "m4a")
+        self.assertIn("acodec^=mp4a", opts["format"])
+        ld._apply_audio_postprocessing(opts, "flac")
+        self.assertNotIn("acodec", opts["format"])
 
     def test_apply_audio_postprocessing_clears_stale_flac_args(self):
         # Switching format on a reused opts dict must not leave the FLAC args behind,
@@ -794,6 +815,103 @@ class LocalDownloaderUnitTests(unittest.TestCase):
             header, count = ld._build_cookie_header_from_file(cookie_path, "www.reddit.com")
             self.assertEqual(count, 1)
             self.assertEqual(header, "session=abc")
+
+
+class RuntimeDiagnosticsIsolationTests(unittest.TestCase):
+    """Two downloads must not see each other's diagnostics.
+
+    ``_result`` folds several of these values into the payload every entry point returns,
+    and Kotlin records that payload against the task it just ran. Shared state here does
+    not merely produce a confusing diagnostics screen — it attributes one download's url,
+    attempt trace and tool output to a different task.
+    """
+
+    def test_each_thread_keeps_its_own_download_diagnostics(self):
+        import threading
+
+        started = threading.Barrier(2)
+        interleaved = threading.Barrier(2)
+        seen = {}
+
+        def run(name):
+            ld._begin_call_diagnostics()
+            ld._set_runtime_diag("normalizedUrlLast", f"https://example.com/{name}")
+            ld._push_attempt_trace({"who": name})
+            started.wait(timeout=5)
+            # Both threads have now written. If the state were shared, whichever wrote
+            # last would have overwritten the other.
+            interleaved.wait(timeout=5)
+            seen[name] = (
+                ld._RUNTIME_DIAGNOSTICS.get("normalizedUrlLast"),
+                list(ld._RUNTIME_DIAGNOSTICS.get("attemptTrace") or []),
+            )
+
+        threads = [threading.Thread(target=run, args=(n,)) for n in ("a", "b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(seen["a"][0], "https://example.com/a")
+        self.assertEqual(seen["b"][0], "https://example.com/b")
+        self.assertEqual(seen["a"][1], [{"who": "a"}])
+        self.assertEqual(seen["b"][1], [{"who": "b"}])
+
+    def test_starting_a_download_does_not_reset_another_in_flight(self):
+        import threading
+
+        ld._begin_call_diagnostics()
+        ld._push_attempt_trace({"who": "first"})
+
+        def other():
+            ld._begin_call_diagnostics()
+            ld._push_attempt_trace({"who": "second"})
+
+        t = threading.Thread(target=other)
+        t.start()
+        t.join(timeout=10)
+
+        self.assertEqual(ld._RUNTIME_DIAGNOSTICS.get("attemptTrace"), [{"who": "first"}])
+
+    def test_process_wide_values_stay_shared(self):
+        import threading
+
+        ld._set_runtime_diag("impersonationBackend", "curl_cffi")
+        seen = []
+
+        def reader():
+            ld._begin_call_diagnostics()
+            seen.append(ld._RUNTIME_DIAGNOSTICS.get("impersonationBackend"))
+
+        t = threading.Thread(target=reader)
+        t.start()
+        t.join(timeout=10)
+
+        self.assertEqual(seen, ["curl_cffi"])
+
+    def test_a_thread_that_ran_no_download_reads_the_most_recent_one(self):
+        # This is what the diagnostics screen does: it asks from its own thread and has
+        # always been shown the last download rather than nothing.
+        import threading
+
+        def downloader():
+            ld._begin_call_diagnostics()
+            ld._set_runtime_diag("normalizedUrlLast", "https://example.com/most-recent")
+
+        t = threading.Thread(target=downloader)
+        t.start()
+        t.join(timeout=10)
+
+        observer = {}
+
+        def screen():
+            observer["url"] = ld._RUNTIME_DIAGNOSTICS.get("normalizedUrlLast")
+
+        t2 = threading.Thread(target=screen)
+        t2.start()
+        t2.join(timeout=10)
+
+        self.assertEqual(observer["url"], "https://example.com/most-recent")
 
 
 if __name__ == "__main__":

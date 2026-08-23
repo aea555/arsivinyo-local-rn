@@ -45,6 +45,19 @@ class SoundsStore(private val context: Context) {
 
   private val lock = Any()
 
+  /**
+   * Display names claimed by saves that are still copying their bytes.
+   *
+   * A save reserves its name, then streams the file in **without** holding [lock] — the
+   * copy is gigabytes and holding the store's single monitor across it froze every other
+   * library operation, including plain reads, for the whole save. The MediaStore row is
+   * created up front but stays `IS_PENDING` until the copy finishes, and a pending row is
+   * not reliably returned by a normal query, so it cannot be relied on to reserve the
+   * name. This set does that instead, and is the only thing keeping two concurrent saves
+   * of the same title from both choosing it.
+   */
+  private val reservedDisplayNames = HashSet<String>()
+
   fun isSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
   private fun requireSupported() {
@@ -136,28 +149,18 @@ class SoundsStore(private val context: Context) {
     if (!source.exists() || !source.isFile || source.length() <= 0L) {
       throw IllegalStateException(ERR_SAVE_FAILED)
     }
-    synchronized(lock) {
-      val safeName = ensureAudioExtension(displayName.ifBlank { source.nameWithoutExtension })
-      val uniqueName = uniqueDisplayNameLocked(safeName)
-      val uri = insertAudioEntry(uniqueName)
-      try {
-        source.inputStream().use { input ->
-          context.contentResolver.openOutputStream(uri)?.use { out ->
-            BufferedOutputStream(out, STREAM_BUFFER).use { input.copyTo(it, STREAM_BUFFER) }
-          } ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_FAILED")
-        }
-        finalizeAudioEntry(uri)
-      } catch (e: Exception) {
-        runCatching { context.contentResolver.delete(uri, null, null) }
-        throw e
-      }
-      val song = buildSongFromUri(uri, uniqueName, sourceUrl, thumbnailPath)
-      val index = readIndexLocked()
-      val songs = index.getJSONArray("songs")
-      songs.put(song)
-      writeIndexLocked(index)
-      return jsonToSongMap(song)
+    val safeName = ensureAudioExtension(displayName.ifBlank { source.nameWithoutExtension })
+    val (uri, uniqueName) = reserveAudioEntry(safeName)
+    val song = try {
+      fillAudioEntry(uri, source)
+      buildSongFromUri(uri, uniqueName, sourceUrl, thumbnailPath)
+    } catch (e: Exception) {
+      abandonAudioEntry(uri, uniqueName)
+      throw e
     }
+    appendSongsLocked(listOf(song))
+    releaseDisplayName(uniqueName)
+    return jsonToSongMap(song)
   }
 
   /**
@@ -173,56 +176,54 @@ class SoundsStore(private val context: Context) {
   fun registerProcessedSound(
     sourceFilePath: String,
     displayName: String,
-    sourceSongId: String,
+    sourceSongId: String?,
     presetId: String,
+    fallbackThumbPath: String? = null,
+    fallbackArtist: String? = null,
   ): Map<String, Any?> {
     requireSupported()
     val rendered = File(sourceFilePath)
     if (!rendered.exists() || !rendered.isFile || rendered.length() <= 0L) {
       throw IllegalStateException(ERR_SAVE_FAILED)
     }
-    synchronized(lock) {
-      val index = readIndexLocked()
-      val original = findSongLocked(index, sourceSongId)
-      val originalThumb = original?.optString("thumbFileName")?.takeUnless { it.isBlank() }
-      val originalArtist = original?.optString("artist")?.takeUnless { it.isBlank() }
 
-      val safeName = ensureAudioExtension(displayName.ifBlank { rendered.nameWithoutExtension })
-      val uniqueName = uniqueDisplayNameLocked(safeName)
-      val uri = insertAudioEntry(uniqueName)
-      try {
-        rendered.inputStream().use { input ->
-          context.contentResolver.openOutputStream(uri)?.use { out ->
-            BufferedOutputStream(out, STREAM_BUFFER).use { input.copyTo(it, STREAM_BUFFER) }
-          } ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_FAILED")
-        }
-        finalizeAudioEntry(uri)
-      } catch (e: Exception) {
-        runCatching { context.contentResolver.delete(uri, null, null) }
-        throw e
-      }
+    // Cover art and artist normally come from the source track's library entry. A render
+    // produced straight from a download has no such entry — the original is never filed
+    // when the user asked to keep only the preset versions — so the caller supplies them.
+    val original = sourceSongId?.let { id -> synchronized(lock) { findSongLocked(readIndexLocked(), id) } }
+    val inheritedThumb = original
+      ?.optString("thumbFileName")
+      ?.takeUnless { it.isBlank() }
+      ?.let { File(thumbsDir(), it) }
+      ?.takeIf { it.exists() }
+      ?.absolutePath
+      ?: fallbackThumbPath?.takeIf { File(it).exists() }
+    val inheritedArtist = original?.optString("artist")?.takeUnless { it.isBlank() } ?: fallbackArtist
 
-      // Inherit the source's cover art. The rendered file carries no embedded image —
-      // the bundled FFmpeg has no image encoder — so re-extracting it would find
-      // nothing and the render would show up in the library with a blank thumbnail.
-      val inheritedThumb = originalThumb
-        ?.let { File(thumbsDir(), it) }
-        ?.takeIf { it.exists() }
-        ?.absolutePath
-
-      val song = buildSongFromUri(uri, uniqueName, null, inheritedThumb)
-      // A render is a stream copy of processed audio and carries no artist tag of its
-      // own, so keep the source's rather than letting the track show as unknown.
-      if (originalArtist != null && song.optString("artist").isBlank()) {
-        song.put("artist", originalArtist)
-      }
-      song.put("presetId", presetId)
-      song.put("sourceSongId", sourceSongId)
-
-      index.getJSONArray("songs").put(song)
-      writeIndexLocked(index)
-      return jsonToSongMap(song)
+    val safeName = ensureAudioExtension(displayName.ifBlank { rendered.nameWithoutExtension })
+    val (uri, uniqueName) = reserveAudioEntry(safeName)
+    val song = try {
+      fillAudioEntry(uri, rendered)
+      // The rendered file carries no embedded image — the bundled FFmpeg has no image
+      // encoder — so re-extracting art from it would find nothing and the render would
+      // show up in the library with a blank thumbnail.
+      buildSongFromUri(uri, uniqueName, null, inheritedThumb)
+    } catch (e: Exception) {
+      abandonAudioEntry(uri, uniqueName)
+      throw e
     }
+
+    // A render is a stream copy of processed audio and carries no artist tag of its
+    // own, so keep the source's rather than letting the track show as unknown.
+    if (inheritedArtist != null && song.optString("artist").isBlank()) {
+      song.put("artist", inheritedArtist)
+    }
+    song.put("presetId", presetId)
+    if (sourceSongId != null) song.put("sourceSongId", sourceSongId)
+
+    appendSongsLocked(listOf(song))
+    releaseDisplayName(uniqueName)
+    return jsonToSongMap(song)
   }
 
   /** Look up a single song by id, or null. Used to resolve a render's source track. */
@@ -237,60 +238,56 @@ class SoundsStore(private val context: Context) {
   /** Import existing audio files chosen via SAF. Returns { importedCount, failedCount, songs }. */
   fun importFromUris(uris: List<Uri>): Map<String, Any?> {
     requireSupported()
-    synchronized(lock) {
-      val index = readIndexLocked()
-      val songs = index.getJSONArray("songs")
-      val imported = mutableListOf<JSONObject>()
-      val failures = mutableListOf<String>()
-      Log.d(TAG, "importFromUris: ${uris.size} uri(s)")
-      for (src in uris) {
-        // Each phase is logged so a failing import points at the exact step.
-        var phase = "query"
-        try {
-          val srcMime = runCatching { context.contentResolver.getType(src) }.getOrNull()
-          val rawName = querySourceDisplayName(src)
-          val withExt = ensureAudioExtension(rawName, srcMime)
-          val name = uniqueDisplayNameLocked(withExt)
-          Log.d(TAG, "import: src=$src mime=$srcMime raw='$rawName' -> name='$name'")
-          phase = "insert"
-          val uri = insertAudioEntry(name)
-          try {
-            phase = "open-source"
-            val input = context.contentResolver.openInputStream(src)
-              ?: throw IOException("SOURCE_STREAM_NULL")
-            input.use { ins ->
-              phase = "open-dest"
-              val out = context.contentResolver.openOutputStream(uri)
-                ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_NULL")
-              phase = "copy"
-              out.use { os -> BufferedOutputStream(os, STREAM_BUFFER).use { ins.copyTo(it, STREAM_BUFFER) } }
-            }
-            phase = "finalize"
-            finalizeAudioEntry(uri)
-          } catch (e: Exception) {
-            runCatching { context.contentResolver.delete(uri, null, null) }
-            throw e
+    val imported = mutableListOf<JSONObject>()
+    val failures = mutableListOf<String>()
+    Log.d(TAG, "importFromUris: ${uris.size} uri(s)")
+    for (src in uris) {
+      // Each phase is logged so a failing import points at the exact step.
+      var phase = "query"
+      try {
+        val srcMime = runCatching { context.contentResolver.getType(src) }.getOrNull()
+        val rawName = querySourceDisplayName(src)
+        val withExt = ensureAudioExtension(rawName, srcMime)
+        phase = "insert"
+        val (uri, name) = reserveAudioEntry(withExt)
+        Log.d(TAG, "import: src=$src mime=$srcMime -> reserved")
+        val song = try {
+          phase = "open-source"
+          val input = context.contentResolver.openInputStream(src)
+            ?: throw IOException("SOURCE_STREAM_NULL")
+          input.use { ins ->
+            phase = "open-dest"
+            val out = context.contentResolver.openOutputStream(uri)
+              ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_NULL")
+            phase = "copy"
+            out.use { os -> BufferedOutputStream(os, STREAM_BUFFER).use { ins.copyTo(it, STREAM_BUFFER) } }
           }
+          phase = "finalize"
+          finalizeAudioEntry(uri)
           phase = "index"
-          val song = buildSongFromUri(uri, name, null)
-          songs.put(song)
-          imported.add(song)
-          Log.d(TAG, "import OK: ${song.optString("id")} '$name'")
+          buildSongFromUri(uri, name, null)
         } catch (e: Exception) {
-          val reason = "phase=$phase ${e.javaClass.simpleName}: ${e.message}"
-          Log.w(TAG, "sound import failed for $src: $reason", e)
-          failures.add(reason)
+          abandonAudioEntry(uri, name)
+          throw e
         }
+        imported.add(song)
+        releaseDisplayName(name)
+        Log.d(TAG, "import OK: ${song.optString("id")}")
+      } catch (e: Exception) {
+        val reason = "phase=$phase ${e.javaClass.simpleName}: ${e.message}"
+        Log.w(TAG, "sound import failed for $src: $reason", e)
+        failures.add(reason)
       }
-      if (imported.isNotEmpty()) writeIndexLocked(index)
-      Log.d(TAG, "importFromUris done: imported=${imported.size} failed=${failures.size}")
-      return mapOf(
-        "importedCount" to imported.size,
-        "failedCount" to failures.size,
-        "songs" to imported.map { jsonToSongMap(it) },
-        "failures" to failures,
-      )
     }
+    // One index write for the whole batch, as before.
+    appendSongsLocked(imported)
+    Log.d(TAG, "importFromUris done: imported=${imported.size} failed=${failures.size}")
+    return mapOf(
+      "importedCount" to imported.size,
+      "failedCount" to failures.size,
+      "songs" to imported.map { jsonToSongMap(it) },
+      "failures" to failures,
+    )
   }
 
   /** Permanently delete songs: removes MediaStore entries + thumbs + index rows + playlist refs. */
@@ -623,6 +620,58 @@ class SoundsStore(private val context: Context) {
   // MediaStore write helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * Claim a unique display name and create its still-pending MediaStore row.
+   *
+   * [lock] is held only for the claim, never for the copy that follows.
+   *
+   * @return the new row's uri and the name it was actually given.
+   */
+  private fun reserveAudioEntry(desiredName: String): Pair<Uri, String> = synchronized(lock) {
+    val uniqueName = uniqueDisplayNameLocked(desiredName)
+    reservedDisplayNames.add(uniqueName.lowercase())
+    val uri = try {
+      insertAudioEntry(uniqueName)
+    } catch (e: Exception) {
+      reservedDisplayNames.remove(uniqueName.lowercase())
+      throw e
+    }
+    uri to uniqueName
+  }
+
+  private fun releaseDisplayName(name: String) {
+    synchronized(lock) { reservedDisplayNames.remove(name.lowercase()) }
+  }
+
+  /**
+   * Stream [source] into a reserved row and publish it. Deliberately takes no lock: this
+   * is the multi-gigabyte part of a save.
+   */
+  private fun fillAudioEntry(uri: Uri, source: File) {
+    source.inputStream().use { input ->
+      context.contentResolver.openOutputStream(uri)?.use { out ->
+        BufferedOutputStream(out, STREAM_BUFFER).use { input.copyTo(it, STREAM_BUFFER) }
+      } ?: throw IOException("MEDIASTORE_OUTPUT_STREAM_FAILED")
+    }
+    finalizeAudioEntry(uri)
+  }
+
+  /** Roll back a reservation whose copy failed. */
+  private fun abandonAudioEntry(uri: Uri, name: String) {
+    runCatching { context.contentResolver.delete(uri, null, null) }
+    releaseDisplayName(name)
+  }
+
+  private fun appendSongsLocked(newSongs: List<JSONObject>) {
+    if (newSongs.isEmpty()) return
+    synchronized(lock) {
+      val index = readIndexLocked()
+      val songs = index.getJSONArray("songs")
+      newSongs.forEach { songs.put(it) }
+      writeIndexLocked(index)
+    }
+  }
+
   private fun insertAudioEntry(displayName: String): Uri {
     val resolver = context.contentResolver
     val now = System.currentTimeMillis() / 1000L
@@ -792,6 +841,8 @@ class SoundsStore(private val context: Context) {
     val existing = HashSet<String>()
     val present = queryOwnedAudio()
     for ((_, row) in present) existing.add(row.displayName.lowercase())
+    // Saves that are mid-copy own a name but are not in MediaStore yet.
+    existing.addAll(reservedDisplayNames)
     if (name.lowercase() !in existing) return name
     val dot = name.lastIndexOf('.')
     val stem = if (dot > 0) name.substring(0, dot) else name
@@ -989,7 +1040,15 @@ class SoundsStore(private val context: Context) {
     // Reserved id for the special, non-deletable "Favorites" playlist. Display name is
     // localized in the UI; the stored name is just a fallback.
     const val FAVORITES_PLAYLIST_ID = "favorites"
-    private const val STREAM_BUFFER = 1 shl 16
+    /**
+     * 1 MB, matching the vault's `PRIVATE_STREAM_BUFFER_BYTES`.
+     *
+     * Every byte written here crosses into MediaProvider's FUSE daemon, which charges
+     * per write syscall rather than per byte — unlike the vault, which writes a plain
+     * file in app-private storage. At the previous 64 KB a one-gigabyte track cost
+     * about 17,000 round trips into MediaProvider; at 1 MB it costs about 1,100.
+     */
+    private const val STREAM_BUFFER = 1 shl 20
     // Recognized audio extensions. Downloads land as m4a; imports keep their own.
     private val AUDIO_EXTENSIONS = setOf(
       "mp3", "m4a", "aac", "alac", "opus", "ogg", "oga", "flac", "wav", "weba", "webm", "mka",

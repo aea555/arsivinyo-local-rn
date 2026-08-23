@@ -35,6 +35,41 @@ import { useTheme } from '@/src/theme';
 /** How long a transient status line stays before clearing itself. */
 const STATUS_MESSAGE_TTL_MS = 5000;
 
+/** One download this screen started, tracked separately from every other. */
+type ScreenDownload = {
+  clientId: string;
+  /** Null until the module has assigned one; Cancel needs it. */
+  taskId: string | null;
+  state: DownloadState;
+  percent: number | null;
+  speedBytesPerSec: number | null;
+  /** Only the host, shown to tell concurrent rows apart without printing a full url. */
+  host: string | null;
+};
+
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}
+
+function progressOf(item: ScreenDownload): number | null {
+  if (item.state === 'processing' || item.state === 'saving') return null;
+  if (typeof item.percent !== 'number') return 0;
+  return Math.max(0, Math.min(100, Math.round(item.percent)));
+}
+
+function speedLabelOf(item: ScreenDownload): string | null {
+  if (item.state !== 'downloading') return null;
+  const percent = progressOf(item);
+  if (typeof percent === 'number' && percent >= 99) return null;
+  if (typeof item.speedBytesPerSec !== 'number' || item.speedBytesPerSec <= 0) return null;
+  const mb = item.speedBytesPerSec / (1024 * 1024);
+  return `${mb >= 10 ? mb.toFixed(1) : mb.toFixed(2)} MB/s`;
+}
+
 export default function HomeScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -44,12 +79,22 @@ export default function HomeScreen() {
     Sixtyfour_400Regular,
   });
 
-  const [downloadState, setDownloadState] = useState<DownloadState>('idle');
+  /**
+   * Downloads this screen started, keyed by a local id.
+   *
+   * Downloads run concurrently, so a single set of progress fields no longer describes
+   * "the" download: two of them reporting into shared state made the bar jump between
+   * them, pointed Cancel at whichever reported last, and let the first one to finish
+   * reset the screen to idle while the other was still running.
+   */
+  const [downloads, setDownloads] = useState<Record<string, ScreenDownload>>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
-  const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
-  const [downloadSpeedBytesPerSec, setDownloadSpeedBytesPerSec] = useState<number | null>(null);
+  const [lastOutcome, setLastOutcome] = useState<'idle' | 'completed' | 'error'>('idle');
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  /** Guards only the gap between the press and reading the clipboard, so a double tap
+      cannot start the same url twice. */
+  const [isReadingClipboard, setIsReadingClipboard] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [backgroundServiceRunning, setBackgroundServiceRunning] = useState(false);
@@ -60,32 +105,16 @@ export default function HomeScreen() {
   const [privateModeEnabled, setPrivateModeEnabled] = useState(false);
   const [isPrivateToggleBusy, setIsPrivateToggleBusy] = useState(false);
   const [audioModeEnabled, setAudioModeEnabled] = useState(false);
-  const speedEmaBytesPerSecRef = useRef<number | null>(null);
-  const speedLogCounterRef = useRef(0);
+  /** Smoothed transfer rate per download, so two of them cannot blend into one number. */
+  const speedEmaBytesPerSecRef = useRef<Record<string, number>>({});
+  const clientIdRef = useRef(0);
 
-  const isOngoingDownload =
-    downloadState === 'starting' ||
-    downloadState === 'downloading' ||
-    downloadState === 'processing' ||
-    downloadState === 'saving';
-
-  const progressValue = (() => {
-    if (!isOngoingDownload) return null;
-    if (downloadState === 'processing' || downloadState === 'saving') {
-      return null;
-    }
-    if (typeof downloadPercent === 'number') {
-      return Math.max(0, Math.min(100, Math.round(downloadPercent)));
-    }
-    return 0;
-  })();
-
-  const speedValue = (() => {
-    if (downloadState !== 'downloading') return null;
-    if (typeof progressValue === 'number' && progressValue >= 99) return null;
-    if (typeof downloadSpeedBytesPerSec !== 'number' || downloadSpeedBytesPerSec <= 0) return null;
-    return downloadSpeedBytesPerSec / (1024 * 1024);
-  })();
+  const activeDownloads = Object.values(downloads);
+  const isOngoingDownload = activeDownloads.length > 0;
+  /** Kept for the parts of the screen that only care whether anything is happening. */
+  const downloadState: DownloadState = isOngoingDownload
+    ? (activeDownloads[0]?.state ?? 'downloading')
+    : lastOutcome;
 
   /**
    * What the status line says. Applying a preset is not downloading, and a queue of
@@ -100,7 +129,6 @@ export default function HomeScreen() {
     return t('home.backgroundDownloading');
   })();
 
-  const speedLabel = speedValue == null ? null : `${speedValue >= 10 ? speedValue.toFixed(1) : speedValue.toFixed(2)} MB/s`;
 
   useEffect(() => {
     let mounted = true;
@@ -147,75 +175,88 @@ export default function HomeScreen() {
   }, []);
 
   const handleDownload = useCallback(async () => {
+    // Its own id, so this download's progress cannot be written over by another one
+    // started while it is still running.
+    clientIdRef.current += 1;
+    const clientId = `d${clientIdRef.current}`;
+    const dropEntry = () => {
+      delete speedEmaBytesPerSecRef.current[clientId];
+      setDownloads((current) => {
+        const { [clientId]: _removed, ...rest } = current;
+        return rest;
+      });
+    };
+
     try {
-      // Reset state
-      setDownloadState('starting');
       setStatusMessage('');
-      setActiveTaskId(null);
-      setDownloadPercent(0);
-      setDownloadSpeedBytesPerSec(null);
-      speedEmaBytesPerSecRef.current = null;
-      speedLogCounterRef.current = 0;
+      setLastOutcome('idle');
 
       // Get URL from clipboard
-      const url = await getUrlFromClipboard();
+      setIsReadingClipboard(true);
+      const url = await getUrlFromClipboard().finally(() => setIsReadingClipboard(false));
       if (!url) {
-        setDownloadState('error');
+        setLastOutcome('error');
         setStatusMessage(t('home.noUrlInClipboard'));
-        setActiveTaskId(null);
-        setDownloadPercent(null);
-        setDownloadSpeedBytesPerSec(null);
-        speedEmaBytesPerSecRef.current = null;
-        setTimeout(() => setDownloadState('idle'), 3000);
+        setTimeout(() => setLastOutcome('idle'), 3000);
         return;
       }
 
+      setDownloads((current) => ({
+        ...current,
+        [clientId]: {
+          clientId,
+          taskId: null,
+          state: 'starting',
+          percent: 0,
+          speedBytesPerSec: null,
+          host: hostOf(url),
+        },
+      }));
+
       // Start download via API
       const result = await downloadMedia(url, (progress: DownloadProgress) => {
-        setDownloadState(progress.state);
-        if (progress.taskId) {
-          setActiveTaskId(progress.taskId);
-        }
+        let percent: number | null | undefined;
+        let speed: number | null | undefined;
+
         if (progress.state === 'downloading') {
           if (typeof progress.progressPercent === 'number') {
-            setDownloadPercent(progress.progressPercent);
-            if (progress.progressPercent >= 99) {
-              setDownloadSpeedBytesPerSec(null);
-            }
+            percent = progress.progressPercent;
+            if (progress.progressPercent >= 99) speed = null;
           }
           if (typeof progress.speedBytesPerSec === 'number' && progress.speedBytesPerSec > 0) {
             if (typeof progress.progressPercent === 'number' && progress.progressPercent >= 99) {
-              setDownloadSpeedBytesPerSec(null);
+              speed = null;
             } else {
               const alpha = 0.22;
-              const prev = speedEmaBytesPerSecRef.current;
+              const prev = speedEmaBytesPerSecRef.current[clientId];
               const smoothed = prev == null
                 ? progress.speedBytesPerSec
                 : prev + alpha * (progress.speedBytesPerSec - prev);
-              speedEmaBytesPerSecRef.current = smoothed;
-              setDownloadSpeedBytesPerSec(smoothed);
-
-              if (__DEV__) {
-                speedLogCounterRef.current += 1;
-                if (speedLogCounterRef.current % 8 === 0) {
-                  const rawMb = progress.speedBytesPerSec / (1024 * 1024);
-                  const smoothMb = smoothed / (1024 * 1024);
-                  console.info(
-                    `[Download][speed] raw=${rawMb.toFixed(2)}MB/s smoothed=${smoothMb.toFixed(2)}MB/s progress=${progress.progressPercent ?? 'n/a'}`
-                  );
-                }
-              }
+              speedEmaBytesPerSecRef.current[clientId] = smoothed;
+              speed = smoothed;
             }
           }
-        } else if (progress.state === 'processing' || progress.state === 'saving') {
-          setDownloadPercent(null);
-          setDownloadSpeedBytesPerSec(null);
-          speedEmaBytesPerSecRef.current = null;
-        } else if (progress.state === 'starting') {
-          setDownloadPercent(0);
-          setDownloadSpeedBytesPerSec(null);
-          speedEmaBytesPerSecRef.current = null;
+        } else if (progress.state === 'processing' || progress.state === 'saving' || progress.state === 'starting') {
+          percent = progress.state === 'starting' ? 0 : null;
+          speed = null;
+          delete speedEmaBytesPerSecRef.current[clientId];
         }
+
+        setDownloads((current) => {
+          const existing = current[clientId];
+          if (!existing) return current;
+          return {
+            ...current,
+            [clientId]: {
+              ...existing,
+              state: progress.state,
+              taskId: progress.taskId ?? existing.taskId,
+              percent: percent === undefined ? existing.percent : percent,
+              speedBytesPerSec: speed === undefined ? existing.speedBytesPerSec : speed,
+            },
+          };
+        });
+
         if (progress.errorMessage) {
           setStatusMessage(progress.errorMessage);
         }
@@ -227,7 +268,11 @@ export default function HomeScreen() {
       // is nothing to save to the gallery here.
       if (!result.isPrivate && !result.isAudio) {
         // Save local file to device gallery
-        setDownloadState('saving');
+        setDownloads((current) => {
+          const existing = current[clientId];
+          if (!existing) return current;
+          return { ...current, [clientId]: { ...existing, state: 'saving', percent: null, speedBytesPerSec: null } };
+        });
         if (!result.localPath) {
           throw new Error(t('errors.FILE_NOT_FOUND'));
         }
@@ -237,51 +282,36 @@ export default function HomeScreen() {
         console.log('[HomeScreen] downloadAndSaveFile returned:', saveResult);
       }
 
-      // Success!
-      setDownloadState('completed');
+      // Success! Only this download leaves the list; anything else still running stays.
+      dropEntry();
+      setLastOutcome('completed');
       setStatusMessage(result.isAudio ? t('home.savedToMusic') : result.isPrivate ? t('home.privateSaved') : result.filename);
-      setDownloadPercent(100);
-      setDownloadSpeedBytesPerSec(null);
-      speedEmaBytesPerSecRef.current = null;
-
-      // Reset after delay
       setTimeout(() => {
-        setDownloadState('idle');
+        setLastOutcome('idle');
         setStatusMessage('');
-        setActiveTaskId(null);
-        setDownloadPercent(null);
-        setDownloadSpeedBytesPerSec(null);
-        speedEmaBytesPerSecRef.current = null;
       }, 3000);
     } catch (error) {
+      dropEntry();
       const cancelCode = (error as { code?: string } | null)?.code;
       const isCancelled = cancelCode === 'DOWNLOAD_CANCELLED' || cancelCode === 'TASK_CANCELLED';
       if (isCancelled) {
-        setDownloadState('idle');
+        setLastOutcome('idle');
         setStatusMessage(t('errors.DOWNLOAD_CANCELLED'));
-        setActiveTaskId(null);
-        setDownloadPercent(null);
-        setDownloadSpeedBytesPerSec(null);
-        speedEmaBytesPerSecRef.current = null;
         return;
       }
 
       console.error('Download error:', error);
 
-      setDownloadState('error');
+      setLastOutcome('error');
       setStatusMessage(t('home.downloadFailed'));
-      setActiveTaskId(null);
-      setDownloadPercent(null);
-      setDownloadSpeedBytesPerSec(null);
-      speedEmaBytesPerSecRef.current = null;
-      setTimeout(() => setDownloadState('idle'), 3000);
+      setTimeout(() => setLastOutcome('idle'), 3000);
     }
   }, [privateModeEnabled, audioModeEnabled, t]);
 
-  const openCancelConfirm = useCallback(() => {
-    if (!activeTaskId || !isOngoingDownload) return;
+  const openCancelConfirm = useCallback((clientId: string) => {
+    setCancelTarget(clientId);
     setShowCancelConfirm(true);
-  }, [activeTaskId, isOngoingDownload]);
+  }, []);
 
   const closeCancelConfirm = useCallback(() => {
     if (isCancelling) return;
@@ -289,13 +319,15 @@ export default function HomeScreen() {
   }, [isCancelling]);
 
   const confirmCancelDownload = useCallback(async () => {
-    if (!activeTaskId) {
+    const taskId = cancelTarget ? downloads[cancelTarget]?.taskId : null;
+    if (!taskId) {
       setShowCancelConfirm(false);
+      setCancelTarget(null);
       return;
     }
     setIsCancelling(true);
     try {
-      const result = await cancelTask(activeTaskId);
+      const result = await cancelTask(taskId);
       if (!result.success) {
         setStatusMessage(t('home.cancelRequestFailed'));
       }
@@ -304,8 +336,9 @@ export default function HomeScreen() {
     } finally {
       setIsCancelling(false);
       setShowCancelConfirm(false);
+      setCancelTarget(null);
     }
-  }, [activeTaskId, t]);
+  }, [cancelTarget, downloads, t]);
 
   const openSettings = useCallback(() => {
     router.push('/settings');
@@ -472,7 +505,9 @@ export default function HomeScreen() {
           <DownloadButton
             onPress={handleDownload}
             state={downloadState}
-            disabled={downloadState !== 'idle' && downloadState !== 'error'}
+            // Downloads run concurrently, so another one is welcome while others are in
+            // flight. Only the moment between the press and the clipboard read is blocked.
+            disabled={isReadingClipboard}
           />
 
           {/* Modes sit WITH the download button because they modify what it does, not
@@ -576,55 +611,59 @@ export default function HomeScreen() {
             </Text>
           </View>
 
-          {isOngoingDownload ? (
-            <View style={styles.progressSection}>
-              <Text style={[styles.progressText, { color: colors.text }]}>
-                {downloadState === 'processing'
-                  ? t('home.processing')
-                  : downloadState === 'saving'
-                    ? t('common.loading')
-                    : t('home.downloadProgress', { percent: progressValue ?? 0 })}
-              </Text>
-              {progressValue !== null ? (
-                <View style={[styles.progressTrack, { backgroundColor: colors.surfaceHover }]}>
-                  <View
-                    style={[
-                      styles.progressFill,
+          {activeDownloads.map((item) => {
+            const percent = progressOf(item);
+            const speed = speedLabelOf(item);
+            return (
+              <View key={item.clientId} style={styles.progressSection}>
+                <Text style={[styles.progressText, { color: colors.text }]}>
+                  {item.state === 'processing'
+                    ? t('home.processing')
+                    : item.state === 'saving'
+                      ? t('common.loading')
+                      : t('home.downloadProgress', { percent: percent ?? 0 })}
+                  {activeDownloads.length > 1 && item.host ? ` — ${item.host}` : ''}
+                </Text>
+                {percent !== null ? (
+                  <View style={[styles.progressTrack, { backgroundColor: colors.surfaceHover }]}>
+                    <View
+                      style={[
+                        styles.progressFill,
+                        {
+                          width: `${percent}%`,
+                          backgroundColor: colors.accent,
+                        },
+                      ]}
+                    />
+                  </View>
+                ) : (
+                  <ActivityIndicator size="small" color={colors.accent} />
+                )}
+                {speed ? (
+                  <Text style={[styles.speedText, { color: colors.textMuted }]}>
+                    {speed}
+                  </Text>
+                ) : null}
+                {item.taskId ? (
+                  <Pressable
+                    onPress={() => openCancelConfirm(item.clientId)}
+                    style={({ pressed }) => [
+                      styles.cancelButton,
                       {
-                        width: `${progressValue}%`,
-                        backgroundColor: colors.accent,
+                        backgroundColor: pressed ? colors.error + '22' : colors.error + '16',
+                        borderColor: colors.error + '66',
                       },
                     ]}
-                  />
-                </View>
-              ) : (
-                <ActivityIndicator size="small" color={colors.accent} />
-              )}
-              {speedLabel ? (
-                <Text style={[styles.speedText, { color: colors.textMuted }]}>
-                  {speedLabel}
-                </Text>
-              ) : null}
-            </View>
-          ) : null}
-
-          {isOngoingDownload && activeTaskId ? (
-            <Pressable
-              onPress={openCancelConfirm}
-              style={({ pressed }) => [
-                styles.cancelButton,
-                {
-                  backgroundColor: pressed ? colors.error + '22' : colors.error + '16',
-                  borderColor: colors.error + '66',
-                },
-              ]}
-            >
-              <Ionicons name="close-circle-outline" size={18} color={colors.error} />
-              <Text style={[styles.cancelButtonText, { color: colors.error }]}>
-                {t('home.cancelDownload')}
-              </Text>
-            </Pressable>
-          ) : null}
+                  >
+                    <Ionicons name="close-circle-outline" size={18} color={colors.error} />
+                    <Text style={[styles.cancelButtonText, { color: colors.error }]}>
+                      {t('home.cancelDownload')}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            );
+          })}
 
           {statusMessage ? (
             <Text
