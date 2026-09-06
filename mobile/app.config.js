@@ -1,12 +1,12 @@
 export default ({ config }) => {
   return {
     ...config,
-    name: "Arsivinyo Local",
-    slug: "arsivinyo-local-rn",
+    name: "Arsivinyo",
+    slug: "arsivinyo",
     version: "2.6.0-beta.1",
     orientation: "portrait",
     icon: "./assets/images/play_store_512.png",
-    scheme: "arsivinyo-local-rn",
+    scheme: "arsivinyo",
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
     ios: {

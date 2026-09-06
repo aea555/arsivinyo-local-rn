@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+### Changed
+- The app is named **Arsivinyo**, not "Arsivinyo Local", and its deep-link scheme is
+  `arsivinyo://`. "Local" described a downloader with no backend, which stops being the
+  distinguishing fact now that a desktop app and device pairing are planned. The
+  `applicationId` is untouched at `com.arsivinyo.local`, so the vault, the music library
+  and settings survive the upgrade.
+- The repository is `Arsivinyo`, and this app now lives in `mobile/` so `desktop/` and
+  `shared/` can join it. npm commands run from `mobile/`.
+
+### Fixed
+- The wheel verifier no longer reports a failure of `unzip` as a corrupt wheel. One
+  condition covered both, so a transient tool failure accused the wheel while its
+  checksum passed.
+
 ## [2.6.0-beta.1] — Concurrent downloads, and an audio save that finishes
 
 Downloads no longer run one at a time, and saving a long audio track no longer takes

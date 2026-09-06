@@ -1,78 +1,26 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+# Repository-wide ignores. Each app keeps its own .gitignore for its build output —
+# see mobile/.gitignore, whose patterns are relative to that directory.
 
-# dependencies
-node_modules/
+# Working notes, not part of the project.
+/devdocs
 
-# Expo
-.expo/
-dist/
-web-build/
-expo-env.d.ts
+# Built artifacts kept for a release upload. Never committed - a release page holds them.
+/dist
 
-# Native
-.kotlin/
-*.orig.*
+# Editor
+.vscode/
+
+# OS
+.DS_Store
+
+# Secrets. Repeated per app, but a stray key at the root must never be committed.
 *.jks
 *.keystore
 *.p8
 *.p12
+*.pem
 *.key
-
-# Release signing secrets — keep these OUT of the repo (prefer ~/.gradle/gradle.properties)
 keystore.properties
 signing.properties
-*.mobileprovision
-
-# Metro
-.metro-health-check*
-
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
-
-# macOS
-.DS_Store
-*.pem
-
-# local env files
-.env*.local
 .env
-
-# typescript
-*.tsbuildinfo
-
-app-example
-
-# generated native folders
-/ios
-/android
-/google-services.json
-/devdocs
-
-local.properties.*
-ffmpeg-kit-*
-
-# local-downloader generated artifacts
-modules/local-downloader/android/build/
-# CMake/ninja output for libaudiopresets.so. The C++ SOURCES under src/main/cpp are
-# tracked; this is only the generated build tree (per-ABI object dirs, ninja files,
-# CMake caches) that the Android Gradle plugin regenerates on every build.
-modules/local-downloader/android/.cxx/
-modules/local-downloader/android/src/main/python/__pycache__/
-modules/local-downloader/android/src/main/python/**/*.pyc
-modules/local-downloader/tests/__pycache__/*.pyc
-
-# local-downloader ffmpeg binaries and native libs
-modules/local-downloader/android/src/main/jniLibs/
-modules/local-downloader/android/src/main/assets/ffmpeg/arm64-v8a
-modules/local-downloader/android/src/main/assets/ffmpeg/x86_64
-
-*.whl
-SHA256SUMS
-*.pyc
-__pycache__
-*.lck
-*.part
-
-.vscode/
+.env*.local

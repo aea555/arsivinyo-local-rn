@@ -87,7 +87,17 @@ for wheel in "${wheels[@]}"; do
     exit 1
   fi
   if [[ "$wheel" == curl_cffi-* ]]; then
-    if ! unzip -l "$WHEELS_DIR/$wheel" | grep -q 'curl_cffi/__init__.py'; then
+    # Read the listing first, then test it. Piping straight into `grep -q` under
+    # `pipefail` made one condition cover two very different failures: a wheel that
+    # genuinely lacks the package, and unzip failing to run at all. The second happened
+    # transiently after a --clean prebuild and was reported as a corrupt wheel, which
+    # sent two investigations after the wrong thing while the checksum above passed.
+    if ! listing="$(unzip -l "$WHEELS_DIR/$wheel" 2>&1)"; then
+      echo "[verify-impersonation-wheels] Could not read wheel (unzip failed): $wheel"
+      echo "$listing"
+      exit 1
+    fi
+    if [[ "$listing" != *"curl_cffi/__init__.py"* ]]; then
       echo "[verify-impersonation-wheels] Wheel missing curl_cffi package files: $wheel"
       exit 1
     fi

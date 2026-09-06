@@ -27,7 +27,7 @@ git clone --depth 1 --branch v6.0.LTS https://github.com/arthenica/ffmpeg-kit.gi
 cd ~/ffmpeg-kit-build
 
 # 2. Apply the saved changes (adjust the path to wherever this repo lives)
-git apply ~/arsivinyo-local-rn/modules/local-downloader/ffmpeg-build/local-modifications.patch
+git apply ~/arsivinyo/mobile/modules/local-downloader/ffmpeg-build/local-modifications.patch
 
 # 3. Confirm it applied — all four files should show as modified/new
 git status --short
